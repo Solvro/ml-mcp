@@ -1,5 +1,7 @@
 # SOLVRO MCP - Knowledge Graph RAG System
 
+![MCP Server Diagram](docs/images/logo.png)
+
 A production-ready Model Context Protocol (MCP) server implementing a Retrieval-Augmented Generation (RAG) system with Neo4j graph database backend. The system intelligently converts natural language queries into Cypher queries, retrieves relevant information from a knowledge graph, and provides contextual answers about Wroclaw University of Science and Technology.
 
 ## Table of Contents
