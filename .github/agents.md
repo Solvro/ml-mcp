@@ -494,6 +494,10 @@ When modifying code, consider:
 5. **Is this user-facing?** → Add clear error messages
 6. **Can this fail?** → Add error handling and logging
 
+## Important Notes
+- Always prioritize code readability and maintainability
+- Update Readme and documentation for significant changes
+
 ## Resources
 
 - [FastMCP Documentation](https://github.com/jlowin/fastmcp)

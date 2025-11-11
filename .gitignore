@@ -1,29 +1,68 @@
-# Python-generated files
+# Python caches and bytecode
 __pycache__/
-*.py[oc]
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+envs/
+pip-wheel-metadata/
+
+# Build / packaging
 build/
 dist/
 wheels/
-*.egg-info
+*.egg
+*.egg-info/
+.eggs/
 
-# Virtual environments
-.venv
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Coverage
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
 
 # Environment variable files
 .env
 .env.local
 .env.*.local
+.envrc
 
 # IDE and editor settings
 .vscode/
 .idea/
 *.swp
 *.swo
-.ruff_cache/
-
+*~
 # Logs and databases
 *.log
-*.sqlite3   
+*.sqlite3
 
-# Datas
+# Data (remove if you want to track project data)
 data/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Compiled extensions / binaries
+*.so
+*.dylib
+*.dll
+*.pyd
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Nix / direnv artifacts
+result
+.result-*
+.direnv/
