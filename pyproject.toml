@@ -39,11 +39,13 @@ include = ["src*"]
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+preview = true
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "N", "W"]
+select = ["E", "F", "I", "N", "W", "UP", "I", "B", "ANN"]
 ignore = []
 
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+line-ending = "auto"

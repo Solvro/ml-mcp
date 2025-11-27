@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict
+from typing import Any
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -7,6 +7,7 @@ from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 
 from .graph_visualizer import GraphVisualizer
 from .state import State
@@ -23,7 +24,7 @@ class RAG:
         neo4j_password: str,
         enable_debug: bool = False,
         max_results: int = 5,
-    ):
+    ) -> None:
         """
         Initialize RAG system with API keys and database credentials.
 
@@ -68,17 +69,17 @@ class RAG:
         self.handler = None
 
     @property
-    def schema(self):
+    def schema(self) -> str:
         """Cached database schema to avoid repeated fetches"""
         if self._cached_schema is None:
             self._cached_schema = self.database.get_schema
         return self._cached_schema
 
-    def get_graph(self):
+    def get_graph(self) -> GraphVisualizer:
         """Return graph visualizer with Mermaid capabilities"""
         return self.visualizer
 
-    def _initialize_prompt_templates(self):
+    def _initialize_prompt_templates(self) -> None:
         """Initialize all prompt templates used in the RAG pipeline."""
 
         self.generate_cypher_template = PromptTemplate(
@@ -102,7 +103,7 @@ class RAG:
                     """,
         )
 
-    def _build_processing_graph(self):
+    def _build_processing_graph(self) -> CompiledStateGraph:
         """Construct the state machine graph for the RAG pipeline."""
         builder = StateGraph(State)
         visualizer = self.visualizer
@@ -145,7 +146,7 @@ class RAG:
 
         return builder.compile()
 
-    def generate_cypher(self, state: State):
+    def generate_cypher(self, state: State) -> dict[str, str]:
         """
         Generate CYPHER query from user question using database schema.
         Uses better model (gpt-5-mini) for complex Cypher generation.
@@ -174,7 +175,7 @@ class RAG:
 
         return {"generated_cypher": generated_cypher}
 
-    def retrieve(self, state: State):
+    def retrieve(self, state: State) -> dict[str, Any]:
         """
         Execute CYPHER query against Neo4j database and retrieve results.
         If query fails, return empty context and use general knowledge.
@@ -203,7 +204,7 @@ class RAG:
 
             return {"context": [], "generated_cypher": f"Query failed: {error_msg}"}
 
-    def guardrails_system(self, state: State):
+    def guardrails_system(self, state: State) -> dict[str, str]:
         """
         Decide whether to use graph retrieval or general LLM knowledge.
         Uses fast model (gpt-5-nano) for quick decision.
@@ -239,7 +240,7 @@ class RAG:
             "guardrail_decision": guardrail_output,
         }
 
-    def return_none(self, state: State):
+    def return_none(self, state: State) -> dict[str, Any]:
         """
         Return 'W bazie danych nie ma informacji' when question is not
         related to university studies.
@@ -256,7 +257,7 @@ class RAG:
             "generated_cypher": None,
         }
 
-    def invoke(self, message: str, session_id: str = "default") -> Dict[str, Any]:
+    def invoke(self, message: str, session_id: str = "default") -> dict[str, Any]:
         """
         Execute the RAG pipeline with user message.
 
@@ -296,8 +297,8 @@ class RAG:
         message: str,
         session_id: str = "default",
         trace_id: str = "default",
-        callback_handler: CallbackHandler = None,
-    ) -> Dict[str, Any]:
+        callback_handler: CallbackHandler | None = None,
+    ) -> dict[str, Any]:
         """
         Async version of invoke for better performance in concurrent scenarios.
 

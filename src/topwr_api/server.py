@@ -2,13 +2,15 @@
 
 import logging
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from typing import Any
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
-from .models import ChatRequest, ChatResponse, MessageRole
+from .models import ChatRequest, ChatResponse, MessageRole, SessionInfo
 from .session_manager import SessionManager
 
 load_dotenv()
@@ -24,7 +26,7 @@ session_manager: SessionManager = None
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator:
     """Application lifespan handler."""
     global session_manager
 
@@ -60,20 +62,20 @@ app.add_middleware(
 
 
 @app.get("/")
-async def root():
+async def root() -> dict[str, str]:
     """Root endpoint."""
     return {"service": "ToPWR MCP Integration API", "version": "1.0.0", "status": "running"}
 
 
 @app.get("/health")
-async def health_check():
+async def health_check() -> dict[str, Any]:
     """Health check endpoint."""
     stats = session_manager.get_stats()
     return {"status": "healthy", "session_stats": stats}
 
 
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+@app.post("/api/chat")
+async def chat(request: ChatRequest) -> ChatResponse:
     """
     Main chat endpoint for ToPWR integration.
 
@@ -135,11 +137,11 @@ async def chat(request: ChatRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal server error: {str(e)}",
-        )
+        ) from e
 
 
 @app.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
+async def get_session(session_id: str) -> SessionInfo:
     """Get session information by ID."""
     session_info = session_manager.get_session_info(session_id)
     if not session_info:
@@ -150,7 +152,7 @@ async def get_session(session_id: str):
 
 
 @app.get("/api/sessions/{session_id}/history")
-async def get_session_history(session_id: str, limit: int = None):
+async def get_session_history(session_id: str, limit: int | None = None) -> dict[str, Any]:
     """Get conversation history for a session."""
     session = session_manager.get_session(session_id)
     if not session:
@@ -163,7 +165,7 @@ async def get_session_history(session_id: str, limit: int = None):
 
 
 @app.get("/api/users/{user_id}/sessions")
-async def get_user_sessions(user_id: str, active_only: bool = True):
+async def get_user_sessions(user_id: str, active_only: bool = True) -> dict[str, Any]:
     """Get all sessions for a user."""
     sessions = session_manager.get_user_sessions(user_id, active_only=active_only)
     return {
@@ -183,7 +185,7 @@ async def get_user_sessions(user_id: str, active_only: bool = True):
 
 
 @app.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str) -> dict[str, str]:
     """Delete a session."""
     if not session_manager.delete_session(session_id):
         raise HTTPException(
@@ -193,7 +195,7 @@ async def delete_session(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/deactivate")
-async def deactivate_session(session_id: str):
+async def deactivate_session(session_id: str) -> dict[str, str]:
     """Deactivate a session."""
     if not session_manager.deactivate_session(session_id):
         raise HTTPException(
@@ -203,12 +205,12 @@ async def deactivate_session(session_id: str):
 
 
 @app.get("/api/stats")
-async def get_stats():
+async def get_stats() -> dict:
     """Get system statistics."""
     return session_manager.get_stats()
 
 
-def main():
+def main() -> None:
     """Run the FastAPI server."""
     import uvicorn
 
