@@ -1,6 +1,5 @@
 import logging
 import os
-from typing import List
 
 from langchain_neo4j import Neo4jGraph
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -15,12 +14,12 @@ class DataPipe:
         url: str,
         username: str,
         password: str,
-        api_key: str = None,
-        nodes: List[str] = None,
-        relations: List[str] = None,
+        api_key: str | None = None,
+        nodes: list[str] | None = None,
+        relations: list[str] | None = None,
         max_chunk_size: int = 30000,
         chunk_overlap: int = 200,
-    ):
+    ) -> None:
         self.docs_data = []
 
         if not url:
@@ -44,7 +43,7 @@ class DataPipe:
             logging.error(f"Failed to connect to Neo4j: {str(e)}")
             logging.error(f"URL: {url}")
             logging.error(f"Username: {username}")
-            raise ConnectionError(f"Could not connect to Neo4j database: {str(e)}")
+            raise ConnectionError(f"Could not connect to Neo4j database: {str(e)}") from e
 
         self.max_chunk_size = max_chunk_size
         self.chunk_overlap = chunk_overlap
@@ -127,7 +126,7 @@ class DataPipe:
             logging.error(f"Query: {query}")
             raise
 
-    def process_documents(self):
+    def process_documents(self) -> list[str]:
         """Process all loaded documents through the LLM pipe."""
         all_results = []
 
