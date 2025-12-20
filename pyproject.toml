@@ -13,6 +13,7 @@ dependencies = [
     "langchain-openai>=0.3.35",
     "langfuse>=3.6.2",
     "langgraph>=0.6.10",
+    "prefect>=3.6.7",
     "ruff>=0.14.1",
 ]
 

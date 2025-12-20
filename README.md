@@ -27,7 +27,7 @@ The system consists of three main components:
 3. **Data Pipeline** - Multi-threaded ETL pipeline for loading documents into Neo4j
 
 ### Data Flow
-
+![Architecture Diagram](docs/images/kg_pipeline.png)
 ```
 User Query → MCP Client → MCP Server → RAG System → Neo4j Graph DB
                                     ↓
@@ -35,6 +35,7 @@ User Query → MCP Client → MCP Server → RAG System → Neo4j Graph DB
                                     ↓
                             LLM Processing → Response
 ```
+
 
 ### Key Technologies
 
@@ -77,6 +78,13 @@ User Query → MCP Client → MCP Server → RAG System → Neo4j Graph DB
 - **PDF Support**: Extract and process PDF documents
 - **Dynamic Graph Schema**: Configurable nodes and relationships via JSON
 - **Database Management**: Built-in database clearing and initialization
+
+**Data Pipeline Diagram**
+
+ - **Diagram:** Displays the pipeline flow for document ingestion and processing. See the image below:
+
+  ![Data Pipeline](docs/images/data_pipeline.png)
+
 
 ## Prerequisites
 
