@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "dotenv>=0.9.9",
+    "fastapi>=0.115.0",
     "fastmcp>=2.12.4",
+    "httpx>=0.28.0",
     "langchain>=0.3.27",
     "langchain-community>=0.3.31",
     "langchain-neo4j>=0.5.0",
@@ -14,13 +16,17 @@ dependencies = [
     "langfuse>=3.6.2",
     "langgraph>=0.6.10",
     "prefect>=3.6.7",
+    "pydantic>=2.10.0",
     "ruff>=0.14.1",
+    "uvicorn>=0.34.0",
 ]
 
 [project.scripts]
 pipeline = "src.scripts.data_pipeline.main:main"
 server = "src.mcp_server.server:main"
 kg = "src.mcp_client.client:call_knowledge_graph_tool"
+topwr-api = "src.topwr_api.server:main"
+test-topwr-api = "src.topwr_api.test_api:test_api"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

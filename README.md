@@ -489,15 +489,57 @@ self.fast_llm = BaseChatOpenAI(
 
 For AI coding assistants and developers, see [.github/agents.md](.github/agents.md) for detailed coding guidelines and patterns.
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/new-feature`
-3. Follow the coding guidelines in `.github/agents.md`
-4. Make changes and ensure tests pass
-5. Run linting: `just lint`
-6. Commit changes: `git commit -m "feat: Add new feature"`
-7. Push to branch: `git push origin feature/new-feature`
-8. Open a Pull Request
-// ...existing code...
+## ToPWR Integration API
+
+The project now includes a FastAPI service for integrating with the ToPWR application. This provides:
+
+- RESTful API endpoints for chat functionality
+- Conversation state management with memory
+- User tracking and session management
+- Thread-safe in-memory storage (database integration pending)
+
+### Running the ToPWR API
+
+```bash
+# Start the API server
+just topwr-api
+# OR
+uv run topwr-api
+```
+
+The API will be available at `http://localhost:8000`
+
+### API Endpoints
+
+- `POST /api/chat` - Send a message and get AI response
+- `GET /api/sessions/{session_id}` - Get session information
+- `GET /api/sessions/{session_id}/history` - Get conversation history
+- `GET /api/users/{user_id}/sessions` - Get all user sessions
+- `GET /api/stats` - Get system statistics
+- `GET /health` - Health check
+
+### Example API Usage
+
+```bash
+# Start a new conversation
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "message": "Czym jest nagroda dziekana?"
+  }'
+
+# Continue conversation with session_id
+curl -X POST http://localhost:8000/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "user123",
+    "session_id": "abc123...",
+    "message": "A jakie są wymagania?"
+  }'
+```
+
+For complete API documentation, see [src/topwr_api/README.md](src/topwr_api/README.md)
 
 ## Contributing
 
