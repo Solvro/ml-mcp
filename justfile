@@ -4,6 +4,9 @@ mcp-server:
 mcp-client QUERY:
     uv run kg {{QUERY}}
 
+topwr-api:
+    uv run topwr-api
+
 lint:
     uv run ruff format src
     uv run ruff check src
