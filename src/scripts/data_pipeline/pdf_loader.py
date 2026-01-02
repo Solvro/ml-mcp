@@ -2,7 +2,7 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader
 
 
 class PDFLoader:
-    def __init__(self, file_path: str) -> None:
+    def __init__(self, file_path: str):
         self.file_path = file_path
         self.pdf_loader = PyPDFLoader(file_path)
         self.txt_loader = TextLoader(file_path)

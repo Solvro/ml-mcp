@@ -1,13 +1,14 @@
 """Data models for conversation management."""
 
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum
+from typing import List, Optional
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
 
-class MessageRole(StrEnum):
+class MessageRole(str, Enum):
     """Message role in conversation."""
 
     USER = "user"
@@ -22,7 +23,7 @@ class Message(BaseModel):
     role: MessageRole
     content: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    metadata: dict | None = Field(default_factory=dict)
+    metadata: Optional[dict] = Field(default_factory=dict)
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}
@@ -33,7 +34,7 @@ class ConversationSession(BaseModel):
 
     session_id: str = Field(default_factory=lambda: uuid4().hex)
     user_id: str
-    messages: list[Message] = Field(default_factory=list)
+    messages: List[Message] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
     metadata: dict = Field(default_factory=dict)
@@ -43,7 +44,7 @@ class ConversationSession(BaseModel):
         json_encoders = {datetime: lambda v: v.isoformat()}
 
     def add_message(
-        self, role: MessageRole, content: str, metadata: dict | None = None
+        self, role: MessageRole, content: str, metadata: Optional[dict] = None
     ) -> Message:
         """Add a new message to the conversation."""
         message = Message(role=role, content=content, metadata=metadata or {})
@@ -51,7 +52,7 @@ class ConversationSession(BaseModel):
         self.updated_at = datetime.utcnow()
         return message
 
-    def get_conversation_history(self, limit: int | None = None) -> list[Message]:
+    def get_conversation_history(self, limit: Optional[int] = None) -> List[Message]:
         """Get conversation history, optionally limited to last N messages."""
         if limit:
             return self.messages[-limit:]
@@ -71,10 +72,10 @@ class ChatRequest(BaseModel):
 
     user_id: str = Field(..., description="Unique identifier for the user")
     message: str = Field(..., min_length=1, description="User's question or message")
-    session_id: str | None = Field(
+    session_id: Optional[str] = Field(
         None, description="Session ID to continue existing conversation"
     )
-    metadata: dict | None = Field(default_factory=dict, description="Additional metadata")
+    metadata: Optional[dict] = Field(default_factory=dict, description="Additional metadata")
 
 
 class ChatResponse(BaseModel):
@@ -83,7 +84,7 @@ class ChatResponse(BaseModel):
     session_id: str
     message: str
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-    metadata: dict | None = Field(default_factory=dict)
+    metadata: Optional[dict] = Field(default_factory=dict)
 
     class Config:
         json_encoders = {datetime: lambda v: v.isoformat()}

@@ -1,3 +1,5 @@
+from typing import List
+
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_openai.chat_models.base import BaseChatOpenAI
@@ -6,16 +8,13 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 
 class PipeState(MessagesState):
     context: str
-    generated_cypher: list[str]
+    generated_cypher: List[str]
 
 
 class LLMPipe:
     def __init__(
-        self,
-        api_key: str | None = None,
-        nodes: list[str] | None = None,
-        relations: list[str] | None = None,
-    ) -> None:
+        self, api_key: str = None, nodes: List[str] = None, relations: List[str] = None
+    ):
         BaseChatOpenAI(
             model="gpt-5-mini",
             api_key=api_key,
@@ -96,20 +95,22 @@ class LLMPipe:
 
         self.graph = builder.compile()
 
-    def generate_cypher(self, state: PipeState) -> list[str]:
+    def generate_cypher(self, state: PipeState) -> List[str]:
         chain = self.generate_template | self.model | StrOutputParser()
 
-        cypher_code = chain.invoke({
-            "context": state["context"],
-            "nodes": self.nodes,
-            "relations": self.relations,
-        })
+        cypher_code = chain.invoke(
+            {
+                "context": state["context"],
+                "nodes": self.nodes,
+                "relations": self.relations,
+            }
+        )
 
         return {
             "generated_cypher": [code_part for code_part in cypher_code.split("|")],
         }
 
-    def run(self, context: str) -> list[str]:
+    def run(self, context: str) -> List[str]:
         """Run the pipeline with the given context."""
         result = self.graph.invoke(
             {

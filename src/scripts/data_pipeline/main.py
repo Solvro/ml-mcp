@@ -12,7 +12,7 @@ from .data_pipe import DataPipe
 def load_config_file(file_path: str) -> dict:
     """Load and validate configuration from JSON file."""
     try:
-        with open(file_path) as f:
+        with open(file_path, "r") as f:
             config = json.load(f)
         return config
     except FileNotFoundError:
@@ -36,9 +36,11 @@ def process_chunk(chunk: str, pipe: DataPipe) -> str:
         return ""
 
 
-def main() -> None:
+def main():
     if len(sys.argv) < 4:
-        print("Usage: python main.py <input_dir> <graph_config.json> <num_threads> [--clear-db]")
+        print(
+            "Usage: python main.py <input_dir> <graph_config.json> <num_threads> [--clear-db]"
+        )
         sys.exit(1)
 
     input_dir = sys.argv[1]
@@ -90,7 +92,9 @@ def main() -> None:
             logging.error("No documents were loaded from the input directory")
             return
 
-        logging.info(f"Processing {len(pipe.docs_data)} chunks using {num_threads} threads")
+        logging.info(
+            f"Processing {len(pipe.docs_data)} chunks using {num_threads} threads"
+        )
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = []
@@ -115,5 +119,7 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    )
     main()

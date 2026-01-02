@@ -5,7 +5,7 @@ import asyncio
 import httpx
 
 
-async def test_api() -> None:
+async def test_api():
     """Test the ToPWR API endpoints."""
     base_url = "http://localhost:8000"
 

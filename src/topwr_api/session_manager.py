@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime
 from threading import Lock
+from typing import Dict, List, Optional
 
 from .models import ConversationSession, Message, MessageRole, SessionInfo
 
@@ -12,14 +13,14 @@ logger = logging.getLogger(__name__)
 class SessionManager:
     """Thread-safe in-memory session manager for conversations."""
 
-    def __init__(self) -> None:
+    def __init__(self):
         """Initialize session manager with thread-safe storage."""
-        self._sessions: dict[str, ConversationSession] = {}
-        self._user_sessions: dict[str, list[str]] = {}  # user_id -> [session_ids]
+        self._sessions: Dict[str, ConversationSession] = {}
+        self._user_sessions: Dict[str, List[str]] = {}  # user_id -> [session_ids]
         self._lock = Lock()
         logger.info("SessionManager initialized with in-memory storage")
 
-    def create_session(self, user_id: str, metadata: dict | None = None) -> ConversationSession:
+    def create_session(self, user_id: str, metadata: Optional[dict] = None) -> ConversationSession:
         """
         Create a new conversation session for a user.
 
@@ -42,7 +43,7 @@ class SessionManager:
             logger.info(f"Created session {session.session_id} for user {user_id}")
             return session
 
-    def get_session(self, session_id: str) -> ConversationSession | None:
+    def get_session(self, session_id: str) -> Optional[ConversationSession]:
         """
         Retrieve a session by ID.
 
@@ -95,7 +96,7 @@ class SessionManager:
 
     def get_user_sessions(
         self, user_id: str, active_only: bool = True
-    ) -> list[ConversationSession]:
+    ) -> List[ConversationSession]:
         """
         Get all sessions for a specific user.
 
@@ -115,7 +116,7 @@ class SessionManager:
 
             return sessions
 
-    def get_active_session(self, user_id: str) -> ConversationSession | None:
+    def get_active_session(self, user_id: str) -> Optional[ConversationSession]:
         """
         Get the most recent active session for a user.
 
@@ -133,8 +134,8 @@ class SessionManager:
         return sorted(sessions, key=lambda s: s.updated_at, reverse=True)[0]
 
     def add_message(
-        self, session_id: str, role: MessageRole, content: str, metadata: dict | None = None
-    ) -> Message | None:
+        self, session_id: str, role: MessageRole, content: str, metadata: Optional[dict] = None
+    ) -> Optional[Message]:
         """
         Add a message to a session.
 
@@ -176,7 +177,7 @@ class SessionManager:
                 return True
             return False
 
-    def get_session_info(self, session_id: str) -> SessionInfo | None:
+    def get_session_info(self, session_id: str) -> Optional[SessionInfo]:
         """
         Get session information without full message history.
 
@@ -200,7 +201,7 @@ class SessionManager:
                 is_active=session.is_active,
             )
 
-    def get_all_sessions(self) -> list[SessionInfo]:
+    def get_all_sessions(self) -> List[SessionInfo]:
         """
         Get information about all sessions.
 

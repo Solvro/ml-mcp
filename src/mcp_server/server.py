@@ -11,7 +11,7 @@ load_dotenv()
 
 mcp = FastMCP("SOLVRO MCP")
 
-rag: RAG | None = None
+rag = None
 
 langfuse = Langfuse(
     secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
@@ -23,7 +23,7 @@ langfuse = Langfuse(
 handler = CallbackHandler()
 
 
-def initialize_rag() -> RAG:
+def initialize_rag():
     """Initialize RAG instance with environment variables."""
     global rag
 
@@ -46,7 +46,7 @@ def initialize_rag() -> RAG:
 
 
 @mcp.tool
-async def knowledge_graph_tool(user_input: str, trace_id: str | None = None) -> str:
+async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     """
     Query the knowledge graph with natural language.
 
@@ -67,7 +67,7 @@ async def knowledge_graph_tool(user_input: str, trace_id: str | None = None) -> 
     return result["answer"]
 
 
-def main() -> None:
+def main():
     """Main entry point for the MCP server."""
     global rag
 
