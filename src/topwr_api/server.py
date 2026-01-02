@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
+from .engine import LLMEngine
 
 load_dotenv()
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Global session manager
 session_manager: SessionManager = None
+llm_engine: LLMEngine = None
 
 
 @asynccontextmanager
@@ -32,6 +34,12 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ToPWR API service...")
     session_manager = SessionManager()
     logger.info("Session manager initialized")
+
+    try:
+        llm_engine = LLMEngine()
+        logger.info("LLM Engine initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize LLM Engine: {e}")
 
     yield
 
@@ -69,7 +77,8 @@ async def root():
 async def health_check():
     """Health check endpoint."""
     stats = session_manager.get_stats()
-    return {"status": "healthy", "session_stats": stats}
+    engine_status = "ready" if llm_engine else "not_initializd"
+    return {"status": "healthy", "session_stats": stats, "llm_engine": engine_status}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
@@ -108,6 +117,42 @@ async def chat(request: ChatRequest):
         )
 
         # TODO: Replace with actual MCP client call
+        if not llm_engine:
+            raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="LLM Engine is not initialized")
+        
+        history_objects = session.get_conversation_history(limit=10)
+        history_dicts = [
+            {"role": msg.role.value, "content": msg.content}
+            for msg in history_objects
+        ]
+
+        ai_response_content = await llm_engine.genetate_response(
+            user_message=request.message,
+            history=history_dicts
+        )
+
+        session_manager.add_message(
+            session_id=session.session_id,
+            role=MessageRole.ASSISTANT,
+            content=ai_response_content,
+            metadata={"source": "pllum-mock-mcp", "model": "gpt-3.5-turbo-pllum"},
+        )
+
+        return ChatResponse(
+            session_id=session.session_id,
+            message=ai_response_content,
+            metadata={"message_count": len(session.messages), "mock_mode": True},
+        )
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing chat request: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}",
+        )
+
         # For now, return mock response
         mock_response = (
             f"[MOCK] Otrzymałem pytanie: '{request.message}'. "
