@@ -5,9 +5,11 @@ import uuid
 
 from dotenv import load_dotenv
 from fastmcp import Client
+from langchain_core.messages import BaseMessage
 from langchain_openai import ChatOpenAI
 from langfuse import Langfuse, observe
 from langfuse.langchain import CallbackHandler
+from mcp.types import ContentBlock
 
 load_dotenv()
 
@@ -32,9 +34,9 @@ handler = CallbackHandler()
 @observe(name="Knowledge Graph Tool Query")
 async def get_knowledge_graph_data(
     user_input: str,
-    trace_id: str = None,
-    **langfuse_kwargs,
-):
+    trace_id: str | None = None,
+    **langfuse_kwargs: dict,
+) -> list[ContentBlock]:
     async with client:
         result = await client.call_tool(
             "knowledge_graph_tool",
@@ -46,7 +48,7 @@ async def get_knowledge_graph_data(
         return result.content
 
 
-async def query_knowledge_graph(user_input: str, trace_id: str = None):
+async def query_knowledge_graph(user_input: str, trace_id: str | None = None) -> BaseMessage:
     """Query the knowledge graph with user input."""
 
     trace_id = str(uuid.uuid4().hex)
@@ -88,7 +90,7 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
     return llm_response
 
 
-def call_knowledge_graph_tool():
+def call_knowledge_graph_tool() -> None:
     """CLI entry point for knowledge graph tool."""
     if len(sys.argv) < 2:
         print("Usage: kg <question>")
