@@ -1,3 +1,4 @@
+import argparse
 import os
 
 from dotenv import load_dotenv
@@ -67,13 +68,22 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     return result["answer"]
 
 
-def main():
+def main() -> None:
     """Main entry point for the MCP server."""
+    parser = argparse.ArgumentParser(description="MCP server")
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", type=int, default=8005)
+    args = parser.parse_args()
+
     global rag
 
     rag = initialize_rag()
 
-    mcp.run(transport="http", port=8005)
+    mcp.run(
+        transport="http",
+        host=args.host,
+        port=args.port,
+    )
 
 
 if __name__ == "__main__":
