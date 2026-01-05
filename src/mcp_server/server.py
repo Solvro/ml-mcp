@@ -67,14 +67,14 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     return result["answer"]
 
 
-def main():
+def main(port: int, host: str) -> None:
     """Main entry point for the MCP server."""
     global rag
 
     rag = initialize_rag()
 
-    mcp.run(transport="http", port=8005)
+    mcp.run(transport="http", port=port, host=host)
 
 
 if __name__ == "__main__":
-    main()
+    main(port=8005, host="0.0.0.0")
