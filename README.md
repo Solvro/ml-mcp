@@ -76,7 +76,7 @@ User Query → MCP Client → MCP Server → RAG System → Neo4j Graph DB
 
 - **Multi-threaded Processing**: Configurable thread pool for parallel document processing
 - **PDF Support**: Extract and process PDF documents
-- **Dynamic Graph Schema**: Configurable nodes and relationships via JSON
+- **Dynamic Graph Schema**: Configurable nodes and relationships via yaml
 - **Database Management**: Built-in database clearing and initialization
 
 **Data Pipeline Diagram**
@@ -156,31 +156,99 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 
 ## Configuration
 
-### Graph Schema Configuration
+### Centralized Configuration (`graph_config.yaml`)
 
-Edit `graph_config.json` to define your knowledge graph structure:
+All application settings are centralized in `graph_config.yaml`, including:
 
-```json
-{
-  "nodes": [
-    {
-      "name": "Student",
-      "properties": ["name", "id", "year"]
-    },
-    {
-      "name": "Course",
-      "properties": ["title", "code", "credits"]
-    }
-  ],
-  "relationships": [
-    {
-      "type": "ENROLLED_IN",
-      "source": "Student",
-      "target": "Course",
-      "properties": ["semester", "grade"]
-    }
-  ]
-}
+- **Server Configuration**: MCP server and ToPWR API ports, hosts, and transport
+- **LLM Models**: Model names and temperatures for fast and accurate operations
+- **RAG Settings**: Max results, debug mode
+- **Data Pipeline**: Chunk sizes, overlaps, token limits
+- **Neo4j Database**: Connection settings (with environment variable support)
+- **Observability**: Langfuse configuration
+- **Graph Schema**: Node types and relationship types
+- **Prompts**: All prompt templates used throughout the system
+
+#### Example Configuration
+
+```yaml
+servers:
+  mcp:
+    transport: "http"
+    port: 8005
+    host: "127.0.0.1"
+  topwr_api:
+    host: "0.0.0.0"
+    port: 8000
+    cors_origins: "*"
+
+llm:
+  fast_model:
+    name: "gpt-5-nano"
+    temperature: 0.1
+  accurate_model:
+    name: "gpt-5-mini"
+    temperature: 0
+
+rag:
+  max_results: 5
+  enable_debug: false
+
+data_pipeline:
+  max_chunk_size: 30000
+  chunk_overlap: 200
+  token_limit: 65536
+
+nodes:
+  - Document
+  - Article
+  - Student
+  - Course
+  # ... more node types
+
+relations:
+  - teaches
+  - enrolls_in
+  - attends
+  # ... more relationship types
+
+prompts:
+  - name: final_answer
+    template: |
+      Your prompt template here...
+```
+
+#### Using Configuration in Code
+
+The configuration is accessed via the `config` module:
+
+```python
+from config import get_config, get_prompt
+
+# Get configuration instance
+config = get_config()
+
+# Access nested values with defaults
+model_name = config.get_nested('llm', 'fast_model', 'name', default='gpt-5-nano')
+max_results = config.get_nested('rag', 'max_results', default=5)
+
+# Get formatted prompts with variable injection
+prompt = get_prompt(
+    "final_answer",
+    user_input="What is AI?",
+    data={"answer": "Artificial Intelligence"}
+)
+```
+
+#### Environment Variables
+
+Sensitive credentials are still managed via environment variables (`.env` file):
+
+```yaml
+neo4j:
+  uri: ${NEO4J_URI}
+  username: ${NEO4J_USER}
+  password: ${NEO4J_PASSWORD}
 ```
 
 ## Usage
@@ -242,14 +310,14 @@ uv run pipeline --clear-db
 ```bash
 uv run python src/scripts/data_pipeline/main.py \
   data/ \
-  graph_config.json \
+  graph_config.yaml \
   4 \
   --clear-db
 ```
 
 Parameters:
 - `data/` - Input directory containing PDF files
-- `graph_config.json` - Graph schema configuration
+- `graph_config.yaml` - Graph schema configuration (YAML format)
 - `4` - Number of parallel threads
 - `--clear-db` - (Optional) Clear database before loading
 
@@ -280,7 +348,7 @@ SOLVRO_MCP/
 │   └── docker-compose.yaml  # Neo4j container configuration
 │
 ├── data/                    # Input documents directory
-├── graph_config.json        # Graph schema definition
+├── graph_config.yaml        # Centralized configuration file
 ├── pyproject.toml          # Project dependencies and metadata
 ├── justfile                # Task runner configuration
 └── README.md               # This file
@@ -462,7 +530,7 @@ ImportError: cannot import name 'langfuse_context'
 Adjust parallel processing threads in the pipeline:
 
 ```bash
-uv run python src/scripts/data_pipeline/main.py data/ graph_config.json 8
+uv run python src/scripts/data_pipeline/main.py data/ graph_config.yaml 8
 ```
 
 Recommended thread counts:
@@ -477,14 +545,19 @@ Recommended thread counts:
 
 ### LLM Configuration
 
-Adjust model parameters in `rag.py`:
+LLM settings are configured in `graph_config.yaml`:
 
-```python
-self.fast_llm = BaseChatOpenAI(
-    model="gpt-5-nano",
-    temperature=0.1,  # Lower = more deterministic
-)
+```yaml
+llm:
+  fast_model:
+    name: "gpt-5-nano"       # Quick decisions (guardrails)
+    temperature: 0.1          # Slightly creative
+  accurate_model:
+    name: "gpt-5-mini"        # Precise Cypher generation  
+    temperature: 0            # Fully deterministic
 ```
+
+To use different models or adjust parameters, edit the YAML file - no code changes needed.
 ## AI Coding Guidelines
 
 For AI coding assistants and developers, see [.github/agents.md](.github/agents.md) for detailed coding guidelines and patterns.

@@ -29,8 +29,12 @@ build:
 ci: lint test build
     @echo "✅ All CI checks passed!"
 
+generate-models:
+    uv run python src/scripts/generate_models.py
+
 setup:
     uv sync
+    just generate-models
     @echo "✅ Development environment ready!"
     @echo "Copy .env.example to .env and configure your environment variables"
 

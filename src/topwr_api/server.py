@@ -1,12 +1,13 @@
 """FastAPI application for ToPWR MCP integration."""
 
 import logging
-import os
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
+
+from config.config import get_config
 
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
@@ -50,9 +51,16 @@ app = FastAPI(
 )
 
 # Configure CORS
+config = get_config()
+cors_origins = config.servers.topwr_api.cors_origins
+if cors_origins == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [origin.strip() for origin in cors_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -212,8 +220,9 @@ def main():
     """Run the FastAPI server."""
     import uvicorn
 
-    port = int(os.getenv("TOPWR_API_PORT", 8000))
-    host = os.getenv("TOPWR_API_HOST", "0.0.0.0")
+    config = get_config()
+    port = config.servers.topwr_api.port
+    host = config.servers.topwr_api.host
 
     logger.info(f"Starting server on {host}:{port}")
     uvicorn.run(app, host=host, port=port)
