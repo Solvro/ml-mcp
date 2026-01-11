@@ -117,7 +117,25 @@ Using `pip`:
 pip install -e .
 ```
 
-### 3. Set Up Neo4j
+**Quick Setup** (installs dependencies and generates models):
+
+```bash
+just setup
+```
+
+### 3. Generate Configuration Models
+
+Generate Pydantic models from `graph_config.yaml` for type-safe configuration access:
+
+```bash
+just generate-models
+# OR
+uv run python src/scripts/config/generate_models.py
+```
+
+This creates `src/config/config_models.py` with auto-generated type definitions. Re-run this command whenever you modify `graph_config.yaml`.
+
+### 4. Set Up Neo4j
 
 **Option A: Docker Compose**
 
@@ -130,7 +148,7 @@ docker-compose up -d
 
 Follow Neo4j's installation guide for your platform.
 
-### 4. Configure Environment Variables
+### 5. Configure Environment Variables
 
 Create a `.env` file in the project root:
 
@@ -213,9 +231,12 @@ relations:
   # ... more relationship types
 
 prompts:
-  - name: final_answer
-    template: |
-      Your prompt template here...
+  final_answer: |
+    Otrzymujesz informacje w postaci JSON...
+  cypher_search: |
+    Generate ONLY valid Cypher query...
+  guardrails: |
+    Is this about university...
 ```
 
 #### Using Configuration in Code
@@ -223,20 +244,24 @@ prompts:
 The configuration is accessed via the `config` module:
 
 ```python
-from config import get_config, get_prompt
+from src.config.config import get_config
 
 # Get configuration instance
 config = get_config()
 
-# Access nested values with defaults
-model_name = config.get_nested('llm', 'fast_model', 'name', default='gpt-5-nano')
-max_results = config.get_nested('rag', 'max_results', default=5)
+# Access configuration values with full autocomplete
+model_name = config.llm.fast_model.name
+max_results = config.rag.max_results
+server_port = config.servers.mcp.port
 
-# Get formatted prompts with variable injection
-prompt = get_prompt(
-    "final_answer",
+# Access nodes and relations
+nodes = config.nodes  # List of all node types
+relations = config.relations  # List of all relationship types
+
+# Format prompts with variables
+prompt = config.prompts.final_answer.format(
     user_input="What is AI?",
-    data={"answer": "Artificial Intelligence"}
+    data="Artificial Intelligence..."
 )
 ```
 
@@ -337,7 +362,13 @@ SOLVRO_MCP/
 │   ├── mcp_client/          # CLI client
 │   │   └── client.py        # Client implementation with Langfuse integration
 │   │
+│   ├── config/              # Configuration management
+│   │   ├── config.py        # Configuration loader (singleton)
+│   │   └── config_models.py # Auto-generated Pydantic models
+│   │
 │   └── scripts/
+│       ├── config/
+│       │   └── generate_models.py  # Config model generator
 │       └── data_pipeline/   # ETL pipeline
 │           ├── main.py      # Pipeline orchestrator
 │           ├── data_pipe.py # Data processing logic
@@ -367,12 +398,36 @@ uv run ruff format src
 uv run ruff check src
 ```
 
-### Configuration
+### Configuration Management
+
+**Regenerating Configuration Models:**
+
+When you modify `graph_config.yaml`, regenerate the Pydantic models for type safety:
+
+```bash
+just generate-models
+# OR
+uv run python src/scripts/config/generate_models.py
+```
+
+This creates `src/config/config_models.py` with auto-generated type definitions and enables full IDE autocomplete.
+
+**Configuration Structure** (in `pyproject.toml`):
 
 **Ruff Settings** (in `pyproject.toml`):
 - Line length: 100 characters
 - Target: Python 3.13
 - Selected rules: E, F, I, N, W
+
+**Configuration Models**:
+
+When you modify `graph_config.yaml`, regenerate the Pydantic models:
+
+```bash
+just generate-models
+```
+
+This ensures type safety and IDE autocomplete for configuration access.
 
 ### Adding New Tools
 
