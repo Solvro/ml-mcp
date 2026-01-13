@@ -5,20 +5,27 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "apscheduler>=3.10.0",
     "dotenv>=0.9.9",
     "fastapi>=0.115.0",
     "fastmcp>=2.12.4",
     "httpx>=0.28.0",
+    "ipykernel>=6.29.0",
     "langchain>=0.3.27",
     "langchain-community>=0.3.31",
     "langchain-neo4j>=0.5.0",
     "langchain-openai>=0.3.35",
+    "langchain-text-splitters>=0.3.0",
     "langfuse>=3.6.2",
     "langgraph>=0.6.10",
     "prefect>=3.6.7",
     "pydantic>=2.10.0",
+    "pydantic_settings",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.0",
     "ruff>=0.14.1",
     "uvicorn>=0.34.0",
+    "psycopg2-binary",
 ]
 
 [project.scripts]

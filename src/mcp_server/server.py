@@ -6,12 +6,13 @@ from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 
 from .tools.knowledge_graph.rag import RAG
-
+from .tools.offers_db.rag import RAG as Karierownik # xd
 load_dotenv()
 
 mcp = FastMCP("SOLVRO MCP")
 
 rag = None
+karierownik = None
 
 langfuse = Langfuse(
     secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
@@ -44,6 +45,14 @@ def initialize_rag():
 
     return rag
 
+def initialize_karierownik():
+    """Initialize Karierownik instance with environment variables."""
+    global karierownik
+
+    karierownik = Karierownik()
+
+    return karierownik
+
 
 @mcp.tool
 async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
@@ -66,12 +75,35 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     # Return the answer directly (already a JSON string from rag.py)
     return result["answer"]
 
+@mcp.tool
+async def karierownik_tool(user_input: str, trace_id: str = None) -> str:
+    """
+    Retrieve internship and apprenticeship offers with natural language.
+
+    This tool searches a vector database containing internship and apprenticeship
+    offers. It should always be used whenever a recommendation of relevant offers
+    is requested.
+
+    Returns:
+    - Ranked list of internship or apprenticeship offers from the vector database
+      that are most semantically similar to the input description, optionally
+      filtered by company inclusion or exclusion.  
+      The returned offer links can later be used with the `get_offer_details` tool
+      to retrieve detailed information about each offer.
+    """
+    if karierownik is None:
+        return "Error: Karierownik not initialized. Please start the server first."
+
+    result = await karierownik.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler)
+    return result["answer"]
 
 def main():
     """Main entry point for the MCP server."""
     global rag
+    global karierownik
 
-    rag = initialize_rag()
+    # rag = initialize_rag()
+    karierownik = initialize_karierownik()
 
     mcp.run(transport="http", port=8005)
 

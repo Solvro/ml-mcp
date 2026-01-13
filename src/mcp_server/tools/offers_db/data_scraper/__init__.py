@@ -1,0 +1,1 @@
+from src.mcp_server.tools.offers_db.data_scraper.data_scraper import DataScraper

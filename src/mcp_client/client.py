@@ -45,11 +45,33 @@ async def get_knowledge_graph_data(
         )
         return result.content
 
+@observe(name="Karierownik Tool Query")
+async def get_karierownik_data(
+    user_input: str,
+    trace_id: str = None,
+    **langfuse_kwargs,
+):
+    async with client:
+        result = await client.call_tool(
+            "karierownik_tool",
+            {
+                "user_input": user_input,
+                "trace_id": trace_id,
+            },
+        )
+        return result.content
+
 
 async def query_knowledge_graph(user_input: str, trace_id: str = None):
     """Query the knowledge graph with user input."""
 
     trace_id = str(uuid.uuid4().hex)
+
+    # data = await get_karierownik_data(
+    #     user_input,
+    #     trace_id,
+    #     session_id=trace_id,
+    # )
 
     data = await get_knowledge_graph_data(
         user_input,
