@@ -5,6 +5,7 @@ from fastmcp import FastMCP
 from langfuse import Langfuse
 from langfuse.langchain import CallbackHandler
 
+from ..config.config import get_config
 from .tools.knowledge_graph.rag import RAG
 
 load_dotenv()
@@ -27,7 +28,11 @@ def initialize_rag():
     """Initialize RAG instance with environment variables."""
     global rag
 
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
+    api_key = (
+        os.environ.get("OPENAI_API_KEY")
+        or os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+    )
     neo4j_uri = os.environ.get("NEO4J_URI")
     neo4j_username = os.environ.get("NEO4J_USER")
     neo4j_password = os.environ.get("NEO4J_PASSWORD")
@@ -73,7 +78,9 @@ def main():
 
     rag = initialize_rag()
 
-    mcp.run(transport="http", port=8005)
+    config = get_config()
+
+    mcp.run(transport=config.servers.mcp.transport, port=config.servers.mcp.port)
 
 
 if __name__ == "__main__":

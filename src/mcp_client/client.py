@@ -5,20 +5,42 @@ import uuid
 
 from dotenv import load_dotenv
 from fastmcp import Client
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langfuse import Langfuse, observe
 from langfuse.langchain import CallbackHandler
 
+from ..config.config import get_config
+
 load_dotenv()
 
+config = get_config()
+mcp_host = config.servers.mcp.host
+mcp_port = config.servers.mcp.port
+mcp_transport = config.servers.mcp.transport
+mcp_url = f"{mcp_transport}://{mcp_host}:{mcp_port}/mcp"
 
-client = Client("http://localhost:8005/mcp")
+client = Client(mcp_url)
 
-llm = ChatOpenAI(
-    model_name="pllum",
-    base_url="https://services.clarin-pl.eu/api/v1/oapi",
-    api_key=os.getenv("CLARIN_API_KEY"),
-)
+clarin_api_key = os.getenv("CLARIN_API_KEY")
+google_api_key = os.getenv("GOOGLE_API_KEY")
+
+if clarin_api_key:
+    llm = ChatOpenAI(
+        model_name=config.llm.clarin.name,
+        base_url=config.llm.clarin.base_url,
+        api_key=clarin_api_key,
+    )
+elif google_api_key:
+    llm = ChatGoogleGenerativeAI(
+        model=config.llm.gemini.name,
+        google_api_key=google_api_key,
+        temperature=1.0,
+    )
+else:
+    raise ValueError(
+        "No LLM API key found. Please set either CLARIN_API_KEY or GOOGLE_API_KEY in your .env file"
+    )
 
 langfuse = Langfuse(
     secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
@@ -57,21 +79,7 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
         session_id=trace_id,
     )
 
-    final_prompt = f"""Otrzymujesz informacje w postaci JSON w od innego LLM
-    z danymi pochodzącymi z bazy wiedzy.
-
-    Pytanie użytkownika: {user_input}
-
-    Informacje z bazy wiedzy (w formacie JSON):
-    {data}
-
-    Twoim zadaniem jest odpowiedzieć użytkownikowi na pytanie w oparciu
-    o te informacje - musisz wykorzystywać wszystkie dane z JSONa,
-    aby udzielić kompletnej odpowiedzi.
-    Odpowiedz w języku pytania, w sposób naturalny i zwięzły.
-    Jeśli nie dostaniesz informacji na temat pytania,
-    udziel odpowiedzi z wiedzy ogólnej na dany temat.
-    """
+    final_prompt = config.prompts.final_answer.format(user_input=user_input, data=data)
 
     llm_response = await llm.ainvoke(
         final_prompt,

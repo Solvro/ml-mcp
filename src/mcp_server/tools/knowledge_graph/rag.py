@@ -1,13 +1,16 @@
 import json
+import os
 from typing import Any, Dict
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
 
+from ....config.config import get_config
 from .graph_visualizer import GraphVisualizer
 from .state import State
 
@@ -21,8 +24,8 @@ class RAG:
         neo4j_url: str,
         neo4j_username: str,
         neo4j_password: str,
-        enable_debug: bool = False,
-        max_results: int = 5,
+        enable_debug: bool = None,
+        max_results: int = None,
     ):
         """
         Initialize RAG system with API keys and database credentials.
@@ -35,21 +38,39 @@ class RAG:
             enable_debug: Enable debug output (default: False)
             max_results: Maximum number of results from Neo4j (default: 5)
         """
+        config = get_config()
+
         self.api_key = api_key
-        self.enable_debug = enable_debug
-        self.max_results = max_results
+        self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
+        self.max_results = max_results if max_results is not None else config.rag.max_results
 
-        self.fast_llm = BaseChatOpenAI(
-            model="gpt-5-nano",
-            api_key=api_key,
-            temperature=0.1,
-        )
+        # Check for non-empty API keys
+        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
 
-        self.cypher_llm = BaseChatOpenAI(
-            model="gpt-5-mini",
-            api_key=api_key,
-            temperature=0,
-        )
+        if openai_key or deepseek_key:
+            self.fast_llm = BaseChatOpenAI(
+                model=config.llm.fast_model.name,
+                api_key=api_key,
+                temperature=config.llm.fast_model.temperature,
+            )
+
+            self.cypher_llm = BaseChatOpenAI(
+                model=config.llm.accurate_model.name,
+                api_key=api_key,
+                temperature=config.llm.accurate_model.temperature,
+            )
+        else:
+            self.fast_llm = ChatGoogleGenerativeAI(
+                model=config.llm.gemini.name,
+                google_api_key=api_key,
+                temperature=1.0,
+            )
+            self.cypher_llm = ChatGoogleGenerativeAI(
+                model=config.llm.gemini.name,
+                google_api_key=api_key,
+                temperature=1.0,
+            )
 
         self._initialize_prompt_templates()
 
@@ -57,7 +78,7 @@ class RAG:
             url=neo4j_url,
             username=neo4j_username,
             password=neo4j_password,
-            database="neo4j",
+            database=config.database.name,
         )
 
         self._cached_schema = None
@@ -71,7 +92,39 @@ class RAG:
     def schema(self):
         """Cached database schema to avoid repeated fetches"""
         if self._cached_schema is None:
-            self._cached_schema = self.database.get_schema
+            db_schema = self.database.get_schema
+
+            # Check if database schema is empty or contains no actual data
+            is_empty = (
+                not db_schema
+                or db_schema.strip() == ""
+                or (
+                    "Node properties:" in db_schema
+                    and "Relationship properties:" in db_schema
+                    and "The relationships:" in db_schema
+                    and db_schema.replace("Node properties:", "")
+                    .replace("Relationship properties:", "")
+                    .replace("The relationships:", "")
+                    .strip()
+                    == ""
+                )
+                or (
+                    db_schema.count(":") <= 3 and len(db_schema) < 100
+                )  # Heuristic for empty schema
+            )
+
+            if is_empty:
+                # Database schema is empty, fallback to config
+                config = get_config()
+                nodes_str = ", ".join(config.nodes)
+                relations_str = ", ".join(config.relations)
+                self._cached_schema = f"""
+                Available Node Labels: {nodes_str}\n\n
+                Available Relationship Types: {relations_str}
+                """
+            else:
+                # Use schema from database
+                self._cached_schema = db_schema
         return self._cached_schema
 
     def get_graph(self):
@@ -80,26 +133,14 @@ class RAG:
 
     def _initialize_prompt_templates(self):
         """Initialize all prompt templates used in the RAG pipeline."""
+        config = get_config()
 
         self.generate_cypher_template = PromptTemplate(
-            input_variables=["user_question", "schema"],
-            template="""Generate ONLY valid Cypher query. No explanations.
-
-            Schema: {schema}
-            Question: {user_question}
-
-            Cypher:""",
+            input_variables=["user_question", "schema"], template=config.prompts.cypher_search
         )
 
         self.guard_rails_template = PromptTemplate(
-            input_variables=["user_question"],
-            template="""Is this about Wroclaw University of Science and Technology
-                    (or university at all) or about another topic?
-                    Answer ONLY: "generate_cypher" or "end"
-
-                    Question: {user_question}
-                    Answer:
-                    """,
+            input_variables=["user_question"], template=config.prompts.guardrails
         )
 
     def _build_processing_graph(self):

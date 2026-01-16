@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import sys
@@ -6,21 +5,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from dotenv import load_dotenv
 
+from config.config import get_config
+
 from .data_pipe import DataPipe
-
-
-def load_config_file(file_path: str) -> dict:
-    """Load and validate configuration from JSON file."""
-    try:
-        with open(file_path, "r") as f:
-            config = json.load(f)
-        return config
-    except FileNotFoundError:
-        logging.error(f"Configuration file not found: {file_path}")
-        raise
-    except json.JSONDecodeError:
-        logging.error(f"Invalid JSON in configuration file: {file_path}")
-        raise
 
 
 def process_chunk(chunk: str, pipe: DataPipe) -> str:
@@ -37,16 +24,13 @@ def process_chunk(chunk: str, pipe: DataPipe) -> str:
 
 
 def main():
-    if len(sys.argv) < 4:
-        print(
-            "Usage: python main.py <input_dir> <graph_config.json> <num_threads> [--clear-db]"
-        )
+    if len(sys.argv) < 3:
+        print("Usage: python main.py <input_dir> <num_threads> [--clear-db]")
         sys.exit(1)
 
     input_dir = sys.argv[1]
-    config_path = sys.argv[2]
     try:
-        num_threads = int(sys.argv[3])
+        num_threads = int(sys.argv[2])
         if num_threads < 1:
             raise ValueError("Number of threads must be positive")
     except ValueError as e:
@@ -57,13 +41,9 @@ def main():
 
     load_dotenv()
 
-    try:
-        config = load_config_file(config_path)
-        nodes = config.get("nodes", [])
-        relations = config.get("relationships", [])
-    except Exception as e:
-        logging.error(f"Failed to load configuration: {str(e)}")
-        return
+    config = get_config()
+    nodes = config.nodes
+    relations = config.relations
 
     try:
         pipe = DataPipe(
@@ -92,9 +72,7 @@ def main():
             logging.error("No documents were loaded from the input directory")
             return
 
-        logging.info(
-            f"Processing {len(pipe.docs_data)} chunks using {num_threads} threads"
-        )
+        logging.info(f"Processing {len(pipe.docs_data)} chunks using {num_threads} threads")
 
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             futures = []
@@ -119,7 +97,5 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     main()

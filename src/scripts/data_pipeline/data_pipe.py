@@ -5,6 +5,8 @@ from typing import List
 from langchain_neo4j import Neo4jGraph
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from config.config import get_config
+
 from .llm_pipe import LLMPipe
 from .pdf_loader import PDFLoader
 
@@ -18,9 +20,17 @@ class DataPipe:
         api_key: str = None,
         nodes: List[str] = None,
         relations: List[str] = None,
-        max_chunk_size: int = 30000,
-        chunk_overlap: int = 200,
+        max_chunk_size: int = None,
+        chunk_overlap: int = None,
     ):
+        config = get_config()
+
+        # Apply config defaults
+        if max_chunk_size is None:
+            max_chunk_size = config.data_pipeline.max_chunk_size
+        if chunk_overlap is None:
+            chunk_overlap = config.data_pipeline.chunk_overlap
+
         self.docs_data = []
 
         if not url:
