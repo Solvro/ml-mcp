@@ -88,6 +88,19 @@ class RAG:
 
         self.handler = None
 
+    def _get_invoke_config(self, trace_id: str, tags: list, run_name: str) -> dict:
+        """Build invoke config with optional callbacks."""
+        config = {
+            "metadata": {
+                "langfuse_session_id": trace_id,
+                "langfuse_tags": tags,
+                "run_name": run_name,
+            },
+        }
+        if self.handler is not None:
+            config["callbacks"] = [self.handler]
+        return config
+
     @property
     def schema(self):
         """Cached database schema to avoid repeated fetches"""
@@ -136,7 +149,8 @@ class RAG:
         config = get_config()
 
         self.generate_cypher_template = PromptTemplate(
-            input_variables=["user_question", "schema"], template=config.prompts.cypher_search
+            input_variables=["user_question", "schema"],
+            template=config.prompts.cypher_search,
         )
 
         self.guard_rails_template = PromptTemplate(
@@ -203,14 +217,11 @@ class RAG:
                 "user_question": state["user_question"],
                 "schema": self.schema,
             },
-            config={
-                "callbacks": [self.handler],
-                "metadata": {
-                    "langfuse_session_id": state["trace_id"],
-                    "langfuse_tags": ["knowledge_graph", "generated_cypher"],
-                    "run_name": "Generate Cypher",
-                },
-            },
+            config=self._get_invoke_config(
+                trace_id=state["trace_id"],
+                tags=["knowledge_graph", "generated_cypher"],
+                run_name="Generate Cypher",
+            ),
         )
 
         return {"generated_cypher": generated_cypher}
@@ -260,14 +271,11 @@ class RAG:
         guardrail_output = (
             guardrails_chain.invoke(
                 {"user_question": state["user_question"]},
-                config={
-                    "callbacks": [self.handler],
-                    "metadata": {
-                        "langfuse_session_id": state["trace_id"],
-                        "langfuse_tags": ["knowledge_graph", "guardrails"],
-                        "run_name": "Guardrails",
-                    },
-                },
+                config=self._get_invoke_config(
+                    trace_id=state["trace_id"],
+                    tags=["knowledge_graph", "guardrails"],
+                    run_name="Guardrails",
+                ),
             )
             .strip()
             .lower()

@@ -2,8 +2,6 @@ import os
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
-from langfuse import Langfuse
-from langfuse.langchain import CallbackHandler
 
 from ..config.config import get_config
 from .tools.knowledge_graph.rag import RAG
@@ -13,15 +11,29 @@ load_dotenv()
 mcp = FastMCP("SOLVRO MCP")
 
 rag = None
+langfuse = None
+handler = None
 
-langfuse = Langfuse(
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-    host=os.getenv("LANGFUSE_HOST"),
-)
+# Initialize Langfuse only if credentials are configured
+_langfuse_secret = os.getenv("LANGFUSE_SECRET_KEY")
+_langfuse_public = os.getenv("LANGFUSE_PUBLIC_KEY")
+_langfuse_host = os.getenv("LANGFUSE_HOST")
 
+if _langfuse_secret and _langfuse_public:
+    try:
+        from langfuse import Langfuse
+        from langfuse.langchain import CallbackHandler
 
-handler = CallbackHandler()
+        langfuse = Langfuse(
+            secret_key=_langfuse_secret,
+            public_key=_langfuse_public,
+            host=_langfuse_host,
+        )
+        handler = CallbackHandler()
+    except Exception as e:
+        print(f"Warning: Failed to initialize Langfuse: {e}")
+else:
+    print("Langfuse credentials not configured. Tracing disabled.")
 
 
 def initialize_rag():
@@ -74,13 +86,18 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
 
 def main():
     """Main entry point for the MCP server."""
+    import os
+
     global rag
 
     rag = initialize_rag()
 
     config = get_config()
 
-    mcp.run(transport=config.servers.mcp.transport, port=config.servers.mcp.port)
+    # Use 0.0.0.0 in Docker, config host otherwise
+    host = os.getenv("MCP_BIND_HOST", config.servers.mcp.host)
+
+    mcp.run(transport=config.servers.mcp.transport, host=host, port=config.servers.mcp.port)
 
 
 if __name__ == "__main__":
