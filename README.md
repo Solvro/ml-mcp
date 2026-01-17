@@ -18,7 +18,13 @@
 
 ---
 
-## Features
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  ToPWR API  │────▶│  MCP Server │────▶│    Neo4j    │
+│   :8000     │     │    :8005    │     │    :7687    │
+└─────────────┘     └─────────────┘     └─────────────┘
+     FastAPI           FastMCP          Knowledge Graph
+```
 
 - **Intelligent Query Routing** - Guardrails system determines query relevance
 - **Natural Language to Cypher** - Converts questions to graph queries
@@ -71,6 +77,7 @@ The heart of the system is a LangGraph-based RAG pipeline that intelligently pro
 </p>
 
 **Pipeline Flow:**
+
 1. **Guardrails** - Fast LLM determines if query is relevant to knowledge base
 2. **Cypher Generation** - Accurate LLM converts natural language to Cypher query
 3. **Retrieval** - Execute query against Neo4j knowledge graph
@@ -85,6 +92,7 @@ Separate ETL pipeline for ingesting documents into the knowledge graph:
 </p>
 
 **Pipeline Steps:**
+
 1. **Document Loading** - PDF and text document ingestion
 2. **Text Extraction** - OCR and content extraction
 3. **LLM Processing** - Generate Cypher queries from content
@@ -169,6 +177,7 @@ curl -X POST http://localhost:8000/api/chat \
 ```
 
 **Response:**
+
 ```json
 {
   "session_id": "abc123",
