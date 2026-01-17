@@ -18,14 +18,14 @@
 
 ---
 
-## ✨ Features
+## Features
 
-- 🧠 **Intelligent Query Routing** - Guardrails system determines query relevance
-- 🔍 **Natural Language to Cypher** - Converts questions to graph queries
-- 📊 **Knowledge Graph RAG** - Retrieval-Augmented Generation with Neo4j
-- 🔗 **MCP Protocol** - Standard Model Context Protocol interface
-- 📈 **Observability** - Optional Langfuse tracing integration
-- 🐳 **Docker Ready** - One command deployment
+- **Intelligent Query Routing** - Guardrails system determines query relevance
+- **Natural Language to Cypher** - Converts questions to graph queries
+- **Knowledge Graph RAG** - Retrieval-Augmented Generation with Neo4j
+- **MCP Protocol** - Standard Model Context Protocol interface
+- **Observability** - Optional Langfuse tracing integration
+- **Docker Ready** - One command deployment
 
 ---
 
