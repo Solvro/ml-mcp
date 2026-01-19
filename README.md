@@ -76,7 +76,7 @@ User Query → MCP Client → MCP Server → RAG System → Neo4j Graph DB
 
 - **Multi-threaded Processing**: Configurable thread pool for parallel document processing
 - **PDF Support**: Extract and process PDF documents
-- **Dynamic Graph Schema**: Configurable nodes and relationships via JSON
+- **Dynamic Graph Schema**: Configurable nodes and relationships via yaml
 - **Database Management**: Built-in database clearing and initialization
 
 **Data Pipeline Diagram**
@@ -117,7 +117,25 @@ Using `pip`:
 pip install -e .
 ```
 
-### 3. Set Up Neo4j
+**Quick Setup** (installs dependencies and generates models):
+
+```bash
+just setup
+```
+
+### 3. Generate Configuration Models
+
+Generate Pydantic models from `graph_config.yaml` for type-safe configuration access:
+
+```bash
+just generate-models
+# OR
+uv run python src/scripts/config/generate_models.py
+```
+
+This creates `src/config/config_models.py` with auto-generated type definitions. Re-run this command whenever you modify `graph_config.yaml`.
+
+### 4. Set Up Neo4j
 
 **Option A: Docker Compose**
 
@@ -130,7 +148,7 @@ docker-compose up -d
 
 Follow Neo4j's installation guide for your platform.
 
-### 4. Configure Environment Variables
+### 5. Configure Environment Variables
 
 Create a `.env` file in the project root:
 
@@ -156,31 +174,106 @@ LANGFUSE_HOST=https://cloud.langfuse.com
 
 ## Configuration
 
-### Graph Schema Configuration
+### Centralized Configuration (`graph_config.yaml`)
 
-Edit `graph_config.json` to define your knowledge graph structure:
+All application settings are centralized in `graph_config.yaml`, including:
 
-```json
-{
-  "nodes": [
-    {
-      "name": "Student",
-      "properties": ["name", "id", "year"]
-    },
-    {
-      "name": "Course",
-      "properties": ["title", "code", "credits"]
-    }
-  ],
-  "relationships": [
-    {
-      "type": "ENROLLED_IN",
-      "source": "Student",
-      "target": "Course",
-      "properties": ["semester", "grade"]
-    }
-  ]
-}
+- **Server Configuration**: MCP server and ToPWR API ports, hosts, and transport
+- **LLM Models**: Model names and temperatures for fast and accurate operations
+- **RAG Settings**: Max results, debug mode
+- **Data Pipeline**: Chunk sizes, overlaps, token limits
+- **Neo4j Database**: Connection settings (with environment variable support)
+- **Observability**: Langfuse configuration
+- **Graph Schema**: Node types and relationship types
+- **Prompts**: All prompt templates used throughout the system
+
+#### Example Configuration
+
+```yaml
+servers:
+  mcp:
+    transport: "http"
+    port: 8005
+    host: "127.0.0.1"
+  topwr_api:
+    host: "0.0.0.0"
+    port: 8000
+    cors_origins: "*"
+
+llm:
+  fast_model:
+    name: "gpt-5-nano"
+    temperature: 0.1
+  accurate_model:
+    name: "gpt-5-mini"
+    temperature: 0
+
+rag:
+  max_results: 5
+  enable_debug: false
+
+data_pipeline:
+  max_chunk_size: 30000
+  chunk_overlap: 200
+  token_limit: 65536
+
+nodes:
+  - Document
+  - Article
+  - Student
+  - Course
+  # ... more node types
+
+relations:
+  - teaches
+  - enrolls_in
+  - attends
+  # ... more relationship types
+
+prompts:
+  final_answer: |
+    Otrzymujesz informacje w postaci JSON...
+  cypher_search: |
+    Generate ONLY valid Cypher query...
+  guardrails: |
+    Is this about university...
+```
+
+#### Using Configuration in Code
+
+The configuration is accessed via the `config` module:
+
+```python
+from src.config.config import get_config
+
+# Get configuration instance
+config = get_config()
+
+# Access configuration values with full autocomplete
+model_name = config.llm.fast_model.name
+max_results = config.rag.max_results
+server_port = config.servers.mcp.port
+
+# Access nodes and relations
+nodes = config.nodes  # List of all node types
+relations = config.relations  # List of all relationship types
+
+# Format prompts with variables
+prompt = config.prompts.final_answer.format(
+    user_input="What is AI?",
+    data="Artificial Intelligence..."
+)
+```
+
+#### Environment Variables
+
+Sensitive credentials are still managed via environment variables (`.env` file):
+
+```yaml
+neo4j:
+  uri: ${NEO4J_URI}
+  username: ${NEO4J_USER}
+  password: ${NEO4J_PASSWORD}
 ```
 
 ## Usage
@@ -242,14 +335,14 @@ uv run pipeline --clear-db
 ```bash
 uv run python src/scripts/data_pipeline/main.py \
   data/ \
-  graph_config.json \
+  graph_config.yaml \
   4 \
   --clear-db
 ```
 
 Parameters:
 - `data/` - Input directory containing PDF files
-- `graph_config.json` - Graph schema configuration
+- `graph_config.yaml` - Graph schema configuration (YAML format)
 - `4` - Number of parallel threads
 - `--clear-db` - (Optional) Clear database before loading
 
@@ -269,7 +362,13 @@ SOLVRO_MCP/
 │   ├── mcp_client/          # CLI client
 │   │   └── client.py        # Client implementation with Langfuse integration
 │   │
+│   ├── config/              # Configuration management
+│   │   ├── config.py        # Configuration loader (singleton)
+│   │   └── config_models.py # Auto-generated Pydantic models
+│   │
 │   └── scripts/
+│       ├── config/
+│       │   └── generate_models.py  # Config model generator
 │       └── data_pipeline/   # ETL pipeline
 │           ├── main.py      # Pipeline orchestrator
 │           ├── data_pipe.py # Data processing logic
@@ -280,7 +379,7 @@ SOLVRO_MCP/
 │   └── docker-compose.yaml  # Neo4j container configuration
 │
 ├── data/                    # Input documents directory
-├── graph_config.json        # Graph schema definition
+├── graph_config.yaml        # Centralized configuration file
 ├── pyproject.toml          # Project dependencies and metadata
 ├── justfile                # Task runner configuration
 └── README.md               # This file
@@ -299,12 +398,36 @@ uv run ruff format src
 uv run ruff check src
 ```
 
-### Configuration
+### Configuration Management
+
+**Regenerating Configuration Models:**
+
+When you modify `graph_config.yaml`, regenerate the Pydantic models for type safety:
+
+```bash
+just generate-models
+# OR
+uv run python src/scripts/config/generate_models.py
+```
+
+This creates `src/config/config_models.py` with auto-generated type definitions and enables full IDE autocomplete.
+
+**Configuration Structure** (in `pyproject.toml`):
 
 **Ruff Settings** (in `pyproject.toml`):
 - Line length: 100 characters
 - Target: Python 3.13
 - Selected rules: E, F, I, N, W
+
+**Configuration Models**:
+
+When you modify `graph_config.yaml`, regenerate the Pydantic models:
+
+```bash
+just generate-models
+```
+
+This ensures type safety and IDE autocomplete for configuration access.
 
 ### Adding New Tools
 
@@ -462,7 +585,7 @@ ImportError: cannot import name 'langfuse_context'
 Adjust parallel processing threads in the pipeline:
 
 ```bash
-uv run python src/scripts/data_pipeline/main.py data/ graph_config.json 8
+uv run python src/scripts/data_pipeline/main.py data/ graph_config.yaml 8
 ```
 
 Recommended thread counts:
@@ -477,14 +600,19 @@ Recommended thread counts:
 
 ### LLM Configuration
 
-Adjust model parameters in `rag.py`:
+LLM settings are configured in `graph_config.yaml`:
 
-```python
-self.fast_llm = BaseChatOpenAI(
-    model="gpt-5-nano",
-    temperature=0.1,  # Lower = more deterministic
-)
+```yaml
+llm:
+  fast_model:
+    name: "gpt-5-nano"       # Quick decisions (guardrails)
+    temperature: 0.1          # Slightly creative
+  accurate_model:
+    name: "gpt-5-mini"        # Precise Cypher generation  
+    temperature: 0            # Fully deterministic
 ```
+
+To use different models or adjust parameters, edit the YAML file - no code changes needed.
 ## AI Coding Guidelines
 
 For AI coding assistants and developers, see [.github/agents.md](.github/agents.md) for detailed coding guidelines and patterns.

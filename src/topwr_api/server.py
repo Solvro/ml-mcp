@@ -8,6 +8,10 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.config.config import get_config
+from src.mcp_client.client import Agent
+from src.mcp_server.tools.offers_db.scheduler import start_scheduler, stop_scheduler
+
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
 
@@ -19,24 +23,55 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Global session manager
+# Global session manager and agent
 session_manager: SessionManager = None
+agent: Agent = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
-    global session_manager
+    global session_manager, agent
 
     # Startup
     logger.info("Starting ToPWR API service...")
     session_manager = SessionManager()
     logger.info("Session manager initialized")
 
+    # Initialize agent with config
+    # Agent will construct MCP server URL from config if not provided
+    # Allow override via environment variable for Docker networking
+    mcp_server_url = os.getenv("MCP_SERVER_URL")
+    agent = Agent(mcp_server_url=mcp_server_url)
+    
+    # Log the actual MCP server URL being used
+    config = get_config()
+    if mcp_server_url:
+        logger.info(f"Agent initialized with MCP server at {mcp_server_url} (from env)")
+    else:
+        mcp_host = config.servers.mcp.host
+        mcp_port = config.servers.mcp.port
+        logger.info(f"Agent initialized with MCP server at http://{mcp_host}:{mcp_port}/mcp (from config)")
+
+    # Start the offers scraping scheduler (runs daily at 2:00 AM)
+    try:
+        start_scheduler()
+        logger.info("Offers scraping scheduler started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start offers scraping scheduler: {e}", exc_info=True)
+
     yield
 
     # Shutdown
     logger.info("Shutting down ToPWR API service...")
+    
+    # Stop the scheduler
+    try:
+        stop_scheduler()
+        logger.info("Offers scraping scheduler stopped")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler: {e}", exc_info=True)
+    
     stats = session_manager.get_stats()
     logger.info(f"Final stats: {stats}")
 
@@ -50,9 +85,16 @@ app = FastAPI(
 )
 
 # Configure CORS
+cors_config = get_config()
+cors_origins = cors_config.servers.topwr_api.cors_origins
+if cors_origins == "*":
+    allow_origins = ["*"]
+else:
+    allow_origins = [origin.strip() for origin in cors_origins.split(",")]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
+    allow_origins=allow_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -107,25 +149,34 @@ async def chat(request: ChatRequest):
             metadata=request.metadata,
         )
 
-        # TODO: Replace with actual MCP client call
-        # For now, return mock response
-        mock_response = (
-            f"[MOCK] Otrzymałem pytanie: '{request.message}'. "
-            "To jest tymczasowa odpowiedź. Integracja z MCP będzie dodana wkrótce."
+        # Get conversation history for context
+        conversation_messages = session.get_conversation_history()
+
+        # Process messages through agent
+        try:
+            ai_response = await agent.process_messages(
+                messages=conversation_messages,
+                trace_id=session.session_id,
+            )
+        except Exception as e:
+            logger.error(f"Error processing messages with agent: {str(e)}", exc_info=True)
+            ai_response = (
+                "Przepraszam, wystąpił błąd podczas przetwarzania Twojego pytania. "
+                "Spróbuj ponownie później."
         )
 
         # Add assistant response to conversation
         session_manager.add_message(
             session_id=session.session_id,
             role=MessageRole.ASSISTANT,
-            content=mock_response,
-            metadata={"source": "mock"},
+            content=ai_response,
+            metadata={"source": "agent", "trace_id": session.session_id},
         )
 
         return ChatResponse(
             session_id=session.session_id,
-            message=mock_response,
-            metadata={"message_count": len(session.messages), "mock_mode": True},
+            message=ai_response,
+            metadata={"message_count": len(session.messages)},
         )
 
     except HTTPException:
@@ -212,8 +263,9 @@ def main():
     """Run the FastAPI server."""
     import uvicorn
 
-    port = int(os.getenv("TOPWR_API_PORT", 8000))
-    host = os.getenv("TOPWR_API_HOST", "0.0.0.0")
+    config = get_config()
+    port = config.servers.topwr_api.port
+    host = config.servers.topwr_api.host
 
     logger.info(f"Starting server on {host}:{port}")
     uvicorn.run(app, host=host, port=port)

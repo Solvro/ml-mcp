@@ -1,88 +1,100 @@
+import json
 import os
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
-from langfuse import Langfuse
-from langfuse.langchain import CallbackHandler
 
-from .tools.knowledge_graph.rag import RAG
-from .tools.offers_db.rag import RAG as Karierownik # xd
+from ..config.config import get_config
+from .tools.knowledge_graph.tool import Tool as KnowledgeGraphTool
+from .tools.offers_db.tool import Tool as OffersDBTool
+
 load_dotenv()
 
 mcp = FastMCP("SOLVRO MCP")
 
-rag = None
-karierownik = None
-
-langfuse = Langfuse(
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-    host=os.getenv("LANGFUSE_HOST"),
-)
+knowledge_graph_tool = None
+offers_db_tool = None
 
 
-handler = CallbackHandler()
+def initialize_knowledge_graph_tool():
+    """Initialize Knowledge Graph Tool instance with environment variables."""
+    global knowledge_graph_tool
 
 
-def initialize_rag():
-    """Initialize RAG instance with environment variables."""
-    global rag
+def initialize_offers_db_tool():
+    """Initialize Offers DB Tool instance."""
+    global offers_db_tool
 
-    api_key = os.environ.get("OPENAI_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
-    neo4j_uri = os.environ.get("NEO4J_URI")
-    neo4j_username = os.environ.get("NEO4J_USER")
-    neo4j_password = os.environ.get("NEO4J_PASSWORD")
+    offers_db_tool = OffersDBTool()
 
-    if not all([api_key, neo4j_uri, neo4j_username, neo4j_password]):
-        raise ValueError("Missing required environment variables. Check .env file.")
-
-    rag = RAG(
-        api_key=api_key,
-        neo4j_url=neo4j_uri,
-        neo4j_username=neo4j_username,
-        neo4j_password=neo4j_password,
-    )
-
-    return rag
-
-def initialize_karierownik():
-    """Initialize Karierownik instance with environment variables."""
-    global karierownik
-
-    karierownik = Karierownik()
-
-    return karierownik
+    return offers_db_tool
 
 
 @mcp.tool
-async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
+async def knowledge_graph_tool(cypher_query: str) -> str:
     """
-    Query the knowledge graph with natural language.
+    Execute a Cypher query against the Neo4j knowledge graph.
+    This tool should be used when the user asks about the Wrocław University of Science and Technology.
+    It should always be used whenever a question about the university is asked.
 
     Args:
-        user_input: User's question or query
-        trace_id: Optional trace ID for tracking
+        cypher_query: Cypher query string to execute
 
     Returns:
-        AI-generated instructions based on knowledge graph data
+        JSON string with query results
     """
-    if rag is None:
-        return "Error: RAG not initialized. Please start the server first."
+    if knowledge_graph_tool is None:
+        return json.dumps({"error": "Knowledge Graph Tool not initialized. Please start the server first."})
 
-    result = await rag.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler)
-    print(rag.visualizer.draw_mermaid())
+    try:
+        results = await knowledge_graph_tool.ainvoke(cypher_query)
+        return json.dumps(results, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
 
-    # Return the answer directly (already a JSON string from rag.py)
-    return result["answer"]
 
 @mcp.tool
-async def karierownik_tool(user_input: str, trace_id: str = None) -> str:
+async def offers_db_tool(
+    internship_info: str,
+    include_companies: list[str] | None = None,
+    exclude_companies: list[str] | None = None,
+    limit: int = 5,
+    offset: int = 0,
+) -> str:
     """
-    Retrieve internship and apprenticeship offers with natural language.
-
     This tool searches a vector database containing internship and apprenticeship
-    offers. It should always be used whenever a recommendation of relevant offers
-    is requested.
+    offers. Always use this tool when the user asks for offers.
+
+    Parameters:
+    - internship_info: Free-text input describing an internship or apprenticeship,
+      similar in style to a job posting (e.g., required skills, role, responsibilities).
+      The tool will use this description to find semantically matching offers
+      from the indexed dataset.
+
+    - include_companies: Optional. A list of company names to explicitly include 
+      in the search results.  
+      Use this parameter **only when the user explicitly requests offers from one 
+      or more specific companies** (e.g., “show me offers from Sii and Nokia”).  
+      Each listed company name will be used as a filter to include only offers 
+      from those companies.
+
+    - exclude_companies: Optional. A list of company names to explicitly exclude 
+      from the search results.  
+      Use this parameter **only when the user asks to exclude offers from certain 
+      companies** (e.g., “show me offers not from Sii” or “show me offers from 
+      other companies than Nokia”).  
+      Offers from any company in this list will be filtered out.
+
+    - limit: Optional. The maximum number of offers to return (default = 5).  
+      Use this parameter **only if the user explicitly specifies** how many offers 
+      they want to see (e.g., “show me 10 offers”).  
+      Otherwise, do not include it in the call — the default value of 5 will be used automatically.
+
+    - offset: Optional. Used to skip a given number of top-ranked results (default = 0).  
+      Use this parameter **when the user asks for other or new offers** after already 
+      receiving some (e.g., “show me different ones” or “what else do you have?”).  
+      In such cases, pass an offset equal to the number of previously shown offers 
+      (e.g., offset = 5 if the previous call returned 5 offers).
 
     Returns:
     - Ranked list of internship or apprenticeship offers from the vector database
@@ -91,21 +103,41 @@ async def karierownik_tool(user_input: str, trace_id: str = None) -> str:
       The returned offer links can later be used with the `get_offer_details` tool
       to retrieve detailed information about each offer.
     """
-    if karierownik is None:
-        return "Error: Karierownik not initialized. Please start the server first."
+    if offers_db_tool is None:
+        return json.dumps({"error": "Offers DB Tool not initialized. Please start the server first."})
 
-    result = await karierownik.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler)
-    return result["answer"]
+    try:
+        results = await offers_db_tool.ainvoke(
+            internship_info=internship_info,
+            include_companies=include_companies,
+            exclude_companies=exclude_companies,
+            limit=limit,
+            offset=offset,
+        )
+        return json.dumps(results, ensure_ascii=False, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
 
 def main():
     """Main entry point for the MCP server."""
-    global rag
-    global karierownik
+    global knowledge_graph_tool
+    global offers_db_tool
 
-    # rag = initialize_rag()
-    karierownik = initialize_karierownik()
+    # Initialize tools
+    knowledge_graph_tool = initialize_knowledge_graph_tool()
+    offers_db_tool = initialize_offers_db_tool()
 
-    mcp.run(transport="http", port=8005)
+    # Load configuration
+    config = get_config()
+    
+    # Use config for server settings (host can be overridden by env for Docker)
+    host = os.getenv("MCP_SERVER_HOST", config.servers.mcp.host)
+    port = int(os.getenv("MCP_SERVER_PORT", str(config.servers.mcp.port)))
+    transport = config.servers.mcp.transport
+    
+    # Run the MCP server
+    mcp.run(transport=transport, host=host, port=port)
 
 
 if __name__ == "__main__":

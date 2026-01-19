@@ -15,6 +15,67 @@ services:
       - ./postgres/schema.sql:/docker-entrypoint-initdb.d/schema.sql
     networks:
       - mcp_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mcp-server:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    container_name: mcp-server
+    ports:
+      - "8005:8005"
+    environment:
+      - DB_HOST=db
+      - DB_PORT=5432
+      - DB_NAME=mcp
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - MCP_SERVER_HOST=0.0.0.0
+      - MCP_SERVER_PORT=8005
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        uv sync
+        uv run server
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - mcp_network
+    restart: unless-stopped
+
+  topwr-api:
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    container_name: topwr-api
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_SERVER_URL=http://mcp-server:8005/mcp
+      - TOPWR_API_PORT=8000
+      - TOPWR_API_HOST=0.0.0.0
+      - CORS_ORIGINS=*
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    working_dir: /app
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        uv sync
+        uv run topwr-api
+    depends_on:
+      - mcp-server
+    networks:
+      - mcp_network
+    restart: unless-stopped
 
 volumes:
   pgdata:

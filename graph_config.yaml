@@ -1,0 +1,186 @@
+servers:
+  mcp:
+    transport: "http"
+    port: 8005
+    host: "0.0.0.0"  # Use 0.0.0.0 for Docker, can be overridden with MCP_SERVER_HOST env var
+
+  topwr_api:
+    host: "0.0.0.0"
+    port: 8000
+    cors_origins: "*"
+
+rag:
+  max_results: 5
+  enable_debug: false
+
+data_pipeline:
+  max_chunk_size: 30000
+  chunk_overlap: 200
+  token_limit: 65536
+
+llm:
+  fast_model:
+    name: "gpt-5-nano"
+    temperature: 0.1
+  accurate_model:
+    name: "gpt-5-mini"
+    temperature: 0
+  clarin:
+    name: "pllum"
+    base_url: "https://services.clarin-pl.eu/api/v1/oapi"
+  gemini:
+    name: "gemini-2.5-flash-lite"
+
+observability:
+  langfuse:
+    host: ${LANGFUSE_HOST}
+    secret_key: ${LANGFUSE_SECRET_KEY}
+    public_key: ${LANGFUSE_PUBLIC_KEY}
+
+database:
+  name: "neo4j"
+  uri: ${NEO4J_URI}
+  username: ${NEO4J_USER}
+  password: ${NEO4J_PASSWORD}
+
+nodes:
+  - Document
+  - Article
+  - Syllabus
+  - Lecture
+  - Course
+  - Professor
+  - Student
+  - Department
+  - Building
+  - Room
+  - Event
+  - Research
+  - Publication
+  - Conference
+  - Laboratory
+  - Equipment
+  - Project
+  - Grant
+  - Committee
+  - Organization
+  - Website
+  - Resource
+  - Schedule
+  - Assignment
+  - Grade
+  - Degree
+  - Program
+  - Semester
+  - AcademicYear
+  - Institution
+
+relations:
+  - teaches
+  - enrolls_in
+  - attends
+  - conducts
+  - publishes
+  - presents
+  - organizes
+  - participates_in
+  - supervises
+  - researches
+  - funds
+  - hosts
+  - requires
+  - prerequisite_for
+  - belongs_to
+  - located_in
+  - schedules
+  - assigns
+  - evaluates
+  - awards
+  - manages
+  - collaborates_with
+  - cites
+  - references
+  - maintains
+  - develops
+  - supports
+  - coordinates
+  - approves
+  - reviews
+
+prompts:
+  final_answer: |
+    Otrzymujesz informacje w postaci JSON w od innego LLM
+    z danymi pochodzącymi z bazy wiedzy.
+
+    Pytanie użytkownika: {user_input}
+
+    Informacje z bazy wiedzy (w formacie JSON):
+    {data}
+
+    Twoim zadaniem jest odpowiedzieć użytkownikowi na pytanie w oparciu
+    o te informacje - musisz wykorzystywać wszystkie dane z JSONa,
+    aby udzielić kompletnej odpowiedzi.
+    Odpowiedz w języku pytania, w sposób naturalny i zwięzły.
+    Jeśli nie dostaniesz informacji na temat pytania,
+    udziel odpowiedzi z wiedzy ogólnej na dany temat.
+
+  cypher_insert: |
+    Generate Neo4j Cypher statements based EXCLUSIVELY on the provided context.
+    Use ONLY the allowed node types and relation types.
+    DO NOT include any additional text or explanations.
+
+    CONTEXT: {context}
+
+    ALLOWED NODE LABELS: {nodes}
+    ALLOWED RELATIONSHIP TYPES: {relations}
+
+    STRICT RULES:
+    1. OUTPUT MUST:
+       - Contain ONLY executable Cypher statements
+       - Begin with "MERGE"
+       - Separate multiple statements with PIPE character (|)
+       - Use UNIQUE variable names (node1, node2, etc. - never reused)
+       - LIMIT TOKENS TO 65536 TO AVOID ERRORS WITH DEEPSEEK API
+
+    2. FOR NODES:
+       - MERGE each node with unique variable name
+       - Include 'title' and 'context' properties
+       - Replace Polish characters (ą→a, ć→c, ę→e, ł→l, ń→n, ó→o, ś→s, ź→z, ż→z)
+       - Use ONLY ASCII characters
+       - Escape single quotes in text with backslash (\')
+
+    3. FOR RELATIONSHIPS:
+       - MERGE between existing node variables
+       - Use ONLY allowed relationship types
+       - Direction matters (A→B ≠ B→A)
+
+    4. VARIABLE NAMES:
+       - Must be UNIQUE across entire query
+       - Recommended pattern: (node1), (node2), (person1), (dept1), etc.
+       - NEVER reuse variables - this causes errors
+
+    EXAMPLE OUTPUT:
+    MERGE (node1:Person {{title: 'John Smith',
+    context: 'Professor at UW'}})|MERGE (node2:Department
+    {{title: 'Computer Science', context: 'CS department'}})|MERGE
+    (node1)-[:works_in]->(node2)
+
+    OUTPUT MUST BE EXACTLY IN THIS FORMAT:
+    MERGE (...) [|MERGE (...)]* [|MERGE (...)-[:...]->(...)]*
+    NO OTHER TEXT OR CHARACTERS ALLOWED!
+
+  cypher_search: |
+    Generate ONLY valid Cypher query. No explanations.
+
+    Schema: {schema}
+    Question: {user_question}
+
+    Cypher:
+
+  guardrails: |
+    Is this about Wroclaw University of Science and Technology
+    (or university at all) or about another topic?
+    Answer ONLY: "generate_cypher" or "end"
+
+    Question: {user_question}
+    Answer:
