@@ -105,17 +105,52 @@ Separate ETL pipeline for ingesting documents into the knowledge graph:
 Copy `.env.example` to `.env` and configure:
 
 ```env
-# Required - at least one LLM key
-OPENAI_API_KEY=sk-...
-# or
-GOOGLE_API_KEY=...
+########################################
+# LLM / AI Provider Keys
+########################################
 
-# Required - Neo4j
-NEO4J_PASSWORD=your_password
+# OpenAI API key (optional)
+OPENAI_API_KEY=
 
-# Optional - Langfuse tracing
-LANGFUSE_SECRET_KEY=...
-LANGFUSE_PUBLIC_KEY=...
+# DeepSeek API key (optional)
+DEEPSEEK_API_KEY=
+
+# Google Generative AI / PaLM API key (optional)
+GOOGLE_API_KEY=
+
+# CLARIN LLM API key (optional, used by API & client)
+CLARIN_API_KEY=
+
+
+########################################
+# Langfuse Observability
+########################################
+
+LANGFUSE_SECRET_KEY=
+LANGFUSE_PUBLIC_KEY=
+LANGFUSE_HOST=https://cloud.langfuse.com
+
+
+########################################
+# Neo4j Database
+########################################
+
+# URI used by data pipeline, MCP server and graph config
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=
+
+
+########################################
+# MCP Server Networking
+########################################
+
+# Bind host for the MCP server process
+MCP_BIND_HOST=0.0.0.0
+
+# Host/port used by API and MCP client to reach the MCP server
+MCP_HOST=127.0.0.1
+MCP_PORT=8005
 ```
 
 ---
