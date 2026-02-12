@@ -1,0 +1,32 @@
+# MCP Server
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+
+WORKDIR /app
+
+ENV UV_NO_CACHE=1
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --locked --no-dev --compile-bytecode
+
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r mcpuser && useradd -r -g mcpuser mcpuser
+
+COPY --from=builder /app/.venv /app/.venv
+COPY ./src/mcp_server ./src/mcp_server
+COPY ./src/config ./src/config
+COPY ./src/__init__.py ./src/__init__.py
+COPY ./graph_config.yaml ./graph_config.yaml
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER mcpuser
+
+EXPOSE 8005
+
+CMD ["python3", "-m", "src.mcp_server.server"]

@@ -25,7 +25,7 @@ dependencies = [
 ]
 
 [project.scripts]
-pipeline = "src.scripts.data_pipeline.main:main"
+prefect_pipeline = "src.data_pipeline.pipeline:data_pipeline_flow"
 server = "src.mcp_server.server:main"
 kg = "src.mcp_client.client:call_knowledge_graph_tool"
 topwr-api = "src.topwr_api.server:main"

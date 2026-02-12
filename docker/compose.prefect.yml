@@ -1,0 +1,33 @@
+# Prefect Data Pipeline (separate service)
+services:
+  postgres:
+    image: postgres:15
+    container_name: ml-mcp-postgres
+    environment:
+      POSTGRES_USER: prefect
+      POSTGRES_PASSWORD: prefect
+      POSTGRES_DB: prefect
+    volumes:
+      - ../data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U prefect" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  prefect:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.prefect
+    image: ml-mcp-data-pipeline
+    container_name: ml-mcp-prefect
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://prefect:prefect@postgres:5432/prefect"
+      PREFECT_API_URL: "http://0.0.0.0:4200/api"
+    ports:
+      - "4200:4200"
+    restart: unless-stopped

@@ -1,0 +1,32 @@
+# FastAPI Backend (ToPWR API)
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS builder
+
+WORKDIR /app
+
+ENV UV_NO_CACHE=1
+
+COPY pyproject.toml uv.lock ./
+
+RUN uv sync --locked --no-dev --compile-bytecode
+
+FROM python:3.12-slim-bookworm
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
+RUN groupadd -r apiuser && useradd -r -g apiuser apiuser
+
+COPY --from=builder /app/.venv /app/.venv
+COPY ./src/topwr_api ./src/topwr_api
+COPY ./src/config ./src/config
+COPY ./src/__init__.py ./src/__init__.py
+COPY ./graph_config.yaml ./graph_config.yaml
+
+ENV PATH="/app/.venv/bin:$PATH"
+
+USER apiuser
+
+EXPOSE 8000
+
+CMD ["python3", "-m", "uvicorn", "src.topwr_api.server:app", "--host", "0.0.0.0", "--port", "8000"]

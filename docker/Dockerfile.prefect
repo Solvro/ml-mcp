@@ -1,0 +1,24 @@
+# Prefect Data Pipeline
+FROM python:3.11-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential curl git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && pip install prefect==2.*
+
+RUN if [ -f "pyproject.toml" ]; then pip install . ; fi || true
+
+COPY ./src/data_pipeline ./src/data_pipeline
+COPY ./src/config ./src/config
+COPY ./src/__init__.py ./src/__init__.py
+COPY ./graph_config.yaml ./graph_config.yaml
+
+EXPOSE 4200
+
+CMD ["sh", "-c", "prefect server start --host 0.0.0.0 --port 4200"]

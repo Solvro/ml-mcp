@@ -7,16 +7,14 @@ from dotenv import load_dotenv
 from fastmcp import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
-from langfuse import Langfuse, observe
-from langfuse.langchain import CallbackHandler
 
 from ..config.config import get_config
 
 load_dotenv()
 
 config = get_config()
-mcp_host = config.servers.mcp.host
-mcp_port = config.servers.mcp.port
+mcp_host = os.getenv("MCP_HOST", config.servers.mcp.host)
+mcp_port = os.getenv("MCP_PORT", config.servers.mcp.port)
 mcp_transport = config.servers.mcp.transport
 mcp_url = f"{mcp_transport}://{mcp_host}:{mcp_port}/mcp"
 
@@ -42,16 +40,46 @@ else:
         "No LLM API key found. Please set either CLARIN_API_KEY or GOOGLE_API_KEY in your .env file"
     )
 
-langfuse = Langfuse(
-    secret_key=os.getenv("LANGFUSE_SECRET_KEY"),
-    public_key=os.getenv("LANGFUSE_PUBLIC_KEY"),
-    host=os.getenv("LANGFUSE_HOST"),
-)
+# Initialize Langfuse only if credentials are configured
+langfuse = None
+handler = None
+observe = None
 
-handler = CallbackHandler()
+_langfuse_secret = os.getenv("LANGFUSE_SECRET_KEY")
+_langfuse_public = os.getenv("LANGFUSE_PUBLIC_KEY")
+_langfuse_host = os.getenv("LANGFUSE_HOST")
+
+if _langfuse_secret and _langfuse_public:
+    try:
+        from langfuse import Langfuse
+        from langfuse import observe as langfuse_observe
+        from langfuse.langchain import CallbackHandler
+
+        langfuse = Langfuse(
+            secret_key=_langfuse_secret,
+            public_key=_langfuse_public,
+            host=_langfuse_host,
+        )
+        handler = CallbackHandler()
+        observe = langfuse_observe
+    except Exception as e:
+        print(f"Warning: Failed to initialize Langfuse: {e}")
+else:
+    print("Langfuse credentials not configured. Tracing disabled.")
 
 
-@observe(name="Knowledge Graph Tool Query")
+def optional_observe(name: str):
+    """Decorator that applies Langfuse observe if available, otherwise no-op."""
+
+    def decorator(func):
+        if observe is not None:
+            return observe(name=name)(func)
+        return func
+
+    return decorator
+
+
+@optional_observe(name="Knowledge Graph Tool Query")
 async def get_knowledge_graph_data(
     user_input: str,
     trace_id: str = None,
@@ -81,18 +109,20 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
 
     final_prompt = config.prompts.final_answer.format(user_input=user_input, data=data)
 
-    llm_response = await llm.ainvoke(
-        final_prompt,
-        config={
-            "callbacks": [handler],
-            "metadata": {
-                "langfuse_session_id": trace_id,
-                "langfuse_tags": ["mcp_client", "final_answer"],
-                "run_name": "Final Answer",
-            },
+    # Build config with optional handler
+    invoke_config = {
+        "metadata": {
+            "langfuse_session_id": trace_id,
+            "langfuse_tags": ["mcp_client", "final_answer"],
+            "run_name": "Final Answer",
         },
-    )
+    }
+    if handler is not None:
+        invoke_config["callbacks"] = [handler]
 
+    llm_response = await llm.ainvoke(final_prompt, config=invoke_config)
+
+    print(llm_response.content)
     return llm_response
 
 

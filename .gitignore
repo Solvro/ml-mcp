@@ -66,3 +66,7 @@ Thumbs.db
 result
 .result-*
 .direnv/
+
+# uv related files
+*.lock
+.uv/
