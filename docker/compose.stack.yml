@@ -59,6 +59,10 @@ services:
       - mcp_network
     ports:
       - "8000:8000"
+    env_file:
+      - ../.env
+    environment:
+      - MCP_HOST=mcp-server
     depends_on:
       mcp-server:
         condition: service_healthy
@@ -68,6 +72,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  frontend:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.frontend
+    container_name: ml-mcp-frontend
+    networks:
+      - mcp_network
+    ports:
+      - "80:80"
+    depends_on:
+      topwr-api:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   neo4j_data:

@@ -73,10 +73,34 @@ logs-api:
 logs-neo4j:
     docker compose --env-file .env -f docker/compose.stack.yml logs -f neo4j
 
+# View frontend logs
+[group('docker')]
+logs-frontend:
+    docker compose --env-file .env -f docker/compose.stack.yml logs -f frontend
+
 # Remove all containers and volumes
 [group('docker')]
 nuke:
     docker compose --env-file .env -f docker/compose.stack.yml down -v --remove-orphans
+
+# ============================================================================
+# 🌐 FRONTEND (React + Vite + TailwindCSS)
+# ============================================================================
+
+# Install frontend dependencies
+[group('frontend')]
+frontend-install:
+    cd frontend && npm install
+
+# Start frontend dev server (requires running backend on :8000)
+[group('frontend')]
+frontend-dev:
+    cd frontend && npm run dev
+
+# Build frontend for production
+[group('frontend')]
+frontend-build:
+    cd frontend && npm run build
 
 # ============================================================================
 # 📊 PREFECT DATA PIPELINE (separate service)
@@ -106,11 +130,13 @@ pipeline:
 # 🧪 QUALITY & TESTING
 # ============================================================================
 
-# Format and lint code
+# Format and lint code (Python + Frontend)
 [group('quality')]
 lint:
     uv run ruff format src
     uv run ruff check src --fix
+    cd frontend && npm run format
+    cd frontend && npm run lint
 
 # Run tests with coverage
 [group('quality')]
@@ -136,6 +162,7 @@ ci: lint test
 setup:
     uv sync
     just generate-models
+    just frontend-install
     @echo ""
     @echo "✅ Development environment ready!"
     @echo ""

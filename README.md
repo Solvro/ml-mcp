@@ -19,13 +19,14 @@
 ---
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  ToPWR API  │────▶│  MCP Server │────▶│    Neo4j    │
-│   :8000     │     │    :8005    │     │    :7687    │
-└─────────────┘     └─────────────┘     └─────────────┘
-     FastAPI           FastMCP          Knowledge Graph
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Frontend   │────▶│  ToPWR API  │────▶│  MCP Server │────▶│    Neo4j    │
+│    :80      │     │    :8000    │     │    :8005    │     │    :7687    │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+React + Nginx         FastAPI              FastMCP          Knowledge Graph
 ```
 
+- **PWrChat UI** - React chatbot (session sidebar, dark/light mode toggle, persistent theme)
 - **Intelligent Query Routing** - Guardrails system determines query relevance
 - **Natural Language to Cypher** - Converts questions to graph queries
 - **Knowledge Graph RAG** - Retrieval-Augmented Generation with Neo4j
@@ -55,15 +56,16 @@ just down    # Stop services
 ### System Overview
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  ToPWR API  │────▶│  MCP Server │────▶│    Neo4j    │
-│   :8000     │     │    :8005    │     │    :7687    │
-└─────────────┘     └─────────────┘     └─────────────┘
-     FastAPI           FastMCP          Knowledge Graph
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│  Frontend   │────▶│  ToPWR API  │────▶│  MCP Server │────▶│    Neo4j    │
+│    :80      │     │    :8000    │     │    :8005    │     │    :7687    │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+React + Nginx         FastAPI              FastMCP          Knowledge Graph
 ```
 
 | Service | Port | Description |
 |---------|------|-------------|
+| `frontend` | 80 | PWrChat — React chatbot UI served by Nginx |
 | `topwr-api` | 8000 | FastAPI backend for ToPWR app |
 | `mcp-server` | 8005 | MCP server with RAG pipeline |
 | `neo4j` | 7474/7687 | Knowledge graph database |
@@ -159,7 +161,7 @@ MCP_PORT=8005
 
 ```bash
 # Docker Stack
-just up          # Start all services
+just up          # Start all services (including frontend at :80)
 just down        # Stop services
 just logs        # View logs
 just ps          # Service status
@@ -169,6 +171,11 @@ just nuke        # Remove everything
 just mcp-server  # Run MCP server
 just api         # Run FastAPI
 just kg "query"  # Query knowledge graph
+
+# Frontend
+just frontend-install  # Install npm dependencies
+just frontend-dev      # Start dev server at :3000 (requires running API)
+just frontend-build    # Build for production
 
 # Quality
 just lint        # Format & lint
@@ -187,16 +194,26 @@ just pipeline    # Run ETL
 ```
 src/
 ├── mcp_server/      # MCP server + RAG pipeline
-├── mcp_client/      # CLI client  
+├── mcp_client/      # CLI client
 ├── topwr_api/       # FastAPI backend
 ├── config/          # Configuration
 └── data_pipeline/   # Prefect ETL flows
 
+frontend/
+├── src/
+│   ├── api/         # API client
+│   ├── hooks/       # useUserId, useSessions, useChat, useTheme
+│   ├── components/  # Sidebar, Chat, shared UI
+│   └── types/       # TypeScript mirrors of backend models
+└── package.json     # React + Vite + TailwindCSS
+
 docker/
-├── compose.stack.yml    # Main stack (Neo4j + MCP + API)
+├── compose.stack.yml    # Main stack (Neo4j + MCP + API + Frontend)
 ├── compose.prefect.yml  # Data pipeline
 ├── Dockerfile.mcp       # MCP server image
-└── Dockerfile.api       # FastAPI image
+├── Dockerfile.api       # FastAPI image
+├── Dockerfile.frontend  # React + Nginx image
+└── nginx.conf           # SPA fallback + API proxy
 ```
 
 ---
@@ -240,6 +257,9 @@ curl http://localhost:8000/api/users/{user_id}/sessions
 
 | Technology | Purpose |
 |------------|---------|
+| **React 18 + TypeScript** | Frontend chat UI |
+| **Vite + TailwindCSS v3** | Build tooling & styling |
+| **Nginx** | Frontend serving + API proxy |
 | **FastMCP** | Model Context Protocol server |
 | **LangGraph** | RAG state machine |
 | **LangChain** | LLM orchestration |

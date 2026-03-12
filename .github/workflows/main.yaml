@@ -1,5 +1,8 @@
 name: Main CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: ["main"]
@@ -7,61 +10,156 @@ on:
     branches: ["main"]
 
 jobs:
+  # ── 1. Lint ──────────────────────────────────────────────────────────────────
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+
+      - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      
-      - name: Install dependencies
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: extractions/setup-just@v2
+
+      - name: Install Python dependencies
         run: uv sync
-      
-      - name: Install just
-        uses: extractions/setup-just@v2
-      
+
+      - name: Install frontend dependencies
+        run: cd frontend && npm ci
+
       - name: Run linting
         run: just lint
 
+  # ── 2. Python build & entry-point check ─────────────────────────────────────
   build-check:
     runs-on: ubuntu-latest
     needs: [lint]
-    
     steps:
       - uses: actions/checkout@v4
-      
-      - name: Set up Python
-        uses: actions/setup-python@v5
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      
-      - name: Install uv
-        uses: astral-sh/setup-uv@v3
+
+      - uses: astral-sh/setup-uv@v3
         with:
           enable-cache: true
-      
-      - name: Install just
-        uses: extractions/setup-just@v2
-      
+
+      - uses: extractions/setup-just@v2
+
       - name: Install dependencies
         run: uv sync
-      
+
       - name: Verify package build
         run: |
           uv build
           ls -lh dist/
-      
+
       - name: Check entry points
         run: |
-          uv run --help || true
           uv run server --help || true
           uv run kg --help || true
           uv run pipeline --help || true
+
+  # ── 3. Frontend TypeScript + Vite build ─────────────────────────────────────
+  frontend-build:
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: cd frontend && npm ci
+
+      - name: Type-check and build
+        run: cd frontend && npm run build
+
+  # ── 4. Integration — full `just up` stack ────────────────────────────────────
+  integration:
+    runs-on: ubuntu-latest
+    needs: [build-check, frontend-build]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create CI .env
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-ci-placeholder-for-startup-testing' }}
+        run: |
+          cat > .env <<EOF
+          NEO4J_PASSWORD=ci-test-password
+          NEO4J_URI=bolt://neo4j:7687
+          NEO4J_USER=neo4j
+          OPENAI_API_KEY=${OPENAI_API_KEY}
+          MCP_BIND_HOST=0.0.0.0
+          MCP_HOST=mcp-server
+          MCP_PORT=8005
+          TOPWR_API_HOST=0.0.0.0
+          TOPWR_API_PORT=8000
+          EOF
+
+      - name: Build images and start stack
+        run: |
+          docker compose --env-file .env -f docker/compose.stack.yml \
+            up -d --build --wait --wait-timeout 180
+
+      - name: Wait for frontend (no healthcheck in compose)
+        run: |
+          echo "Polling http://localhost ..."
+          for i in $(seq 1 20); do
+            curl -sf http://localhost -o /dev/null && { echo "Frontend ready after ${i} attempts"; break; }
+            [ $i -eq 20 ] && echo "::error::Frontend did not become ready within 60 s" && exit 1
+            sleep 3
+          done
+
+      # ── Smoke tests ──────────────────────────────────────────────────────────
+
+      - name: "Smoke: Neo4j HTTP interface (port 7474)"
+        run: curl -sf http://localhost:7474
+
+      - name: "Smoke: MCP server port 8005 open"
+        run: |
+          docker exec ml-mcp-server \
+            python3 -c "import socket; s=socket.socket(); s.connect(('localhost',8005)); s.close(); print('port 8005 open')"
+
+      - name: "Smoke: ToPWR API /health"
+        run: curl -sf http://localhost:8000/health
+
+      - name: "Smoke: ToPWR API / (root)"
+        run: curl -sf http://localhost:8000/
+
+      - name: "Smoke: ToPWR API /api/stats"
+        run: curl -sf http://localhost:8000/api/stats
+
+      - name: "Smoke: Frontend returns HTTP 200"
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
+          [ "$STATUS" = "200" ] || { echo "::error::Frontend returned HTTP $STATUS (expected 200)"; exit 1; }
+
+      # ── Cleanup ──────────────────────────────────────────────────────────────
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: |
+          docker compose --env-file .env -f docker/compose.stack.yml logs --no-color
+
+      - name: Tear down stack
+        if: always()
+        run: |
+          docker compose --env-file .env -f docker/compose.stack.yml down -v --remove-orphans

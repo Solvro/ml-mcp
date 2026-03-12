@@ -80,6 +80,11 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     result = await rag.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler)
     print(rag.visualizer.draw_mermaid())
 
+    metadata = result.get("metadata", {})
+    print(f"[Guardrail decision] {metadata.get('guardrail_decision')}")
+    print(f"[Generated Cypher]\n{metadata.get('cypher_query')}")
+    print(f"[Graph context]\n{metadata.get('context')}")
+
     # Return the answer directly (already a JSON string from rag.py)
     return result["answer"]
 
