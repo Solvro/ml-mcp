@@ -122,7 +122,7 @@ async def query_mcp_knowledge_graph(user_input: str, trace_id: str = None) -> st
                 "trace_id": trace_id,
             },
         )
-        return result.content
+        return "\n".join(item.text for item in result.content if hasattr(item, "text"))
 
 
 async def generate_final_answer(user_input: str, kg_data: str) -> str:

@@ -67,6 +67,11 @@ result
 .result-*
 .direnv/
 
-# uv related files
-*.lock
+# uv related files — keep uv.lock committed for reproducible installs
+!uv.lock
 .uv/
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local

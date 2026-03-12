@@ -4,15 +4,18 @@
 
 **SOLVRO MCP** is a Knowledge Graph RAG system for Wrocław University of Science and Technology (ToPWR). It answers natural-language questions (in Polish) about university entities — courses, professors, departments, articles — by generating Cypher queries against a Neo4j graph database.
 
-**Architecture:** Three loosely-coupled services + a data pipeline:
-1. **MCP Server** — FastMCP server exposing a `knowledge_graph_tool` (port 8005)
-2. **ToPWR API** — FastAPI HTTP backend, session management, user-facing chat endpoint (port 8000)
-3. **Data Pipeline** — Prefect ETL: Azure Blob → PDF extraction → LLM Cypher generation → Neo4j
-4. **MCP Client** — CLI for direct graph queries
+**Architecture:** Four loosely-coupled services + a data pipeline:
+1. **Frontend** — React 18 + TypeScript chatbot UI served by Nginx (port 80); proxies `/api/*` to ToPWR API
+2. **MCP Server** — FastMCP server exposing a `knowledge_graph_tool` (port 8005)
+3. **ToPWR API** — FastAPI HTTP backend, session management, user-facing chat endpoint (port 8000)
+4. **Data Pipeline** — Prefect ETL: Azure Blob → PDF extraction → LLM Cypher generation → Neo4j
+5. **MCP Client** — CLI for direct graph queries
 
 **Core tech stack:**
 | Layer | Technology |
 |---|---|
+| Frontend | React 18, TypeScript, Vite, TailwindCSS v3 |
+| Frontend serving | Nginx (SPA fallback + API proxy) |
 | LLM orchestration | LangChain, LangGraph (state machines) |
 | MCP protocol | FastMCP >=2.12.4 |
 | Graph database | Neo4j (async driver via langchain-neo4j) |
@@ -21,8 +24,8 @@
 | Cloud storage | Azure Blob Storage |
 | Observability | Langfuse (optional) |
 | Config validation | Pydantic v2 |
-| Package manager | uv (NOT pip) |
-| Linter/formatter | Ruff |
+| Package manager | uv (NOT pip); npm for frontend |
+| Linter/formatter | Ruff (Python); TypeScript strict mode |
 | Python version | >=3.11 (Docker images use 3.12) |
 
 ---
@@ -31,6 +34,7 @@
 
 ### Prerequisites
 - Python >=3.11
+- Node.js >=20 + npm (for frontend development)
 - [uv](https://docs.astral.sh/uv/) package manager
 - Docker + Docker Compose (for full stack)
 - Neo4j instance
@@ -39,8 +43,8 @@
 ### Install Dependencies
 ```bash
 uv sync
-# or for initial setup:
-just setup   # runs uv sync + generates Pydantic models
+# or for initial setup (also installs frontend npm deps):
+just setup   # runs uv sync + generates Pydantic models + npm install
 ```
 
 ### Environment Variables
@@ -95,11 +99,14 @@ just mcp-server
 just api
 # or: uv run topwr-api
 
+# Frontend dev server (requires running API on :8000)
+just frontend-dev      # → http://localhost:3000
+
 # Query CLI (requires running MCP server)
 just kg "Kto wykłada analizę matematyczną?"
 # or: uv run kg "<question>"
 
-# Full stack via Docker
+# Full stack via Docker (includes frontend at http://localhost)
 just up
 just down
 ```
