@@ -16,6 +16,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r mcpuser && useradd -r -g mcpuser mcpuser
+RUN mkdir -p /app/faiss && chown -R mcpuser:mcpuser /app/faiss
 
 COPY --from=builder /app/.venv /app/.venv
 COPY ./src/mcp_server ./src/mcp_server

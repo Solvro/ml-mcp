@@ -1,9 +1,11 @@
+import json
 import os
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
 from ..config.config import get_config
+from .tools.karierownik.tool import Tool as KarierownikTool
 from .tools.knowledge_graph.rag import RAG
 
 load_dotenv()
@@ -13,6 +15,7 @@ mcp = FastMCP("SOLVRO MCP")
 rag = None
 langfuse = None
 handler = None
+karierownik_tool_instance = None
 
 # Initialize Langfuse only if credentials are configured
 _langfuse_secret = os.getenv("LANGFUSE_SECRET_KEY")
@@ -62,6 +65,13 @@ def initialize_rag():
     return rag
 
 
+def initialize_karierownik_tool():
+    """Initialize karierownik tool instance."""
+    global karierownik_tool_instance
+    karierownik_tool_instance = KarierownikTool()
+    return karierownik_tool_instance
+
+
 @mcp.tool
 async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     """
@@ -89,13 +99,64 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     return result["answer"]
 
 
+@mcp.tool
+async def karierownik_tool(
+    internship_info: str,
+    include_companies: list[str] | None = None,
+    exclude_companies: list[str] | None = None,
+    limit: int = 5,
+    offset: int = 0,
+) -> str:
+    """
+    Search internships/apprenticeship offers in vector DB.
+
+    Returns JSON string with ranked offers (FastMCP tool output must be a string).
+    """
+    if karierownik_tool_instance is None:
+        return json.dumps(
+            {"error": "Karierownik Tool not initialized. Please start the server first."},
+            ensure_ascii=False,
+        )
+
+    results = await karierownik_tool_instance.ainvoke(
+        internship_info=internship_info,
+        include_companies=include_companies,
+        exclude_companies=exclude_companies,
+        limit=limit,
+        offset=offset,
+    )
+    return json.dumps(results, ensure_ascii=False, indent=2)
+
+
+@mcp.tool
+async def offers_db_tool(
+    internship_info: str,
+    include_companies: list[str] | None = None,
+    exclude_companies: list[str] | None = None,
+    limit: int = 5,
+    offset: int = 0,
+) -> str:
+    """
+    Backward-compatible alias for karierownik tool.
+    """
+    return await karierownik_tool(
+        internship_info=internship_info,
+        include_companies=include_companies,
+        exclude_companies=exclude_companies,
+        limit=limit,
+        offset=offset,
+    )
+
+
 def main():
     """Main entry point for the MCP server."""
     import os
 
     global rag
-
-    rag = initialize_rag()
+    # TEMPORARY (dev): knowledge graph init disabled due to missing Neo4j.
+    # RESTORE_KG_INIT: uncomment the next line when Neo4j is available again.
+    # rag = initialize_rag()
+    initialize_karierownik_tool()
 
     config = get_config()
 

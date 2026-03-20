@@ -16,9 +16,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r apiuser && useradd -r -g apiuser apiuser
+RUN mkdir -p /app/faiss && chown -R apiuser:apiuser /app/faiss
 
 COPY --from=builder /app/.venv /app/.venv
 COPY ./src/topwr_api ./src/topwr_api
+COPY ./src/mcp_server ./src/mcp_server
 COPY ./src/config ./src/config
 COPY ./src/__init__.py ./src/__init__.py
 COPY ./graph_config.yaml ./graph_config.yaml

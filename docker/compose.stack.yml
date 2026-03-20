@@ -39,6 +39,8 @@ services:
       - "8005:8005"
     env_file:
       - ../.env
+    environment:
+      - FAISS_DIR=/app/faiss/offers
     depends_on:
       neo4j:
         condition: service_healthy
@@ -49,6 +51,8 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+    volumes:
+      - ../data/faiss:/app/faiss
 
   topwr-api:
     build:
@@ -63,6 +67,7 @@ services:
       - ../.env
     environment:
       - MCP_HOST=mcp-server
+      - FAISS_DIR=/app/faiss/offers
     depends_on:
       mcp-server:
         condition: service_healthy
@@ -72,6 +77,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    volumes:
+      - ../data/faiss:/app/faiss
 
   frontend:
     build:

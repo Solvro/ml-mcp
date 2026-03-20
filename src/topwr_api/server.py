@@ -12,6 +12,13 @@ from fastmcp import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
+from src.mcp_server.tools.karierownik.scheduler import (
+    process_source,
+    run_daily_scraping,
+    start_scheduler,
+    stop_scheduler,
+)
+
 from ..config.config import get_config
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
@@ -70,10 +77,22 @@ async def lifespan(app: FastAPI):
     session_manager = SessionManager()
     logger.info("Session manager initialized")
 
+    # Start offers scraping scheduler (runs daily at 2:00 AM)
+    try:
+        start_scheduler()
+        logger.info("Offers scraping scheduler started successfully")
+    except Exception as e:
+        logger.error(f"Failed to start offers scraping scheduler: {e}", exc_info=True)
+
     yield
 
     # Shutdown
     logger.info("Shutting down ToPWR API service...")
+    try:
+        stop_scheduler()
+        logger.info("Offers scraping scheduler stopped")
+    except Exception as e:
+        logger.error(f"Error stopping scheduler: {e}", exc_info=True)
     stats = session_manager.get_stats()
     logger.info(f"Final stats: {stats}")
 
@@ -122,7 +141,37 @@ async def query_mcp_knowledge_graph(user_input: str, trace_id: str = None) -> st
                 "trace_id": trace_id,
             },
         )
-        return "\n".join(item.text for item in result.content if hasattr(item, "text"))
+        content = getattr(result, "content", result)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                getattr(item, "text", item if isinstance(item, str) else str(item))
+                for item in content
+            )
+        return str(content)
+
+
+async def query_mcp_karierownik(internship_info: str, trace_id: str = None) -> str:
+    """
+    Query MCP offers tool and return tool output as string (JSON).
+    """
+    async with mcp_client:
+        result = await mcp_client.call_tool(
+            "karierownik_tool",
+            {
+                "internship_info": internship_info,
+            },
+        )
+        content = getattr(result, "content", result)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            return "\n".join(
+                getattr(item, "text", item if isinstance(item, str) else str(item))
+                for item in content
+            )
+        return str(content)
 
 
 async def generate_final_answer(user_input: str, kg_data: str) -> str:
@@ -197,26 +246,23 @@ async def chat(request: ChatRequest):
             metadata=request.metadata,
         )
 
-        # Query MCP knowledge graph
+        # Query MCP offers database
         trace_id = str(uuid.uuid4().hex)
         try:
-            kg_data = await query_mcp_knowledge_graph(
-                user_input=request.message,
+            offers_data = await query_mcp_karierownik(
+                internship_info=request.message,
                 trace_id=trace_id,
             )
-            logger.info(f"Retrieved knowledge graph data for session {session.session_id}")
+            logger.info(f"Retrieved offers data for session {session.session_id}")
 
-            # Generate final answer with LLM
-            response_message = await generate_final_answer(
-                user_input=request.message,
-                kg_data=kg_data,
-            )
-            source = "mcp_knowledge_graph"
+            # Tool already returns JSON string; return it directly.
+            response_message = offers_data
+            source = "karierownik_tool"
 
         except Exception as mcp_error:
             logger.error(f"MCP query failed: {mcp_error}", exc_info=True)
             response_message = (
-                f"Przepraszam, nie mogłem uzyskać odpowiedzi z bazy wiedzy. Błąd: {str(mcp_error)}"
+                f"Przepraszam, nie mogłem uzyskać ofert. Błąd: {str(mcp_error)}"
             )
             source = "error"
 
@@ -324,6 +370,36 @@ async def deactivate_session(session_id: str):
 async def get_stats():
     """Get system statistics."""
     return session_manager.get_stats()
+
+
+@app.post("/api/dev/karierownik/scrape")
+async def dev_scrape_karierownik(source: str | None = None):
+    """
+    Development endpoint to trigger karierownik scraping on demand.
+
+    Optional query param `source` supports: Nokia, PWR, Sii.
+    Without `source`, full daily scraping job is executed.
+    """
+    allowed_sources = {"Nokia", "PWR", "Sii"}
+    if source and source not in allowed_sources:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid source '{source}'. Allowed values: {sorted(allowed_sources)}",
+        )
+
+    try:
+        if source:
+            result = await process_source(source)
+            return {"mode": "single_source", "source": source, "result": result}
+
+        await run_daily_scraping()
+        return {"mode": "full", "status": "completed"}
+    except Exception as e:
+        logger.error(f"Manual karierownik scraping failed: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Manual scraping failed: {str(e)}",
+        )
 
 
 def main():
