@@ -153,9 +153,7 @@ def main():
     import os
 
     global rag
-    # TEMPORARY (dev): knowledge graph init disabled due to missing Neo4j.
-    # RESTORE_KG_INIT: uncomment the next line when Neo4j is available again.
-    # rag = initialize_rag()
+    rag = initialize_rag()
     initialize_karierownik_tool()
 
     config = get_config()
