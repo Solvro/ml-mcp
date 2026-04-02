@@ -176,6 +176,12 @@ setup:
 generate-models:
     uv run python src/scripts/config/generate_models.py
 
+# Populate Neo4j with synthetic PWr data (useful for testing RAG without running the full pipeline)
+# Connects to localhost:7687 by default; override with: just populate-graph bolt://neo4j:7687
+[group('setup')]
+populate-graph uri="bolt://localhost:7687":
+    NEO4J_URI="{{uri}}" uv run python -m src.scripts.populate_graph
+
 # Build package
 [group('setup')]
 build:
