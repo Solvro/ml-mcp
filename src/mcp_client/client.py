@@ -46,7 +46,8 @@ elif google_api_key:
     )
 else:
     raise ValueError(
-        "No LLM API key found. Please set OPENAI_API_KEY, CLARIN_API_KEY, or GOOGLE_API_KEY in your .env file"
+        "No LLM API key found. "
+        "Please set OPENAI_API_KEY, CLARIN_API_KEY, or GOOGLE_API_KEY in your .env file"
     )
 
 # Initialize Langfuse only if credentials are configured
