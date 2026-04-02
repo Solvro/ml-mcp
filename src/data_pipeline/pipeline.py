@@ -4,7 +4,6 @@ from prefect import flow, get_run_logger
 from src.data_pipeline.flows.data_acquisition import acquire_data
 from src.data_pipeline.flows.graph_populating import populate_graph
 from src.data_pipeline.flows.llm_cypher_generation import generate_cypher_queries
-from src.data_pipeline.flows.ocr_extraction import ocr_extraction
 from src.data_pipeline.flows.schema_reflection import reflect_on_schema
 
 

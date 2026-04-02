@@ -30,7 +30,6 @@ STATEMENTS = [
     MERGE (d4:Department {title: 'Faculty of Mechanical Engineering', context: 'W10 faculty at PWr, covers mechanical engineering and robotics'})
     MERGE (d5:Department {title: 'Faculty of Civil Engineering', context: 'W2 faculty at PWr, covers structural and environmental engineering'})
     """,
-
     # ------------------------------------------------------------------
     # Professors
     # ------------------------------------------------------------------
@@ -44,7 +43,6 @@ STATEMENTS = [
     MERGE (p7:Professor {title: 'Dr. Piotr Szymanski', context: 'Assistant professor in cybersecurity and cryptography at W4'})
     MERGE (p8:Professor {title: 'Dr. Monika Wojcik', context: 'Assistant professor in data engineering and databases at W8'})
     """,
-
     # ------------------------------------------------------------------
     # Courses
     # ------------------------------------------------------------------
@@ -60,7 +58,6 @@ STATEMENTS = [
     MERGE (c9:Course {title: 'Machine Learning', context: 'Graduate CS course on supervised/unsupervised learning, deep learning — 6 ECTS'})
     MERGE (c10:Course {title: 'Computer Networks', context: 'Undergraduate CS course on TCP/IP, routing, network programming — 5 ECTS'})
     """,
-
     # ------------------------------------------------------------------
     # Programs / Degrees
     # ------------------------------------------------------------------
@@ -71,7 +68,6 @@ STATEMENTS = [
     MERGE (pr4:Program {title: 'Robotics MSc', context: '1.5-year graduate program at W10'})
     MERGE (pr5:Program {title: 'Applied Mathematics BSc', context: '3.5-year undergraduate program at W13'})
     """,
-
     # ------------------------------------------------------------------
     # Buildings / Rooms
     # ------------------------------------------------------------------
@@ -84,7 +80,6 @@ STATEMENTS = [
     MERGE (r3:Room {title: 'Room 202 C-5', context: 'Electronics lecture room with 80 seats in building C-5'})
     MERGE (r4:Room {title: 'Aula A-1', context: 'Main auditorium with 400 seats in building A-1'})
     """,
-
     # ------------------------------------------------------------------
     # Research projects
     # ------------------------------------------------------------------
@@ -94,7 +89,6 @@ STATEMENTS = [
     MERGE (rp3:Research {title: 'Autonomous Mobile Robot Navigation', context: 'EU-funded Horizon project on SLAM and path planning, 2022-2025'})
     MERGE (rp4:Research {title: 'Post-Quantum Cryptography Implementation', context: 'NCBR project on lattice-based cryptosystems on embedded hardware, 2023-2025'})
     """,
-
     # ------------------------------------------------------------------
     # Relationships — professors ↔ departments
     # ------------------------------------------------------------------
@@ -130,7 +124,6 @@ STATEMENTS = [
     MATCH (p6:Professor {title: 'Prof. Ewa Dabrowska'}), (d5:Department {title: 'Faculty of Civil Engineering'})
     MERGE (p6)-[:BELONGS_TO]->(d5)
     """,
-
     # ------------------------------------------------------------------
     # Relationships — professors teach courses
     # ------------------------------------------------------------------
@@ -174,7 +167,6 @@ STATEMENTS = [
     MATCH (p2x:Professor {title: 'Prof. Anna Wiśniewska'}), (c10:Course {title: 'Computer Networks'})
     MERGE (p2x)-[:TEACHES]->(c10)
     """,
-
     # ------------------------------------------------------------------
     # Relationships — courses belong to programs
     # ------------------------------------------------------------------
@@ -218,7 +210,6 @@ STATEMENTS = [
     MATCH (c5:Course {title: 'Numerical Methods'}), (pr5:Program {title: 'Applied Mathematics BSc'})
     MERGE (c5)-[:PART_OF]->(pr5)
     """,
-
     # ------------------------------------------------------------------
     # Relationships — programs belong to departments
     # ------------------------------------------------------------------
@@ -242,7 +233,6 @@ STATEMENTS = [
     MATCH (pr5:Program {title: 'Applied Mathematics BSc'}), (d3:Department {title: 'Faculty of Mathematics'})
     MERGE (pr5)-[:OFFERED_BY]->(d3)
     """,
-
     # ------------------------------------------------------------------
     # Relationships — rooms located in buildings
     # ------------------------------------------------------------------
@@ -262,7 +252,6 @@ STATEMENTS = [
     MATCH (r4:Room {title: 'Aula A-1'}), (b3:Building {title: 'Building A-1'})
     MERGE (r4)-[:LOCATED_IN]->(b3)
     """,
-
     # ------------------------------------------------------------------
     # Relationships — professors supervise research
     # ------------------------------------------------------------------
@@ -282,7 +271,6 @@ STATEMENTS = [
     MATCH (p7:Professor {title: 'Dr. Piotr Szymanski'}), (rp4:Research {title: 'Post-Quantum Cryptography Implementation'})
     MERGE (p7)-[:SUPERVISES]->(rp4)
     """,
-
     # ------------------------------------------------------------------
     # Prerequisite relationships between courses
     # ------------------------------------------------------------------
@@ -308,6 +296,7 @@ STATEMENTS = [
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
+
 
 def populate(graph: Neo4jGraph) -> None:
     """Execute all synthetic data statements against Neo4j."""
