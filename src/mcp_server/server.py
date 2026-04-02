@@ -78,7 +78,6 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
         return "Error: RAG not initialized. Please start the server first."
 
     result = await rag.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler)
-    print(rag.visualizer.draw_mermaid())
 
     metadata = result.get("metadata", {})
     print(f"[Guardrail decision] {metadata.get('guardrail_decision')}")

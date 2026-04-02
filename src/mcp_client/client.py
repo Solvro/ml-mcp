@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 from fastmcp import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from langchain_openai.chat_models.base import BaseChatOpenAI
+from pydantic import SecretStr
 
 from ..config.config import get_config
 
@@ -20,10 +22,17 @@ mcp_url = f"{mcp_transport}://{mcp_host}:{mcp_port}/mcp"
 
 client = Client(mcp_url)
 
-clarin_api_key = os.getenv("CLARIN_API_KEY")
-google_api_key = os.getenv("GOOGLE_API_KEY")
+openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
+clarin_api_key = os.getenv("CLARIN_API_KEY", "").strip()
+google_api_key = os.getenv("GOOGLE_API_KEY", "").strip()
 
-if clarin_api_key:
+if openai_api_key:
+    llm = BaseChatOpenAI(
+        model=config.llm.accurate_model.name,
+        api_key=SecretStr(openai_api_key),
+        temperature=config.llm.accurate_model.temperature,
+    )
+elif clarin_api_key:
     llm = ChatOpenAI(
         model_name=config.llm.clarin.name,
         base_url=config.llm.clarin.base_url,
@@ -37,7 +46,7 @@ elif google_api_key:
     )
 else:
     raise ValueError(
-        "No LLM API key found. Please set either CLARIN_API_KEY or GOOGLE_API_KEY in your .env file"
+        "No LLM API key found. Please set OPENAI_API_KEY, CLARIN_API_KEY, or GOOGLE_API_KEY in your .env file"
     )
 
 # Initialize Langfuse only if credentials are configured

@@ -125,13 +125,14 @@ async def query_mcp_knowledge_graph(user_input: str, trace_id: str = None) -> st
         return "\n".join(item.text for item in result.content if hasattr(item, "text"))
 
 
-async def generate_final_answer(user_input: str, kg_data: str) -> str:
+async def generate_final_answer(user_input: str, kg_data: str, history: str = "") -> str:
     """
     Generate a final answer using the LLM with knowledge graph context.
 
     Args:
         user_input: Original user question
         kg_data: Knowledge graph data from MCP server
+        history: Recent conversation history as a formatted string
 
     Returns:
         LLM-generated answer
@@ -139,7 +140,9 @@ async def generate_final_answer(user_input: str, kg_data: str) -> str:
     if llm is None:
         return f"Dane z grafu wiedzy: {kg_data}"
 
-    final_prompt = config.prompts.final_answer.format(user_input=user_input, data=kg_data)
+    final_prompt = config.prompts.final_answer.format(
+        user_input=user_input, data=kg_data, history=history or "(no prior conversation)"
+    )
 
     response = await llm.ainvoke(final_prompt)
     return response.content
@@ -197,6 +200,11 @@ async def chat(request: ChatRequest):
             metadata=request.metadata,
         )
 
+        # Build recent conversation history (last 6 messages = 3 turns)
+        recent = session.get_conversation_history(limit=6)
+        history_lines = [f"{msg.role.upper()}: {msg.content}" for msg in recent]
+        history = "\n".join(history_lines)
+
         # Query MCP knowledge graph
         trace_id = str(uuid.uuid4().hex)
         try:
@@ -210,6 +218,7 @@ async def chat(request: ChatRequest):
             response_message = await generate_final_answer(
                 user_input=request.message,
                 kg_data=kg_data,
+                history=history,
             )
             source = "mcp_knowledge_graph"
 

@@ -77,6 +77,7 @@ class Database(BaseModel):
 class Prompts(BaseModel):
     final_answer: str
     cypher_insert: str
+    schema_reflection: str
     cypher_search: str
     guardrails: str
 
@@ -88,6 +89,4 @@ class Model(BaseModel):
     llm: Llm
     observability: Observability
     database: Database
-    nodes: list[str]
-    relations: list[str]
     prompts: Prompts

@@ -79,6 +79,7 @@ class RAG:
             username=neo4j_username,
             password=neo4j_password,
             database=config.database.name,
+            enhanced_schema=True,
         )
 
         self._cached_schema = None
@@ -103,42 +104,35 @@ class RAG:
 
     @property
     def schema(self):
-        """Cached database schema to avoid repeated fetches"""
-        if self._cached_schema is None:
+        """Cached database schema to avoid repeated fetches.
+
+        Only caches when a non-empty schema is found so that a temporary empty
+        database at startup does not permanently poison the cache.
+        """
+        if not self._cached_schema:
             db_schema = self.database.get_schema
 
-            # Check if database schema is empty or contains no actual data
-            is_empty = (
-                not db_schema
-                or db_schema.strip() == ""
-                or (
-                    "Node properties:" in db_schema
-                    and "Relationship properties:" in db_schema
-                    and "The relationships:" in db_schema
-                    and db_schema.replace("Node properties:", "")
-                    .replace("Relationship properties:", "")
-                    .replace("The relationships:", "")
-                    .strip()
-                    == ""
-                )
-                or (
-                    db_schema.count(":") <= 3 and len(db_schema) < 100
-                )  # Heuristic for empty schema
+            stripped = (db_schema or "").strip()
+            headers_only = (
+                "Node properties:" in stripped
+                and "Relationship properties:" in stripped
+                and "The relationships:" in stripped
+                and stripped.replace("Node properties:", "")
+                .replace("Relationship properties:", "")
+                .replace("The relationships:", "")
+                .strip()
+                == ""
             )
 
-            if is_empty:
-                # Database schema is empty, fallback to config
-                config = get_config()
-                nodes_str = ", ".join(config.nodes)
-                relations_str = ", ".join(config.relations)
-                self._cached_schema = f"""
-                Available Node Labels: {nodes_str}\n\n
-                Available Relationship Types: {relations_str}
-                """
-            else:
-                # Use schema from database
+            is_empty = not stripped or headers_only
+
+            if not is_empty:
                 self._cached_schema = db_schema
-        return self._cached_schema
+                print(f"[Schema] fetched {len(db_schema)} chars from Neo4j")
+            else:
+                print("[Schema] database is empty — schema will be re-fetched on next call")
+
+        return self._cached_schema or ""
 
     def get_graph(self):
         """Return graph visualizer with Mermaid capabilities"""
@@ -211,11 +205,14 @@ class RAG:
         Returns:
             Updated state with generated CYPHER query
         """
+        schema = self.schema
+        print(f"[Schema used for Cypher generation] ({len(schema)} chars):\n{schema or '(empty)'}")
+
         chain = self.generate_cypher_template | self.cypher_llm | StrOutputParser()
         generated_cypher = chain.invoke(
             {
                 "user_question": state["user_question"],
-                "schema": self.schema,
+                "schema": schema,
             },
             config=self._get_invoke_config(
                 trace_id=state["trace_id"],

@@ -20,10 +20,10 @@ data_pipeline:
 
 llm:
   fast_model:
-    name: "gpt-5-nano"
+    name: "gpt-5.4-nano"
     temperature: 0.1
   accurate_model:
-    name: "gpt-5-mini"
+    name: "gpt-5.4-mini"
     temperature: 0
   clarin:
     name: "pllum"
@@ -43,96 +43,39 @@ database:
   username: ${NEO4J_USER}
   password: ${NEO4J_PASSWORD}
 
-nodes:
-  - Document
-  - Article
-  - Syllabus
-  - Lecture
-  - Course
-  - Professor
-  - Student
-  - Department
-  - Building
-  - Room
-  - Event
-  - Research
-  - Publication
-  - Conference
-  - Laboratory
-  - Equipment
-  - Project
-  - Grant
-  - Committee
-  - Organization
-  - Website
-  - Resource
-  - Schedule
-  - Assignment
-  - Grade
-  - Degree
-  - Program
-  - Semester
-  - AcademicYear
-  - Institution
-
-relations:
-  - teaches
-  - enrolls_in
-  - attends
-  - conducts
-  - publishes
-  - presents
-  - organizes
-  - participates_in
-  - supervises
-  - researches
-  - funds
-  - hosts
-  - requires
-  - prerequisite_for
-  - belongs_to
-  - located_in
-  - schedules
-  - assigns
-  - evaluates
-  - awards
-  - manages
-  - collaborates_with
-  - cites
-  - references
-  - maintains
-  - develops
-  - supports
-  - coordinates
-  - approves
-  - reviews
-
 prompts:
   final_answer: |
-    Otrzymujesz informacje w postaci JSON w od innego LLM
-    z danymi pochodzącymi z bazy wiedzy.
+    You receive information in JSON format from another LLM
+    containing data from the knowledge base.
 
-    Pytanie użytkownika: {user_input}
+    Context: You are an assistant for Wrocław University of Science and Technology (Politechnika Wrocławska, PWr).
+    Assume that any mention of professors, teachers, courses, classes, departments, or other academic entities
+    refers to Politechnika Wrocławska unless explicitly stated otherwise.
 
-    Informacje z bazy wiedzy (w formacie JSON):
+    Conversation history (most recent turns):
+    {history}
+
+    User question: {user_input}
+
+    Knowledge base data (JSON format):
     {data}
 
-    Twoim zadaniem jest odpowiedzieć użytkownikowi na pytanie w oparciu
-    o te informacje - musisz wykorzystywać wszystkie dane z JSONa,
-    aby udzielić kompletnej odpowiedzi.
-    Odpowiedz w języku pytania, w sposób naturalny i zwięzły.
-    Jeśli nie dostaniesz informacji na temat pytania,
-    udziel odpowiedzi z wiedzy ogólnej na dany temat.
+    Your task is to answer the user's question based on this information.
+    Use the conversation history to resolve references like "he", "she", "that course", "who is that guy?", etc.
+    Use all data from the JSON to provide a complete answer.
+    Always respond in the same language as the user's question, in a natural and concise way.
+    If you do not receive relevant information, answer from general knowledge about Politechnika Wrocławska.
 
   cypher_insert: |
-    Generate Neo4j Cypher statements based EXCLUSIVELY on the provided context.
-    Use ONLY the allowed node types and relation types.
+    Extract knowledge from the provided context into Neo4j Cypher MERGE statements.
+    Invent node labels and relationship types that best represent the content.
+    Use the current graph schema to stay consistent with existing structure where appropriate.
     DO NOT include any additional text or explanations.
 
     CONTEXT: {context}
 
-    ALLOWED NODE LABELS: {nodes}
-    ALLOWED RELATIONSHIP TYPES: {relations}
+    CURRENT GRAPH SCHEMA (use for consistency, extend freely):
+    {schema_context}
 
     STRICT RULES:
     1. OUTPUT MUST:
@@ -151,7 +94,7 @@ prompts:
 
     3. FOR RELATIONSHIPS:
        - MERGE between existing node variables
-       - Use ONLY allowed relationship types
+       - Use descriptive relationship type names in UPPER_SNAKE_CASE
        - Direction matters (A→B ≠ B→A)
 
     4. VARIABLE NAMES:
@@ -163,23 +106,45 @@ prompts:
     MERGE (node1:Person {{title: 'John Smith',
     context: 'Professor at UW'}})|MERGE (node2:Department
     {{title: 'Computer Science', context: 'CS department'}})|MERGE
-    (node1)-[:works_in]->(node2)
+    (node1)-[:WORKS_IN]->(node2)
 
     OUTPUT MUST BE EXACTLY IN THIS FORMAT:
     MERGE (...) [|MERGE (...)]* [|MERGE (...)-[:...]->(...)]*
     NO OTHER TEXT OR CHARACTERS ALLOWED!
 
-  cypher_search: |
-    Generate ONLY valid Cypher query. No explanations.
+  schema_reflection: |
+    Analyze the current Neo4j graph schema and summarize it to guide the next extraction pass.
 
-    Schema: {schema}
+    SCHEMA:
+    {schema}
+
+    Respond in this exact format:
+    NODE TYPES: <comma-separated labels with node counts if available>
+    RELATIONSHIP TYPES: <comma-separated relationship types>
+    OBSERVATIONS: <1-2 sentences on structure patterns or notable gaps>
+    EXTRACTION HINTS: <what types of entities or relations to prioritize next>
+
+  cypher_search: |
+    Generate a single valid Cypher READ query to answer the question. No explanations, no markdown.
+
+    Schema (includes sample property values):
+    {schema}
+
     Question: {user_question}
+
+    Rules:
+    - Use MATCH, not MERGE or CREATE
+    - For string properties use case-insensitive fuzzy matching: toLower(n.title) CONTAINS toLower('...')
+    - Always RETURN named properties, not full nodes (e.g. RETURN p.title, c.title)
+    - Always add LIMIT 10
 
     Cypher:
 
   guardrails: |
-    Is this about Wroclaw University of Science and Technology
-    (or university at all) or about another topic?
+    You are a classifier for a Wrocław University of Science and Technology (Politechnika Wrocławska) assistant.
+    Assume that any question mentioning professors, teachers, courses, classes, departments, buildings,
+    research, or other academic topics refers to Politechnika Wrocławska.
+    Is this question related to university topics (answer "generate_cypher") or completely unrelated (answer "end")?
     Answer ONLY: "generate_cypher" or "end"
 
     Question: {user_question}
