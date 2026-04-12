@@ -77,6 +77,10 @@ LANGFUSE_PUBLIC_KEY=...
 ```
 AZURE_STORAGE_CONNECTION_STRING=...
 AZURE_CONTAINER_NAME=...
+
+# Concurrent pipeline controls
+DATA_PIPELINE_MAX_CONCURRENCY=4
+DATA_PIPELINE_CLAIM_STALE_MINUTES=30
 ```
 
 **Service ports (have defaults):**
@@ -298,6 +302,12 @@ LLM generates Cypher INSERT statements separated by `|` (pipe character). Strict
 - Unique variable names per statement
 - Polish characters normalized (ó→o, ę→e, etc.)
 - Token limit: 65536 to avoid DeepSeek API errors
+
+### Concurrent Pipeline Idempotency
+The data pipeline processes pages in batches with configurable concurrency and hash-based idempotency:
+- `DATA_PIPELINE_MAX_CONCURRENCY` controls max parallel pages per batch.
+- `ProcessedDocument {hash}` nodes prevent duplicate processing for repeated pages.
+- Failed or stale `processing` claims can be retried/reclaimed based on `DATA_PIPELINE_CLAIM_STALE_MINUTES`.
 
 ### Session Management
 `SessionManager` is thread-safe in-memory storage (dict + `threading.Lock`). Not persisted across restarts. Suitable for single-instance deployments only.

@@ -144,6 +144,17 @@ NEO4J_PASSWORD=
 
 
 ########################################
+# Data Pipeline Runtime Controls
+########################################
+
+# Max parallel pages processed per batch
+DATA_PIPELINE_MAX_CONCURRENCY=4
+
+# Minutes after which a stuck in-progress hash can be reclaimed
+DATA_PIPELINE_CLAIM_STALE_MINUTES=30
+
+
+########################################
 # MCP Server Networking
 ########################################
 
@@ -181,6 +192,8 @@ just frontend-build    # Build for production
 just lint        # Format & lint
 just test        # Run tests
 just ci          # Full CI pipeline
+uv run --with pytest python -m pytest tests/data_pipeline/test_pipeline_concurrency.py -q
+                # Run pipeline concurrency/idempotency tests only
 
 # Data Pipeline
 just prefect-up  # Start Prefect
