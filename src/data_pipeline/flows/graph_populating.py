@@ -1,8 +1,20 @@
+import logging
 import os
 import uuid
 
 from langchain_neo4j import Neo4jGraph
 from prefect import get_run_logger, task
+from prefect.exceptions import MissingContextError
+
+module_logger = logging.getLogger(__name__)
+
+
+def _get_logger() -> logging.Logger:
+    """Return Prefect run logger when available, otherwise module logger."""
+    try:
+        return get_run_logger()
+    except MissingContextError:
+        return module_logger
 
 
 def _get_claim_stale_minutes() -> int:
@@ -24,7 +36,7 @@ class GraphPopulator:
         if not uri or not username or not password:
             raise ValueError("NEO4J connection settings are required")
 
-        logger = get_run_logger()
+        logger = _get_logger()
         logger.info(f"Connecting to Neo4j at {uri} as {username}")
         self.graph_db = Neo4jGraph(url=uri, username=username, password=password)
 
@@ -126,7 +138,7 @@ class GraphPopulator:
         )
 
     def execute_cypher(self, query: str):
-        logger = get_run_logger()
+        logger = _get_logger()
         if not query or not query.strip():
             logger.error("Empty Cypher query")
             return
@@ -142,7 +154,7 @@ class GraphPopulator:
 @task
 def claim_document_for_processing(doc_hash: str) -> bool:
     """Claim document hash in Neo4j for idempotent processing."""
-    logger = get_run_logger()
+    logger = _get_logger()
     pop = GraphPopulator()
     claimed = pop.claim_document_hash(doc_hash)
     if claimed:
@@ -155,7 +167,7 @@ def claim_document_for_processing(doc_hash: str) -> bool:
 @task
 def populate_graph(cypher_query: str, doc_hash: str = ""):
     """Execute a cypher query against the configured Neo4j instance."""
-    logger = get_run_logger()
+    logger = _get_logger()
     logger.info("populate_graph task received query of length %d", len(cypher_query or ""))
     pop = GraphPopulator()
     try:

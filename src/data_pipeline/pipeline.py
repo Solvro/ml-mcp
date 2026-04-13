@@ -3,6 +3,7 @@ from hashlib import sha256
 
 from dotenv import load_dotenv
 from prefect import flow, get_run_logger
+from prefect.futures import as_completed
 
 from src.data_pipeline.flows.data_acquisition import acquire_data
 from src.data_pipeline.flows.graph_populating import claim_document_for_processing, populate_graph
@@ -98,7 +99,8 @@ def data_pipeline_flow():
         batch_end = min(batch_start + max_concurrency, len(pages))
         logger.info("Processing batch pages %d-%d", batch_start + 1, batch_end)
 
-        batch_claims = []
+        claim_futures = []
+        claim_lookup = {}
         batch_futures = []
 
         for page_index, page_content in enumerate(
@@ -107,9 +109,11 @@ def data_pipeline_flow():
         ):
             page_hash = _compute_page_hash(page_content)
             claim_future = claim_document_for_processing.submit(page_hash)
-            batch_claims.append((page_index, page_content, page_hash, claim_future))
+            claim_futures.append(claim_future)
+            claim_lookup[id(claim_future)] = (page_index, page_content, page_hash)
 
-        for page_index, page_content, page_hash, claim_future in batch_claims:
+        for claim_future in as_completed(claim_futures):
+            page_index, page_content, page_hash = claim_lookup[id(claim_future)]
             try:
                 is_claimed = claim_future.result()
             except Exception as exc:

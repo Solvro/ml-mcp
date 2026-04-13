@@ -1,5 +1,7 @@
 from collections.abc import Callable
 
+import pytest
+
 from src.data_pipeline import pipeline as pipeline_module
 
 
@@ -31,6 +33,11 @@ class SubmitStub:
     def submit(self, *args, **kwargs):
         self.calls.append((args, kwargs))
         return self.submit_impl(*args, **kwargs)
+
+
+@pytest.fixture(autouse=True)
+def patch_as_completed(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "as_completed", lambda futures: futures)
 
 
 def test_pipeline_uses_batched_parallel_processing(monkeypatch):
