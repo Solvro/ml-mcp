@@ -1,14 +1,25 @@
 import os
 from hashlib import sha256
+from typing import Any
 
 from dotenv import load_dotenv
 from prefect import flow, get_run_logger
 from prefect.futures import as_completed
 
 from src.data_pipeline.flows.data_acquisition import acquire_data
-from src.data_pipeline.flows.graph_populating import claim_document_for_processing, populate_graph
+from src.data_pipeline.flows.graph_populating import (
+    GraphPopulator,
+    claim_document_for_processing,
+    populate_graph,
+)
 from src.data_pipeline.flows.llm_cypher_generation import generate_cypher_queries
 from src.data_pipeline.flows.schema_reflection import reflect_on_schema
+from src.data_pipeline.graph_dump import (
+    ensure_host_dump_dir,
+    export_graph_to_cypher,
+    host_dump_path,
+    import_graph_from_cypher_dump,
+)
 
 
 def _get_max_concurrency() -> int:
@@ -25,6 +36,24 @@ def _compute_page_hash(page_content: str) -> str:
     """Create a stable idempotency hash for one page of content."""
     normalized_content = page_content.strip().encode("utf-8")
     return sha256(normalized_content).hexdigest()
+
+
+def _normalize_source_pages(acquired: Any) -> list[tuple[str, str]]:
+    """Turn ``acquire_data`` output into ``(source_id, content)`` pairs (backwards-compatible)."""
+    if isinstance(acquired, str) and acquired.strip():
+        return [("synthetic://default", acquired)]
+    if not isinstance(acquired, list) or not acquired:
+        return []
+    first = acquired[0]
+    if isinstance(first, str):
+        return [(f"legacy://{i}", p) for i, p in enumerate(acquired) if p and str(p).strip()]
+    if isinstance(first, tuple) and len(first) == 2:
+        out: list[tuple[str, str]] = []
+        for sid, text in acquired:
+            if text and str(text).strip():
+                out.append((str(sid), str(text)))
+        return out
+    return []
 
 
 def _safe_reflect_schema(phase: str, logger) -> str:
@@ -60,17 +89,32 @@ def data_pipeline_flow():
     """
     load_dotenv()
     logger = get_run_logger()
+    populator = GraphPopulator()
 
-    pages = acquire_data()
+    if host_dump_path().is_file():
+        import_graph_from_cypher_dump()
+        populator.record_restore_run()
+        logger.info("Loaded graph from dump; skipped LLM extraction.")
+        return
 
-    # Normalise: acquire_data may return a single string or a list of strings
-    if isinstance(pages, str):
-        pages = [pages]
-
-    pages = [page for page in pages if page and page.strip()]
-    if not pages:
+    acquired = acquire_data()
+    source_pages = _normalize_source_pages(acquired)
+    if not source_pages:
         logger.warning("No non-empty pages found; stopping pipeline early")
         return
+
+    last_source_hashes = populator.get_latest_pipeline_source_hashes()
+    full_source_hashes = {sid: _compute_page_hash(text) for sid, text in source_pages}
+    work_items: list[tuple[str, str]] = [
+        (sid, text)
+        for sid, text in source_pages
+        if last_source_hashes.get(sid) != full_source_hashes[sid]
+    ]
+    if not work_items:
+        logger.info("No new or changed source files since last pipeline run")
+        return
+
+    pages = [text for _, text in work_items]
 
     stats = {
         "total_pages": len(pages),
@@ -86,8 +130,9 @@ def data_pipeline_flow():
 
     max_concurrency = _get_max_concurrency()
     logger.info(
-        "Submitting %d pages with max concurrency %d",
+        "Submitting %d pages (incremental from %d sources) with max concurrency %d",
         len(pages),
+        len(source_pages),
         max_concurrency,
     )
 
@@ -180,6 +225,14 @@ def data_pipeline_flow():
 
     if stats["failed_pages"] > 0:
         logger.warning("Pipeline finished with %d failed pages", stats["failed_pages"])
+
+    if stats["failed_pages"] == 0 and stats["claim_errors"] == 0:
+        mode = "incremental" if len(work_items) < len(source_pages) else "full"
+        populator.record_pipeline_run(full_source_hashes, mode=mode)
+
+    # Export even on partial failure so the host dump reflects the latest good graph.
+    ensure_host_dump_dir()
+    export_graph_to_cypher()
 
     logger.info("Pipeline complete. Graph is ready for querying.")
 

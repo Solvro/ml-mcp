@@ -19,6 +19,7 @@ services:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_import:/var/lib/neo4j/import
+      - ../dumps:/var/lib/neo4j/import/dumps
       - neo4j_plugins:/plugins
     restart: unless-stopped
     healthcheck:

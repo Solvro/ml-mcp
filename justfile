@@ -73,6 +73,16 @@ logs-api:
 logs-neo4j:
     docker compose --env-file .env -f docker/compose.stack.yml logs -f neo4j
 
+# Export Neo4j graph dump (cypher-shell)
+[group('docker')]
+dump-graph:
+    uv run dump-graph
+
+# Import Neo4j graph from dump
+[group('docker')]
+restore-graph:
+    uv run restore-graph
+
 # View frontend logs
 [group('docker')]
 logs-frontend:
