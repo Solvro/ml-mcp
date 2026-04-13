@@ -73,6 +73,17 @@ logs-api:
 logs-neo4j:
     docker compose --env-file .env -f docker/compose.stack.yml logs -f neo4j
 
+# Export Neo4j graph to ``dumps/graph_export.cypher`` (APOC ``cypher-shell`` format).
+# Optional: ``PIPELINE_DRIVE_OUT`` for an extra copy (e.g. Drive sync folder).
+[group('docker')]
+dump-graph:
+    uv run dump-graph
+
+# Import ``dumps/graph_export.cypher`` into Neo4j (``apoc.cypher.runFile``; dump must exist on host + Neo4j import path).
+[group('docker')]
+restore-graph:
+    uv run restore-graph
+
 # View frontend logs
 [group('docker')]
 logs-frontend:

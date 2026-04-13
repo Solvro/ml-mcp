@@ -1,3 +1,4 @@
+import json
 import os
 import uuid
 
@@ -138,6 +139,55 @@ class GraphPopulator:
             logger.error("Failed to execute cypher: %s", e)
             raise
 
+    def get_latest_pipeline_source_hashes(self) -> dict[str, str]:
+        """Return ``source_id -> content_hash`` from the latest ``PipelineRun`` node."""
+        rows = self.graph_db.query(
+            """
+            MATCH (pr:PipelineRun)
+            WITH pr ORDER BY pr.run_at DESC LIMIT 1
+            RETURN pr.source_hashes_json AS payload
+            """
+        )
+        if not rows or not rows[0].get("payload"):
+            return {}
+        raw = rows[0]["payload"]
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return {str(k): str(v) for k, v in parsed.items()}
+
+    def record_pipeline_run(self, source_hashes: dict[str, str], mode: str = "full") -> None:
+        self.graph_db.query(
+            """
+            CREATE (pr:PipelineRun {
+                run_id: $run_id,
+                run_at: datetime(),
+                status: 'completed',
+                mode: $mode,
+                source_hashes_json: $json
+            })
+            """,
+            params={
+                "run_id": str(uuid.uuid4()),
+                "mode": mode,
+                "json": json.dumps(source_hashes, sort_keys=True),
+            },
+        )
+
+    def record_restore_run(self) -> None:
+        """Zapisz informację że ten run był restore z dumpa."""
+        self.graph_db.query(
+            """
+            CREATE (pr:PipelineRun {
+                run_id: $run_id,
+                run_at: datetime(),
+                status: 'completed',
+                mode: 'restore'
+            })
+            """,
+            params={"run_id": str(uuid.uuid4())},
+        )
 
 @task
 def claim_document_for_processing(doc_hash: str) -> bool:

@@ -41,6 +41,8 @@ def test_pipeline_uses_batched_parallel_processing(monkeypatch):
 
     monkeypatch.setenv("DATA_PIPELINE_MAX_CONCURRENCY", "3")
     monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
+    monkeypatch.setattr(pipeline_module, "_get_latest_pipeline_source_hashes", lambda: {})
+    monkeypatch.setattr(pipeline_module, "_record_pipeline_run", lambda _d: None)
 
     def fake_reflect():
         reflection_calls.append(1)
@@ -87,6 +89,8 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
 
     monkeypatch.setenv("DATA_PIPELINE_MAX_CONCURRENCY", "4")
     monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
+    monkeypatch.setattr(pipeline_module, "_get_latest_pipeline_source_hashes", lambda: {})
+    monkeypatch.setattr(pipeline_module, "_record_pipeline_run", lambda _d: None)
     monkeypatch.setattr(pipeline_module, "reflect_on_schema", lambda: "schema-summary")
 
     claim_results = iter([True, False, True])
@@ -120,6 +124,8 @@ def test_pipeline_continues_after_page_failure(monkeypatch):
 
     monkeypatch.setenv("DATA_PIPELINE_MAX_CONCURRENCY", "3")
     monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
+    monkeypatch.setattr(pipeline_module, "_get_latest_pipeline_source_hashes", lambda: {})
+    monkeypatch.setattr(pipeline_module, "_record_pipeline_run", lambda _d: None)
 
     def fake_reflect():
         reflection_calls.append(1)
@@ -155,6 +161,25 @@ def test_pipeline_continues_after_page_failure(monkeypatch):
 
     assert len(populate_stub.calls) == 3
     assert len(reflection_calls) == 2
+
+
+def test_pipeline_incremental_skips_when_source_hashes_unchanged(monkeypatch):
+    pages = ["page-0", "page-1"]
+    last = {f"legacy://{i}": pipeline_module._compute_page_hash(p) for i, p in enumerate(pages)}
+    monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
+    monkeypatch.setattr(pipeline_module, "_get_latest_pipeline_source_hashes", lambda: last)
+    monkeypatch.setattr(pipeline_module, "_record_pipeline_run", lambda _d: None)
+    reflect_calls: list[int] = []
+
+    def fake_reflect():
+        reflect_calls.append(1)
+        return ""
+
+    monkeypatch.setattr(pipeline_module, "reflect_on_schema", fake_reflect)
+
+    pipeline_module.data_pipeline_flow()
+
+    assert reflect_calls == []
 
 
 def test_hash_function_is_stable():

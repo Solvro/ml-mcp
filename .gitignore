@@ -49,6 +49,10 @@ htmlcov/
 # Data (remove if you want to track project data)
 data/
 
+# Neo4j graph dumps (large files); directory kept via ``dumps/.gitkeep``
+dumps/*
+!dumps/.gitkeep
+
 # Jupyter
 .ipynb_checkpoints/
 
