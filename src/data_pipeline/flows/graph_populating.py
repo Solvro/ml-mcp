@@ -11,7 +11,7 @@ module_logger = logging.getLogger(__name__)
 
 
 def _get_logger() -> logging.Logger:
-    """Return Prefect run logger when available, otherwise module logger."""
+    """Return Prefect run logger when available, otherwise the module logger."""
     try:
         return get_run_logger()
     except MissingContextError:

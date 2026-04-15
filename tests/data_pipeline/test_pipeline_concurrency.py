@@ -1,7 +1,4 @@
 from collections.abc import Callable
-from pathlib import Path
-
-import pytest
 
 from src.data_pipeline import pipeline as pipeline_module
 
@@ -36,18 +33,6 @@ class SubmitStub:
         return self.submit_impl(*args, **kwargs)
 
 
-@pytest.fixture(autouse=True)
-def patch_as_completed(monkeypatch):
-    monkeypatch.setattr(pipeline_module, "as_completed", lambda futures: futures)
-
-
-@pytest.fixture(autouse=True)
-def stub_graph_dump_io(monkeypatch):
-    """Avoid Neo4j APOC export during flow tests."""
-    monkeypatch.setattr(pipeline_module, "ensure_host_dump_dir", lambda: Path("/tmp"))
-    monkeypatch.setattr(pipeline_module, "export_graph_to_cypher", lambda: None)
-
-
 def test_pipeline_uses_batched_parallel_processing(monkeypatch):
     pages = [f"page-{i}" for i in range(10)]
     reflection_calls: list[int] = []
@@ -64,7 +49,7 @@ def test_pipeline_uses_batched_parallel_processing(monkeypatch):
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "record_pipeline_run",
-        lambda self, *a, **k: None,
+        lambda self, *args, **kwargs: None,
     )
 
     def fake_reflect():
@@ -120,7 +105,7 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "record_pipeline_run",
-        lambda self, *a, **k: None,
+        lambda self, *args, **kwargs: None,
     )
     monkeypatch.setattr(pipeline_module, "reflect_on_schema", lambda: "schema-summary")
 
@@ -163,7 +148,7 @@ def test_pipeline_continues_after_page_failure(monkeypatch):
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "record_pipeline_run",
-        lambda self, *a, **k: None,
+        lambda self, *args, **kwargs: None,
     )
 
     def fake_reflect():
@@ -214,7 +199,7 @@ def test_pipeline_incremental_skips_when_source_hashes_unchanged(monkeypatch):
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "record_pipeline_run",
-        lambda self, *a, **k: None,
+        lambda self, *args, **kwargs: None,
     )
     reflect_calls: list[int] = []
 
