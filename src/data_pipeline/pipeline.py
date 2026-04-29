@@ -14,10 +14,10 @@ from src.data_pipeline.flows.graph_populating import (
 )
 from src.data_pipeline.flows.llm_cypher_generation import generate_cypher_queries
 from src.data_pipeline.flows.schema_reflection import reflect_on_schema
-from src.data_pipeline.graph_dump import (
+from src.data_pipeline.persistence.graph_dump import (
     ensure_host_dump_dir,
     export_graph_to_cypher,
-    host_dump_path,
+    host_nonempty_dump_exists,
     import_graph_from_cypher_dump,
 )
 
@@ -91,7 +91,7 @@ def data_pipeline_flow():
     logger = get_run_logger()
     populator = GraphPopulator()
 
-    if host_dump_path().is_file():
+    if host_nonempty_dump_exists():
         import_graph_from_cypher_dump()
         populator.record_restore_run()
         logger.info("Loaded graph from dump; skipped LLM extraction.")

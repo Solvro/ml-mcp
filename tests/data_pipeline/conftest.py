@@ -17,6 +17,7 @@ def _pipeline_flow_no_external_services(monkeypatch):
 
     # 2. FILESYSTEM AND EXPORT MOCKING
     monkeypatch.setattr(pipeline_module, "host_dump_path", lambda *a, **k: NONEXISTENT_PATH)
+    monkeypatch.setattr(pipeline_module, "host_nonempty_dump_exists", lambda *a, **k: False)
     monkeypatch.setattr(pipeline_module, "ensure_host_dump_dir", lambda *a, **k: Path("/tmp"))
     monkeypatch.setattr(pipeline_module, "export_graph_to_cypher", lambda *a, **k: None)
 
