@@ -103,7 +103,7 @@ open http://localhost:4200
 uv run kg "Kto wykłada analizę matematyczną?"
 
 # Run pipeline locally without Docker
-uv run prefect_pipeline
+uv run prefect-pipeline
 
 # Run API integration tests against live server
 uv run test-topwr-api

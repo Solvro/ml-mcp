@@ -198,7 +198,7 @@ just nuke               # remove containers + volumes
 just prefect-up         # start Prefect stack
 just prefect-down       # stop Prefect stack
 just prefect-logs       # Prefect logs
-just pipeline           # run pipeline locally (uv run prefect_pipeline)
+just pipeline           # run pipeline locally (uv run prefect-pipeline)
 
 # Build
 just build              # uv build
