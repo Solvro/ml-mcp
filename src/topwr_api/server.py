@@ -103,13 +103,16 @@ app.add_middleware(
 )
 
 
-async def query_mcp_knowledge_graph(user_input: str, trace_id: str = None) -> str:
+async def query_mcp_knowledge_graph(
+    user_input: str, trace_id: str = None, session_id: str = None
+) -> str:
     """
     Query the MCP server's knowledge graph tool.
 
     Args:
         user_input: User's question
         trace_id: Optional trace ID for tracking
+        session_id: Conversation session identifier from SessionManager
 
     Returns:
         Knowledge graph data as JSON string
@@ -120,6 +123,7 @@ async def query_mcp_knowledge_graph(user_input: str, trace_id: str = None) -> st
             {
                 "user_input": user_input,
                 "trace_id": trace_id,
+                "session_id": session_id,
             },
         )
         return "\n".join(item.text for item in result.content if hasattr(item, "text"))
@@ -211,6 +215,7 @@ async def chat(request: ChatRequest):
             kg_data = await query_mcp_knowledge_graph(
                 user_input=request.message,
                 trace_id=trace_id,
+                session_id=session.session_id,
             )
             logger.info(f"Retrieved knowledge graph data for session {session.session_id}")
 

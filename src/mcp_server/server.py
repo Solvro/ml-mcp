@@ -2,6 +2,7 @@ import os
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from langfuse.langchain import CallbackHandler
 
 from ..config.config import get_config
 from .tools.knowledge_graph.rag import RAG
@@ -12,7 +13,6 @@ mcp = FastMCP("SOLVRO MCP")
 
 rag = None
 langfuse = None
-handler = None
 
 # Initialize Langfuse only if credentials are configured
 _langfuse_secret = os.getenv("LANGFUSE_SECRET_KEY")
@@ -22,14 +22,12 @@ _langfuse_host = os.getenv("LANGFUSE_HOST")
 if _langfuse_secret and _langfuse_public:
     try:
         from langfuse import Langfuse
-        from langfuse.langchain import CallbackHandler
 
         langfuse = Langfuse(
             secret_key=_langfuse_secret,
             public_key=_langfuse_public,
             host=_langfuse_host,
         )
-        handler = CallbackHandler()
     except Exception as e:
         print(f"Warning: Failed to initialize Langfuse: {e}")
 else:
@@ -63,13 +61,16 @@ def initialize_rag():
 
 
 @mcp.tool
-async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
+async def knowledge_graph_tool(
+    user_input: str, trace_id: str = None, session_id: str = None
+) -> str:
     """
     Query the knowledge graph with natural language.
 
     Args:
         user_input: User's question or query
         trace_id: Optional trace ID for tracking
+        session_id: Conversation session identifier
 
     Returns:
         AI-generated instructions based on knowledge graph data
@@ -77,7 +78,16 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     if rag is None:
         return "Error: RAG not initialized. Please start the server first."
 
-    result = await rag.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler)
+    per_request_handler = None
+    if langfuse is not None:
+        per_request_handler = CallbackHandler(
+            trace_id=trace_id,
+            session_id=session_id,
+        )
+
+    result = await rag.ainvoke(
+        message=user_input, trace_id=trace_id, callback_handler=per_request_handler
+    )
 
     metadata = result.get("metadata", {})
     print(f"[Guardrail decision] {metadata.get('guardrail_decision')}")
