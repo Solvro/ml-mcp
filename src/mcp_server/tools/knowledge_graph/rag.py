@@ -87,9 +87,7 @@ class RAG:
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
 
-        self.handler = None
-
-    def _get_invoke_config(self, trace_id: str, tags: list, run_name: str) -> dict:
+    def _get_invoke_config(self, trace_id: str, tags: list, run_name: str, handler=None) -> dict:
         """Build invoke config with optional callbacks."""
         config = {
             "metadata": {
@@ -98,8 +96,8 @@ class RAG:
                 "run_name": run_name,
             },
         }
-        if self.handler is not None:
-            config["callbacks"] = [self.handler]
+        if handler is not None:
+            config["callbacks"] = [handler]
         return config
 
     @property
@@ -218,6 +216,7 @@ class RAG:
                 trace_id=state["trace_id"],
                 tags=["knowledge_graph", "generated_cypher"],
                 run_name="Generate Cypher",
+                handler=state.get("callback_handler"),
             ),
         )
 
@@ -272,6 +271,7 @@ class RAG:
                     trace_id=state["trace_id"],
                     tags=["knowledge_graph", "guardrails"],
                     run_name="Guardrails",
+                    handler=state.get("callback_handler"),
                 ),
             )
             .strip()
@@ -354,9 +354,13 @@ class RAG:
         Returns:
             Dictionary with context from graph or "W bazie danych nie ma informacji"
         """
-        self.handler = callback_handler
-
-        result = await self.graph.ainvoke({"user_question": message, "trace_id": trace_id})
+        result = await self.graph.ainvoke(
+            {
+                "user_question": message,
+                "trace_id": trace_id,
+                "callback_handler": callback_handler,
+            }
+        )
 
         if result.get("answer") == "W bazie danych nie ma informacji":
             return {
