@@ -69,8 +69,8 @@ async def knowledge_graph_tool(
 
     Args:
         user_input: User's question or query
-        trace_id: Optional trace ID for tracking
-        session_id: Conversation session identifier
+        trace_id: Trace identifier for this single request
+        session_id: Conversation session identifier from the calling API
 
     Returns:
         AI-generated instructions based on knowledge graph data

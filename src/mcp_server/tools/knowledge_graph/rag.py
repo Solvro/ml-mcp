@@ -88,7 +88,16 @@ class RAG:
         self.graph = self._build_processing_graph()
 
     def _get_invoke_config(self, trace_id: str, tags: list, run_name: str, handler=None) -> dict:
-        """Build invoke config with optional callbacks."""
+        """
+        Build invoke config with optional callbacks.
+
+        Args:
+        trace_id: Used as Langfuse session_id in metadata
+        tags: Langfuse tags applied to the spans
+        run_name: Human-readable name for the span in Langfuse
+        handler: Optional CallbackHandler
+
+        """
         config = {
             "metadata": {
                 "langfuse_session_id": trace_id,
@@ -350,6 +359,8 @@ class RAG:
         Args:
             message: User's question/input
             session_id: Session identifier for tracking
+            trace_id: Trace identifier for this single chat turn
+            callback_handler: Optional Langfuse CallbackHandler scoped to this request
 
         Returns:
             Dictionary with context from graph or "W bazie danych nie ma informacji"

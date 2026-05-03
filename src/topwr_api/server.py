@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastmcp import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
+from langfuse.langchain import CallbackHandler
 
 from ..config.config import get_config
 from .models import ChatRequest, ChatResponse, MessageRole
@@ -55,6 +56,28 @@ elif google_api_key:
 else:
     logger.warning("No LLM API key found. Chat will return raw knowledge graph data.")
 
+# Langfuse setup
+
+langfuse = None
+
+_langfuse_secret = os.getenv("LANGFUSE_SECRET_KEY")
+_langfuse_public = os.getenv("LANGFUSE_PUBLIC_KEY")
+_langfuse_host = os.getenv("LANGFUSE_HOST")
+
+if _langfuse_secret and _langfuse_public:
+    try:
+        from langfuse import Langfuse
+
+        langfuse = Langfuse(
+            secret_key=_langfuse_secret,
+            public_key=_langfuse_public,
+            host=_langfuse_host,
+        )
+    except Exception as e:
+        logger.warning(f"Warning: Failed to initialize Langfuse: {e}")
+else:
+    logger.info("Langfuse credentials not configured. Tracing disabled.")
+
 # Global session manager
 session_manager: SessionManager = None
 
@@ -76,6 +99,9 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down ToPWR API service...")
     stats = session_manager.get_stats()
     logger.info(f"Final stats: {stats}")
+
+    if langfuse:
+        langfuse.flush()
 
 
 # Initialize FastAPI app
@@ -129,7 +155,9 @@ async def query_mcp_knowledge_graph(
         return "\n".join(item.text for item in result.content if hasattr(item, "text"))
 
 
-async def generate_final_answer(user_input: str, kg_data: str, history: str = "") -> str:
+async def generate_final_answer(
+    user_input: str, kg_data: str, history: str = "", callback_handler=None
+) -> str:
     """
     Generate a final answer using the LLM with knowledge graph context.
 
@@ -137,6 +165,7 @@ async def generate_final_answer(user_input: str, kg_data: str, history: str = ""
         user_input: Original user question
         kg_data: Knowledge graph data from MCP server
         history: Recent conversation history as a formatted string
+        callback_handler: Optional Langfuse CallbackHandler
 
     Returns:
         LLM-generated answer
@@ -148,7 +177,8 @@ async def generate_final_answer(user_input: str, kg_data: str, history: str = ""
         user_input=user_input, data=kg_data, history=history or "(no prior conversation)"
     )
 
-    response = await llm.ainvoke(final_prompt)
+    invoke_config = {"callbacks": [callback_handler]} if callback_handler else {}
+    response = await llm.ainvoke(final_prompt, config=invoke_config)
     return response.content
 
 
@@ -211,6 +241,14 @@ async def chat(request: ChatRequest):
 
         # Query MCP knowledge graph
         trace_id = str(uuid.uuid4().hex)
+
+        answer_handler = None
+        if langfuse is not None:
+            answer_handler = CallbackHandler(
+                trace_id=trace_id,
+                session_id=session.session_id,
+            )
+
         try:
             kg_data = await query_mcp_knowledge_graph(
                 user_input=request.message,
@@ -224,6 +262,7 @@ async def chat(request: ChatRequest):
                 user_input=request.message,
                 kg_data=kg_data,
                 history=history,
+                callback_handler=answer_handler,
             )
             source = "mcp_knowledge_graph"
 
