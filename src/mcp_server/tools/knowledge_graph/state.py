@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from langchain_core.documents import Document
 from langgraph.graph import MessagesState
@@ -14,3 +14,4 @@ class State(MessagesState):
     generated_cypher: Optional[str] = None
     guardrail_decision: Optional[str] = None
     trace_id: Optional[str] = None
+    callback_handler: Optional[Any] = None

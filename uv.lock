@@ -3709,6 +3709,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "ruff" },
+    { name = "tenacity" },
     { name = "uvicorn" },
 ]
 
@@ -3730,6 +3731,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.10.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "ruff", specifier = ">=0.14.1" },
+    { name = "tenacity", specifier = ">=9.1.2" },
     { name = "uvicorn", specifier = ">=0.34.0" },
 ]
 

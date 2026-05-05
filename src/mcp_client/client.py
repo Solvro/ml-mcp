@@ -11,6 +11,7 @@ from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import SecretStr
 
 from ..config.config import get_config
+from ..mcp_server.tools.knowledge_graph.rag import RAG
 
 load_dotenv()
 
@@ -31,18 +32,21 @@ if openai_api_key:
         model=config.llm.accurate_model.name,
         api_key=SecretStr(openai_api_key),
         temperature=config.llm.accurate_model.temperature,
+        timeout=30.0,
     )
 elif clarin_api_key:
     llm = ChatOpenAI(
         model_name=config.llm.clarin.name,
         base_url=config.llm.clarin.base_url,
         api_key=clarin_api_key,
+        timeout=30.0,
     )
 elif google_api_key:
     llm = ChatGoogleGenerativeAI(
         model=config.llm.gemini.name,
         google_api_key=google_api_key,
         temperature=1.0,
+        timeout=30.0,
     )
 else:
     raise ValueError(
@@ -106,7 +110,11 @@ async def get_knowledge_graph_data(
         return result.content
 
 
-async def query_knowledge_graph(user_input: str, trace_id: str = None):
+async def query_knowledge_graph(
+    user_input: str,
+    trace_id: str = None,
+    llm_timeout_sec: float = 30.0,
+):
     """Query the knowledge graph with user input."""
 
     trace_id = str(uuid.uuid4().hex)
@@ -130,7 +138,13 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
     if handler is not None:
         invoke_config["callbacks"] = [handler]
 
-    llm_response = await llm.ainvoke(final_prompt, config=invoke_config)
+    try:
+        llm_response = await asyncio.wait_for(
+            llm.ainvoke(final_prompt, config=invoke_config),
+            timeout=llm_timeout_sec,
+        )
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(RAG.LLM_CALL_TIMEOUT_MESSAGE) from exc
 
     print(llm_response.content)
     return llm_response

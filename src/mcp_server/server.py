@@ -36,7 +36,10 @@ else:
     print("Langfuse credentials not configured. Tracing disabled.")
 
 
-def initialize_rag():
+def initialize_rag(
+    llm_timeout_sec: float = 30.0,
+    graph_timeout_sec: float = 90.0,
+):
     """Initialize RAG instance with environment variables."""
     global rag
 
@@ -57,6 +60,8 @@ def initialize_rag():
         neo4j_url=neo4j_uri,
         neo4j_username=neo4j_username,
         neo4j_password=neo4j_password,
+        llm_timeout_sec=llm_timeout_sec,
+        graph_timeout_sec=graph_timeout_sec,
     )
 
     return rag
