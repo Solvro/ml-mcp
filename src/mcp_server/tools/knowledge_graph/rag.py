@@ -18,6 +18,11 @@ from .graph_visualizer import GraphVisualizer
 from .state import State
 
 FORBIDDEN_CLAUSES = frozenset({"CREATE", "MERGE", "DELETE", "DETACH", "SET", "REMOVE", "DROP"})
+GUARDRAIL_DECISION_ALIASES = {
+    "generate": "generate_cypher",
+    "generate_cypher": "generate_cypher",
+    "end": "end",
+}
 
 
 class RAG:
@@ -209,6 +214,37 @@ class RAG:
         if blocked:
             raise ValueError(f"Cypher zawiera niedozwolone operacje: {blocked}")
 
+    @staticmethod
+    def _strip_code_fences(text: str) -> str:
+        """Remove markdown code fences that may wrap JSON output."""
+        stripped = text.strip()
+        stripped = re.sub(r"^```(?:json)?\s*", "", stripped, flags=re.IGNORECASE)
+        stripped = re.sub(r"\s*```$", "", stripped)
+        return stripped.strip()
+
+    def _parse_guardrail_output(self, raw_output: str) -> Dict[str, str]:
+        """Parse guardrail JSON and normalize the decision with a safe fallback."""
+        cleaned_output = self._strip_code_fences(raw_output)
+        json_match = re.search(r"\{.*\}", cleaned_output, flags=re.DOTALL)
+        payload_text = json_match.group(0) if json_match else cleaned_output
+
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError as exc:
+            if self.enable_debug:
+                print(f"[Guardrails Parse Error] invalid JSON: {exc}; raw={raw_output}")
+            return {"decision": "end"}
+
+        decision = str(payload.get("decision", "")).strip().lower()
+        normalized_decision = GUARDRAIL_DECISION_ALIASES.get(decision)
+
+        if normalized_decision is None:
+            if self.enable_debug:
+                print(f"[Guardrails Parse Error] invalid decision={decision!r}; raw={raw_output}")
+            return {"decision": "end"}
+
+        return {"decision": normalized_decision}
+
     def _build_processing_graph(self):
         """Construct the state machine graph for the RAG pipeline."""
         builder = StateGraph(State)
@@ -318,6 +354,7 @@ class RAG:
         """
         Decide whether to use graph retrieval or general LLM knowledge.
         Uses fast model (gpt-5-nano) for quick decision.
+        Expects JSON response with decision field ("generate" or "end").
 
         Args:
             state: Current pipeline state
@@ -327,26 +364,23 @@ class RAG:
         """
         guardrails_chain = self.guard_rails_template | self.fast_llm | StrOutputParser()
 
-        guardrail_output = (
-            await self._ainvoke_with_retry(
-                guardrails_chain,
-                {"user_question": state["user_question"]},
-                config=self._get_invoke_config(
-                    trace_id=state["trace_id"],
-                    tags=["knowledge_graph", "guardrails"],
-                    run_name="Guardrails",
-                    handler=state.get("callback_handler"),
-                ),
-            )
-            .strip()
-            .lower()
+        guardrail_output = await self._ainvoke_with_retry(
+            guardrails_chain,
+            {"user_question": state["user_question"]},
+            config=self._get_invoke_config(
+                trace_id=state["trace_id"],
+                tags=["knowledge_graph", "guardrails"],
+                run_name="Guardrails",
+                handler=state.get("callback_handler"),
+            ),
         )
+        guardrail_result = self._parse_guardrail_output(guardrail_output)
 
-        next_node = "generate_cypher" if "generate" in guardrail_output else "end"
+        next_node = guardrail_result["decision"]
 
         return {
             "next_node": next_node,
-            "guardrail_decision": guardrail_output,
+            "guardrail_decision": guardrail_result["decision"],
         }
 
     def return_none(self, state: State):
@@ -364,6 +398,30 @@ class RAG:
             "answer": "W bazie danych nie ma informacji",
             "context": [],
             "generated_cypher": None,
+        }
+
+    def _format_response(self, result: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert graph output into the public response payload."""
+        if result.get("answer") == "W bazie danych nie ma informacji":
+            return {
+                "answer": "W bazie danych nie ma informacji",
+                "metadata": {
+                    "guardrail_decision": result.get("guardrail_decision"),
+                    "cypher_query": None,
+                    "context": [],
+                },
+            }
+
+        context_data = result.get("context", [])
+        context_json = json.dumps(context_data, ensure_ascii=False, indent=2)
+
+        return {
+            "answer": context_json,
+            "metadata": {
+                "guardrail_decision": result.get("guardrail_decision"),
+                "cypher_query": result.get("generated_cypher"),
+                "context": context_data,
+            },
         }
 
     def invoke(self, message: str, session_id: str = "default") -> Dict[str, Any]:
@@ -411,24 +469,4 @@ class RAG:
         except asyncio.TimeoutError as exc:
             raise TimeoutError(RAG.GRAPH_PIPELINE_TIMEOUT_MESSAGE) from exc
 
-        if result.get("answer") == "W bazie danych nie ma informacji":
-            return {
-                "answer": "W bazie danych nie ma informacji",
-                "metadata": {
-                    "guardrail_decision": result.get("guardrail_decision"),
-                    "cypher_query": None,
-                    "context": [],
-                },
-            }
-
-        context_data = result.get("context", [])
-        context_json = json.dumps(context_data, ensure_ascii=False, indent=2)
-
-        return {
-            "answer": context_json,
-            "metadata": {
-                "guardrail_decision": result.get("guardrail_decision"),
-                "cypher_query": result.get("generated_cypher"),
-                "context": context_data,
-            },
-        }
+        return self._format_response(result)
