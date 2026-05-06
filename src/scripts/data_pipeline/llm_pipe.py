@@ -16,10 +16,11 @@ class PipeState(MessagesState):
 class LLMPipe:
     def __init__(self, api_key: str = None, nodes: List[str] = None, relations: List[str] = None):
         config = get_config()
-        BaseChatOpenAI(
+        self.model = BaseChatOpenAI(
             model=config.llm.accurate_model.name,
             api_key=api_key,
             temperature=config.llm.accurate_model.temperature,
+            timeout=30.0,
         )
         self._initialize_prompt_templates()
         self.nodes = nodes

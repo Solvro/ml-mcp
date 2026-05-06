@@ -42,6 +42,7 @@ def reflect_on_schema() -> str:
         model=config.llm.fast_model.name,
         api_key=SecretStr(api_key),
         temperature=config.llm.fast_model.temperature,
+        timeout=30.0,
     )
 
     template = PromptTemplate(

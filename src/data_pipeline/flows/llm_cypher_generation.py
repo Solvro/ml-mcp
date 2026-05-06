@@ -25,6 +25,7 @@ class LLMPipe:
             model=config.llm.accurate_model.name,
             api_key=SecretStr(os.getenv("OPENAI_API_KEY") or ""),
             temperature=config.llm.accurate_model.temperature,
+            timeout=30.0,
         )
         self.generate_template = PromptTemplate(
             input_variables=["context", "schema_context"],

@@ -25,6 +25,10 @@ llm:
   accurate_model:
     name: "gpt-5.4-mini"
     temperature: 0
+  provider_fallback_order:
+    - "openai"
+    # - "deepseek"    # Uncomment when DEEPSEEK_API_KEY is set
+    # - "google"      # Uncomment when GOOGLE_API_KEY is set
   clarin:
     name: "pllum"
     base_url: "https://services.clarin-pl.eu/api/v1/oapi"

@@ -2,7 +2,8 @@ import asyncio
 import json
 import os
 import re
-from typing import Any, Dict
+from enum import Enum
+from typing import Any, Dict, List
 
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
@@ -12,6 +13,13 @@ from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
 from tenacity import retry, stop_after_attempt, wait_exponential, wait_random
+
+try:
+    from openai import APIError, APITimeoutError, RateLimitError
+except ImportError:
+    APIError = Exception
+    APITimeoutError = TimeoutError
+    RateLimitError = Exception
 
 from ....config.config import get_config
 from .graph_visualizer import GraphVisualizer
@@ -23,6 +31,16 @@ GUARDRAIL_DECISION_ALIASES = {
     "generate_cypher": "generate_cypher",
     "end": "end",
 }
+
+RETRYABLE_EXCEPTIONS = (APIError, APITimeoutError, RateLimitError, TimeoutError)
+
+
+class LLMProvider(Enum):
+    """Available LLM providers for fallback chain."""
+
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+    GOOGLE = "google"
 
 
 class RAG:
@@ -60,41 +78,11 @@ class RAG:
         config = get_config()
 
         self.graph_timeout_sec = graph_timeout_sec
+        self.llm_timeout_sec = llm_timeout_sec
         self.api_key = api_key
+        self.config = config
         self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
         self.max_results = max_results if max_results is not None else config.rag.max_results
-
-        # Check for non-empty API keys
-        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-
-        if openai_key or deepseek_key:
-            self.fast_llm = BaseChatOpenAI(
-                model=config.llm.fast_model.name,
-                api_key=api_key,
-                temperature=config.llm.fast_model.temperature,
-                timeout=llm_timeout_sec,
-            )
-
-            self.cypher_llm = BaseChatOpenAI(
-                model=config.llm.accurate_model.name,
-                api_key=api_key,
-                temperature=config.llm.accurate_model.temperature,
-                timeout=llm_timeout_sec,
-            )
-        else:
-            self.fast_llm = ChatGoogleGenerativeAI(
-                model=config.llm.gemini.name,
-                google_api_key=api_key,
-                temperature=1.0,
-                timeout=llm_timeout_sec,
-            )
-            self.cypher_llm = ChatGoogleGenerativeAI(
-                model=config.llm.gemini.name,
-                google_api_key=api_key,
-                temperature=1.0,
-                timeout=llm_timeout_sec,
-            )
 
         self._initialize_prompt_templates()
 
@@ -134,25 +122,110 @@ class RAG:
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10) + wait_random(0, 1),
     )
-    def _invoke_with_retry(self, chain: Any, inputs: Dict[str, Any], config: dict) -> Any:
-        # TODO: fallback chain OpenAI → DeepSeek → Google
-        # Currently only the OpenAI-compatible client path is wired at startup.
-        try:
-            return chain.invoke(inputs, config=config)
-        except TimeoutError as exc:
-            raise TimeoutError(RAG.LLM_CALL_TIMEOUT_MESSAGE) from exc
-
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=10) + wait_random(0, 1),
-    )
     async def _ainvoke_with_retry(self, chain: Any, inputs: Dict[str, Any], config: dict) -> Any:
-        # TODO: fallback chain OpenAI → DeepSeek → Google
-        # Currently only the OpenAI-compatible client path is wired at startup.
         try:
             return await chain.ainvoke(inputs, config=config)
         except TimeoutError as exc:
             raise TimeoutError(RAG.LLM_CALL_TIMEOUT_MESSAGE) from exc
+
+    def _get_configured_providers(self) -> List[LLMProvider]:
+        """Read provider fallback order from config and filter by available API keys."""
+        config = self.config
+        fallback_order = getattr(config.llm, "provider_fallback_order", [])
+        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+        google_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+
+        providers = []
+        for provider_name in fallback_order:
+            provider_name_lower = str(provider_name).lower().strip()
+            if provider_name_lower == "openai":
+                if openai_key:
+                    providers.append(LLMProvider.OPENAI)
+            elif provider_name_lower == "deepseek":
+                if deepseek_key:
+                    providers.append(LLMProvider.DEEPSEEK)
+            elif provider_name_lower == "google":
+                if google_key:
+                    providers.append(LLMProvider.GOOGLE)
+
+        return providers if providers else [LLMProvider.OPENAI]  # Fallback to OpenAI
+
+    def _get_model(self, provider: LLMProvider):
+        """Create LLM client for the specified provider."""
+        if provider == LLMProvider.OPENAI:
+            return BaseChatOpenAI(
+                model=self.config.llm.fast_model.name,
+                api_key=self.api_key,
+                temperature=self.config.llm.fast_model.temperature,
+                timeout=self.llm_timeout_sec,
+            )
+        elif provider == LLMProvider.DEEPSEEK:
+            # TODO: Implement DeepSeek client initialization when DEEPSEEK_API_KEY is available
+            raise NotImplementedError("DeepSeek provider not yet implemented")
+        elif provider == LLMProvider.GOOGLE:
+            # TODO: Implement Google Gemini client initialization when GOOGLE_API_KEY is available
+            raise NotImplementedError("Google provider not yet implemented")
+        else:
+            raise ValueError(f"Unknown provider: {provider}")
+
+    async def _ainvoke_with_provider_fallback(
+        self,
+        template: PromptTemplate,
+        inputs: Dict[str, Any],
+        config: dict,
+    ) -> str:
+        """
+        Invoke LLM chain with provider fallback (OpenAI → DeepSeek → Google).
+        Each provider gets up to 3 retries with exponential backoff.
+        Only retries on network/API errors; other errors fail fast.
+
+        Args:
+            template: PromptTemplate to use
+            inputs: Input dict for the chain
+            config: Invoke config with callbacks/metadata
+
+        Returns:
+            LLM output string
+
+        Raises:
+            RuntimeError: When all configured providers are exhausted
+        """
+        providers = self._get_configured_providers()
+        last_error = None
+
+        for provider in providers:
+            try:
+                if self.enable_debug:
+                    print(f"[Fallback] Trying provider: {provider.value}")
+
+                model = self._get_model(provider)
+                chain = template | model | StrOutputParser()
+
+                result = await self._ainvoke_with_retry(chain, inputs, config)
+
+                if self.enable_debug:
+                    print(f"[Fallback] Success with {provider.value}")
+                return result
+
+            except RETRYABLE_EXCEPTIONS as exc:
+                # Network/API errors → try next provider
+                last_error = exc
+                if self.enable_debug:
+                    print(f"[Fallback] {provider.value} failed (retryable): {exc}; trying next...")
+                continue
+
+            except Exception as exc:
+                # Other errors (config, not-implemented, etc) → fail fast
+                if self.enable_debug:
+                    print(f"[Fallback] {provider.value} failed (non-retryable): {exc}")
+                raise
+
+        # All providers exhausted
+        raise RuntimeError(
+            f"All LLM providers exhausted. Last error: {last_error}. "
+            f"Configured providers: {[p.value for p in providers]}"
+        )
 
     @property
     def schema(self):
@@ -292,6 +365,7 @@ class RAG:
         """
         Generate CYPHER query from user question using database schema.
         Uses better model (gpt-5-mini) for complex Cypher generation.
+        Tries providers in configured fallback order.
 
         Args:
             state: Current pipeline state
@@ -302,9 +376,8 @@ class RAG:
         schema = self.schema
         print(f"[Schema used for Cypher generation] ({len(schema)} chars):\n{schema or '(empty)'}")
 
-        chain = self.generate_cypher_template | self.cypher_llm | StrOutputParser()
-        generated_cypher = await self._ainvoke_with_retry(
-            chain,
+        generated_cypher = await self._ainvoke_with_provider_fallback(
+                self.generate_cypher_template,
             {
                 "user_question": state["user_question"],
                 "schema": schema,
@@ -355,6 +428,7 @@ class RAG:
         Decide whether to use graph retrieval or general LLM knowledge.
         Uses fast model (gpt-5-nano) for quick decision.
         Expects JSON response with decision field ("generate" or "end").
+        Tries providers in configured fallback order.
 
         Args:
             state: Current pipeline state
@@ -362,10 +436,8 @@ class RAG:
         Returns:
             Updated state with next node decision
         """
-        guardrails_chain = self.guard_rails_template | self.fast_llm | StrOutputParser()
-
-        guardrail_output = await self._ainvoke_with_retry(
-            guardrails_chain,
+        guardrail_output = await self._ainvoke_with_provider_fallback(
+                self.guard_rails_template,
             {"user_question": state["user_question"]},
             config=self._get_invoke_config(
                 trace_id=state["trace_id"],
@@ -435,6 +507,7 @@ class RAG:
         Returns:
             Dictionary with context from graph or "W bazie danych nie ma informacji"
         """
+        """Synchronous wrapper for CLI/tests only; do not call from an active event loop."""
         return asyncio.run(self.ainvoke(message, session_id=session_id))
 
     async def ainvoke(
