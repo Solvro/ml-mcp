@@ -22,6 +22,7 @@ except ImportError:
     RateLimitError = Exception
 
 from ....config.config import get_config
+from ....config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE, LLM_CALL_TIMEOUT_MESSAGE
 from .graph_visualizer import GraphVisualizer
 from .state import State
 
@@ -45,11 +46,6 @@ class LLMProvider(Enum):
 
 class RAG:
     """Retrieval-Augmented Generation system with Neo4j graph database backend."""
-
-    GRAPH_PIPELINE_TIMEOUT_MESSAGE = (
-        "The knowledge graph pipeline exceeded the maximum allowed wait time."
-    )
-    LLM_CALL_TIMEOUT_MESSAGE = "The language model request exceeded the maximum allowed wait time."
 
     def __init__(
         self,
@@ -126,54 +122,81 @@ class RAG:
         try:
             return await chain.ainvoke(inputs, config=config)
         except TimeoutError as exc:
-            raise TimeoutError(RAG.LLM_CALL_TIMEOUT_MESSAGE) from exc
+            raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
+
+    @staticmethod
+    def _available_provider_keys() -> Dict[LLMProvider, str]:
+        """Return providers that have a non-empty API key in the environment."""
+        key_by_provider = {
+            LLMProvider.OPENAI: os.environ.get("OPENAI_API_KEY", "").strip(),
+            LLMProvider.DEEPSEEK: os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+            LLMProvider.GOOGLE: os.environ.get("GOOGLE_API_KEY", "").strip(),
+        }
+        return {provider: key for provider, key in key_by_provider.items() if key}
 
     def _get_configured_providers(self) -> List[LLMProvider]:
         """Read provider fallback order from config and filter by available API keys."""
-        config = self.config
-        fallback_order = getattr(config.llm, "provider_fallback_order", [])
-        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-        google_key = os.environ.get("GOOGLE_API_KEY", "").strip()
+        available = self._available_provider_keys()
+        fallback_order = getattr(self.config.llm, "provider_fallback_order", [])
 
-        providers = []
+        providers: List[LLMProvider] = []
         for provider_name in fallback_order:
             provider_name_lower = str(provider_name).lower().strip()
-            if provider_name_lower == "openai":
-                if openai_key:
-                    providers.append(LLMProvider.OPENAI)
-            elif provider_name_lower == "deepseek":
-                if deepseek_key:
-                    providers.append(LLMProvider.DEEPSEEK)
-            elif provider_name_lower == "google":
-                if google_key:
-                    providers.append(LLMProvider.GOOGLE)
+            if provider_name_lower == "openai" and LLMProvider.OPENAI in available:
+                providers.append(LLMProvider.OPENAI)
+            elif provider_name_lower == "deepseek" and LLMProvider.DEEPSEEK in available:
+                providers.append(LLMProvider.DEEPSEEK)
+            elif provider_name_lower == "google" and LLMProvider.GOOGLE in available:
+                providers.append(LLMProvider.GOOGLE)
 
-        return providers if providers else [LLMProvider.OPENAI]  # Fallback to OpenAI
+        if providers:
+            return providers
 
-    def _get_model(self, provider: LLMProvider):
+        # No config match (e.g. only GOOGLE_API_KEY while order lists openai only).
+        default_chain = (LLMProvider.OPENAI, LLMProvider.DEEPSEEK, LLMProvider.GOOGLE)
+        return [provider for provider in default_chain if provider in available]
+
+    def _get_model(self, provider: LLMProvider, *, use_accurate: bool = False):
         """Create LLM client for the specified provider."""
+        model_cfg = (
+            self.config.llm.accurate_model if use_accurate else self.config.llm.fast_model
+        )
+
         if provider == LLMProvider.OPENAI:
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip() or self.api_key
             return BaseChatOpenAI(
-                model=self.config.llm.fast_model.name,
-                api_key=self.api_key,
-                temperature=self.config.llm.fast_model.temperature,
+                model=model_cfg.name,
+                api_key=api_key,
+                temperature=model_cfg.temperature,
                 timeout=self.llm_timeout_sec,
             )
-        elif provider == LLMProvider.DEEPSEEK:
-            # TODO: Implement DeepSeek client initialization when DEEPSEEK_API_KEY is available
-            raise NotImplementedError("DeepSeek provider not yet implemented")
-        elif provider == LLMProvider.GOOGLE:
-            # TODO: Implement Google Gemini client initialization when GOOGLE_API_KEY is available
-            raise NotImplementedError("Google provider not yet implemented")
-        else:
-            raise ValueError(f"Unknown provider: {provider}")
+        if provider == LLMProvider.DEEPSEEK:
+            api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip() or self.api_key
+            return BaseChatOpenAI(
+                model=model_cfg.name,
+                api_key=api_key,
+                base_url=self.config.llm.deepseek.base_url,
+                temperature=model_cfg.temperature,
+                timeout=self.llm_timeout_sec,
+            )
+        if provider == LLMProvider.GOOGLE:
+            api_key = os.environ.get("GOOGLE_API_KEY", "").strip() or self.api_key
+            return ChatGoogleGenerativeAI(
+                model=self.config.llm.gemini.name,
+                google_api_key=api_key,
+                temperature=1.0,
+                timeout=self.llm_timeout_sec,
+            )
+
+        raise ValueError(f"Unknown provider: {provider}")
 
     async def _ainvoke_with_provider_fallback(
         self,
         template: PromptTemplate,
         inputs: Dict[str, Any],
         config: dict,
+        *,
+        use_accurate: bool = False,
     ) -> str:
         """
         Invoke LLM chain with provider fallback (OpenAI → DeepSeek → Google).
@@ -192,6 +215,12 @@ class RAG:
             RuntimeError: When all configured providers are exhausted
         """
         providers = self._get_configured_providers()
+        if not providers:
+            raise RuntimeError(
+                "No LLM provider available. Set OPENAI_API_KEY, "
+                "DEEPSEEK_API_KEY, or GOOGLE_API_KEY."
+            )
+
         last_error = None
 
         for provider in providers:
@@ -199,7 +228,7 @@ class RAG:
                 if self.enable_debug:
                     print(f"[Fallback] Trying provider: {provider.value}")
 
-                model = self._get_model(provider)
+                model = self._get_model(provider, use_accurate=use_accurate)
                 chain = template | model | StrOutputParser()
 
                 result = await self._ainvoke_with_retry(chain, inputs, config)
@@ -280,6 +309,8 @@ class RAG:
         """Raise if generated Cypher contains write-operation keywords."""
         clean = re.sub(r"//[^\n]*", "", query)
         clean = re.sub(r"/\*.*?\*/", "", clean, flags=re.DOTALL)
+        clean = re.sub(r"'(?:[^'\\]|\\.)*'", " ", clean)
+        clean = re.sub(r'"(?:[^"\\]|\\.)*"', " ", clean)
 
         tokens = set(re.findall(r"\b[A-Z]+\b", clean.upper()))
         blocked = tokens & FORBIDDEN_CLAUSES
@@ -377,7 +408,7 @@ class RAG:
         print(f"[Schema used for Cypher generation] ({len(schema)} chars):\n{schema or '(empty)'}")
 
         generated_cypher = await self._ainvoke_with_provider_fallback(
-                self.generate_cypher_template,
+            self.generate_cypher_template,
             {
                 "user_question": state["user_question"],
                 "schema": schema,
@@ -388,6 +419,7 @@ class RAG:
                 run_name="Generate Cypher",
                 handler=state.get("callback_handler"),
             ),
+            use_accurate=True,
         )
 
         return {"generated_cypher": generated_cypher}
@@ -437,7 +469,7 @@ class RAG:
             Updated state with next node decision
         """
         guardrail_output = await self._ainvoke_with_provider_fallback(
-                self.guard_rails_template,
+            self.guard_rails_template,
             {"user_question": state["user_question"]},
             config=self._get_invoke_config(
                 trace_id=state["trace_id"],
@@ -540,6 +572,6 @@ class RAG:
                 timeout=self.graph_timeout_sec,
             )
         except asyncio.TimeoutError as exc:
-            raise TimeoutError(RAG.GRAPH_PIPELINE_TIMEOUT_MESSAGE) from exc
+            raise TimeoutError(GRAPH_PIPELINE_TIMEOUT_MESSAGE) from exc
 
         return self._format_response(result)

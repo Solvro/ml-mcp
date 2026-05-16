@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 from pydantic import BaseModel
 
 
@@ -46,6 +45,10 @@ class Clarin(BaseModel):
     base_url: str
 
 
+class Deepseek(BaseModel):
+    base_url: str
+
+
 class Gemini(BaseModel):
     name: str
 
@@ -53,7 +56,9 @@ class Gemini(BaseModel):
 class Llm(BaseModel):
     fast_model: FastModel
     accurate_model: AccurateModel
+    provider_fallback_order: list[str]
     clarin: Clarin
+    deepseek: Deepseek
     gemini: Gemini
 
 

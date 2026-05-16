@@ -32,6 +32,8 @@ llm:
   clarin:
     name: "pllum"
     base_url: "https://services.clarin-pl.eu/api/v1/oapi"
+  deepseek:
+    base_url: "https://api.deepseek.com"
   gemini:
     name: "gemini-2.5-flash-lite"
 

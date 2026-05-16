@@ -11,7 +11,7 @@ from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import SecretStr
 
 from ..config.config import get_config
-from ..mcp_server.tools.knowledge_graph.rag import RAG
+from ..config.messages import LLM_CALL_TIMEOUT_MESSAGE
 
 load_dotenv()
 
@@ -144,7 +144,7 @@ async def query_knowledge_graph(
             timeout=llm_timeout_sec,
         )
     except asyncio.TimeoutError as exc:
-        raise TimeoutError(RAG.LLM_CALL_TIMEOUT_MESSAGE) from exc
+        raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
 
     print(llm_response.content)
     return llm_response

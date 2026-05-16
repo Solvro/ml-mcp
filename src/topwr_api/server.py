@@ -14,7 +14,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from ..config.config import get_config
-from ..mcp_server.tools.knowledge_graph.rag import RAG
+from ..config.messages import LLM_CALL_TIMEOUT_MESSAGE
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
 
@@ -160,7 +160,7 @@ async def generate_final_answer(
             timeout=llm_timeout_sec,
         )
     except asyncio.TimeoutError as exc:
-        raise TimeoutError(RAG.LLM_CALL_TIMEOUT_MESSAGE) from exc
+        raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
     return response.content
 
 
