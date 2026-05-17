@@ -1,14 +1,17 @@
+import asyncio
 import os
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
 from ..config.config import get_config
+from ..llm_hardening import get_llm_timeout_seconds
 from .tools.knowledge_graph.rag import RAG
 
 load_dotenv()
 
 mcp = FastMCP("SOLVRO MCP")
+llm_timeout_seconds = get_llm_timeout_seconds()
 
 rag = None
 langfuse = None
@@ -77,7 +80,10 @@ async def knowledge_graph_tool(user_input: str, trace_id: str = None) -> str:
     if rag is None:
         return "Error: RAG not initialized. Please start the server first."
 
-    result = await rag.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler)
+    result = await asyncio.wait_for(
+        rag.ainvoke(message=user_input, trace_id=trace_id, callback_handler=handler),
+        timeout=llm_timeout_seconds,
+    )
 
     metadata = result.get("metadata", {})
     print(f"[Guardrail decision] {metadata.get('guardrail_decision')}")

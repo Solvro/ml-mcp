@@ -123,6 +123,9 @@ GOOGLE_API_KEY=
 # CLARIN LLM API key (optional, used by API & client)
 CLARIN_API_KEY=
 
+# LLM request timeout in seconds
+LLM_TIMEOUT_SECONDS=30
+
 
 ########################################
 # Langfuse Observability

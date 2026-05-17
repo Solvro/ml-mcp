@@ -1,5 +1,6 @@
 """FastAPI application for ToPWR MCP integration."""
 
+import asyncio
 import logging
 import os
 import uuid
@@ -13,6 +14,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from ..config.config import get_config
+from ..llm_hardening import get_llm_timeout_seconds
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
 
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 config = get_config()
+llm_timeout_seconds = get_llm_timeout_seconds()
 
 # MCP Client setup
 mcp_host = os.getenv("MCP_HOST", config.servers.mcp.host)
@@ -45,12 +48,14 @@ if clarin_api_key:
         model_name=config.llm.clarin.name,
         base_url=config.llm.clarin.base_url,
         api_key=clarin_api_key,
+        timeout=llm_timeout_seconds,
     )
 elif google_api_key:
     llm = ChatGoogleGenerativeAI(
         model=config.llm.gemini.name,
         google_api_key=google_api_key,
         temperature=1.0,
+        request_timeout=llm_timeout_seconds,
     )
 else:
     logger.warning("No LLM API key found. Chat will return raw knowledge graph data.")
@@ -144,7 +149,7 @@ async def generate_final_answer(user_input: str, kg_data: str, history: str = ""
         user_input=user_input, data=kg_data, history=history or "(no prior conversation)"
     )
 
-    response = await llm.ainvoke(final_prompt)
+    response = await asyncio.wait_for(llm.ainvoke(final_prompt), timeout=llm_timeout_seconds)
     return response.content
 
 
