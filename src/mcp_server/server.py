@@ -6,6 +6,8 @@ from fastmcp import FastMCP
 from langfuse.langchain import CallbackHandler
 
 from ..config.config import get_config
+from ..config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
+from ..config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
 from .tools.knowledge_graph.rag import RAG
 
 load_dotenv()
@@ -57,6 +59,8 @@ def initialize_rag():
         neo4j_url=neo4j_uri,
         neo4j_username=neo4j_username,
         neo4j_password=neo4j_password,
+        graph_timeout_sec=get_graph_timeout_seconds(),
+        llm_timeout_sec=get_llm_timeout_seconds(),
     )
 
     return rag
@@ -85,13 +89,15 @@ async def knowledge_graph_tool(
         per_request_handler = CallbackHandler(
             trace_context={"trace_id": trace_id} if trace_id else None,
         )
-
-    result = await rag.ainvoke(
-        message=user_input,
-        session_id=session_id,
-        trace_id=trace_id,
-        callback_handler=per_request_handler,
-    )
+    try:
+        result = await rag.ainvoke(
+            message=user_input,
+            session_id=session_id,
+            trace_id=trace_id,
+            callback_handler=per_request_handler,
+        )
+    except TimeoutError:
+        return f"Error: {GRAPH_PIPELINE_TIMEOUT_MESSAGE}"
 
     metadata = result.get("metadata", {})
     print(f"[Guardrail decision] {metadata.get('guardrail_decision')}")

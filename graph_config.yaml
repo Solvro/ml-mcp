@@ -12,6 +12,8 @@ servers:
 rag:
   max_results: 5
   enable_debug: false
+  llm_timeout_seconds: 30
+  graph_timeout_seconds: 90
 
 data_pipeline:
   max_chunk_size: 30000

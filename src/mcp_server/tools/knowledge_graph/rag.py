@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import Any, Dict
@@ -11,6 +12,8 @@ from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
 
 from ....config.config import get_config
+from ....config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
+from ....config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
 from .cypher_guardrails import (
     UnsafeCypherQueryError,
     ensure_limit,
@@ -32,6 +35,8 @@ class RAG:
         neo4j_password: str,
         enable_debug: bool = None,
         max_results: int = None,
+        llm_timeout_sec: float | None = None,
+        graph_timeout_sec: float | None = None,
     ):
         """
         Initialize RAG system with API keys and database credentials.
@@ -49,6 +54,12 @@ class RAG:
         self.api_key = api_key
         self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
         self.max_results = max_results if max_results is not None else config.rag.max_results
+        self.llm_timeout_sec = (
+            llm_timeout_sec if llm_timeout_sec is not None else get_llm_timeout_seconds()
+        )
+        self.graph_timeout_sec = (
+            graph_timeout_sec if graph_timeout_sec is not None else get_graph_timeout_seconds()
+        )
 
         # Check for non-empty API keys
         openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
@@ -59,23 +70,27 @@ class RAG:
                 model=config.llm.fast_model.name,
                 api_key=api_key,
                 temperature=config.llm.fast_model.temperature,
+                timeout=self.llm_timeout_sec,
             )
 
             self.cypher_llm = BaseChatOpenAI(
                 model=config.llm.accurate_model.name,
                 api_key=api_key,
                 temperature=config.llm.accurate_model.temperature,
+                timeout=self.llm_timeout_sec,
             )
         else:
             self.fast_llm = ChatGoogleGenerativeAI(
                 model=config.llm.gemini.name,
                 google_api_key=api_key,
                 temperature=1.0,
+                timeout=self.llm_timeout_sec,
             )
             self.cypher_llm = ChatGoogleGenerativeAI(
                 model=config.llm.gemini.name,
                 google_api_key=api_key,
                 temperature=1.0,
+                timeout=self.llm_timeout_sec,
             )
 
         self._initialize_prompt_templates()
@@ -386,14 +401,20 @@ class RAG:
         Returns:
             Dictionary with context from graph or "W bazie danych nie ma informacji"
         """
-        result = await self.graph.ainvoke(
-            {
-                "user_question": message,
-                "trace_id": trace_id,
-                "session_id": session_id,
-                "callback_handler": callback_handler,
-            }
-        )
+        try:
+            result = await asyncio.wait_for(
+                self.graph.ainvoke(
+                    {
+                        "user_question": message,
+                        "trace_id": trace_id,
+                        "session_id": session_id,
+                        "callback_handler": callback_handler,
+                    }
+                ),
+                timeout=self.graph_timeout_sec,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(GRAPH_PIPELINE_TIMEOUT_MESSAGE) from exc
 
         if result.get("answer") == "W bazie danych nie ma informacji":
             return {
