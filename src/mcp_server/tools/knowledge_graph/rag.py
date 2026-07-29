@@ -11,6 +11,12 @@ from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
 
 from ....config.config import get_config
+from .cypher_guardrails import (
+    UnsafeCypherQueryError,
+    ensure_limit,
+    strip_code_fences,
+    validate_read_only,
+)
 from .graph_visualizer import GraphVisualizer
 from .state import State
 
@@ -254,19 +260,24 @@ class RAG:
         cypher_query = state.get("generated_cypher", "")
 
         try:
-            if "LIMIT" not in cypher_query.upper():
-                cypher_query = f"{cypher_query.rstrip(';')} LIMIT {self.max_results}"
+            cypher_query = strip_code_fences(cypher_query)
+            validate_read_only(cypher_query)
+            cypher_query = ensure_limit(cypher_query, self.max_results)
 
             response = self.database.query(cypher_query)
 
             return {"context": response}
 
+        except UnsafeCypherQueryError as e:
+            error_msg = f"Blocked unsafe Cypher: {e}"
+            if self.enable_debug:
+                print(f"[Cypher Blocked] {error_msg}")
+            return {"context": [], "generated_cypher": error_msg}
+
         except Exception as e:
             error_msg = str(e)
-
             if self.enable_debug:
                 print(f"[Query Error] {error_msg}")
-
             return {"context": [], "generated_cypher": f"Query failed: {error_msg}"}
 
     def guardrails_system(self, state: State):
