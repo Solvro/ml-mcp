@@ -87,20 +87,28 @@ class RAG:
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
 
-    def _get_invoke_config(self, trace_id: str, tags: list, run_name: str, handler=None) -> dict:
+    def _get_invoke_config(
+        self,
+        trace_id: str,
+        tags: list,
+        run_name: str,
+        handler=None,
+        session_id: str = None,
+    ) -> dict:
         """
         Build invoke config with optional callbacks.
 
         Args:
-        trace_id: Used as Langfuse session_id in metadata
+        trace_id: Trace identifier for this single request
         tags: Langfuse tags applied to the spans
         run_name: Human-readable name for the span in Langfuse
         handler: Optional CallbackHandler
+        session_id: Conversation session identifier used as Langfuse session_id
 
         """
         config = {
             "metadata": {
-                "langfuse_session_id": trace_id,
+                "langfuse_session_id": session_id,
                 "langfuse_tags": tags,
                 "run_name": run_name,
             },
@@ -226,6 +234,7 @@ class RAG:
                 tags=["knowledge_graph", "generated_cypher"],
                 run_name="Generate Cypher",
                 handler=state.get("callback_handler"),
+                session_id=state.get("session_id"),
             ),
         )
 
@@ -281,6 +290,7 @@ class RAG:
                     tags=["knowledge_graph", "guardrails"],
                     run_name="Guardrails",
                     handler=state.get("callback_handler"),
+                    session_id=state.get("session_id"),
                 ),
             )
             .strip()
@@ -369,6 +379,7 @@ class RAG:
             {
                 "user_question": message,
                 "trace_id": trace_id,
+                "session_id": session_id,
                 "callback_handler": callback_handler,
             }
         )

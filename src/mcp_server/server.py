@@ -1,3 +1,4 @@
+import atexit
 import os
 
 from dotenv import load_dotenv
@@ -28,6 +29,7 @@ if _langfuse_secret and _langfuse_public:
             public_key=_langfuse_public,
             host=_langfuse_host,
         )
+        atexit.register(langfuse.flush)
     except Exception as e:
         print(f"Warning: Failed to initialize Langfuse: {e}")
 else:
@@ -81,12 +83,14 @@ async def knowledge_graph_tool(
     per_request_handler = None
     if langfuse is not None:
         per_request_handler = CallbackHandler(
-            trace_id=trace_id,
-            session_id=session_id,
+            trace_context={"trace_id": trace_id} if trace_id else None,
         )
 
     result = await rag.ainvoke(
-        message=user_input, trace_id=trace_id, callback_handler=per_request_handler
+        message=user_input,
+        session_id=session_id,
+        trace_id=trace_id,
+        callback_handler=per_request_handler,
     )
 
     metadata = result.get("metadata", {})

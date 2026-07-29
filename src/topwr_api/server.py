@@ -156,7 +156,11 @@ async def query_mcp_knowledge_graph(
 
 
 async def generate_final_answer(
-    user_input: str, kg_data: str, history: str = "", callback_handler=None
+    user_input: str,
+    kg_data: str,
+    history: str = "",
+    callback_handler=None,
+    session_id: str = None,
 ) -> str:
     """
     Generate a final answer using the LLM with knowledge graph context.
@@ -166,6 +170,7 @@ async def generate_final_answer(
         kg_data: Knowledge graph data from MCP server
         history: Recent conversation history as a formatted string
         callback_handler: Optional Langfuse CallbackHandler
+        session_id: Conversation session identifier used as Langfuse session_id
 
     Returns:
         LLM-generated answer
@@ -177,7 +182,16 @@ async def generate_final_answer(
         user_input=user_input, data=kg_data, history=history or "(no prior conversation)"
     )
 
-    invoke_config = {"callbacks": [callback_handler]} if callback_handler else {}
+    invoke_config = {}
+    if callback_handler:
+        invoke_config = {
+            "callbacks": [callback_handler],
+            "metadata": {
+                "langfuse_session_id": session_id,
+                "langfuse_tags": ["final_answer"],
+                "run_name": "Final Answer",
+            },
+        }
     response = await llm.ainvoke(final_prompt, config=invoke_config)
     return response.content
 
@@ -244,10 +258,7 @@ async def chat(request: ChatRequest):
 
         answer_handler = None
         if langfuse is not None:
-            answer_handler = CallbackHandler(
-                trace_id=trace_id,
-                session_id=session.session_id,
-            )
+            answer_handler = CallbackHandler(trace_context={"trace_id": trace_id})
 
         try:
             kg_data = await query_mcp_knowledge_graph(
@@ -263,6 +274,7 @@ async def chat(request: ChatRequest):
                 kg_data=kg_data,
                 history=history,
                 callback_handler=answer_handler,
+                session_id=session.session_id,
             )
             source = "mcp_knowledge_graph"
 
