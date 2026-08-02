@@ -11,8 +11,11 @@ from langchain_openai.chat_models.base import BaseChatOpenAI
 from pydantic import SecretStr
 
 from ..config.config import get_config
+from ..config.messages import LLM_CALL_TIMEOUT_MESSAGE
+from ..config.timeouts import get_llm_timeout_seconds
 
 load_dotenv()
+llm_timeout_sec = get_llm_timeout_seconds()
 
 config = get_config()
 mcp_host = os.getenv("MCP_HOST", config.servers.mcp.host)
@@ -31,18 +34,21 @@ if openai_api_key:
         model=config.llm.accurate_model.name,
         api_key=SecretStr(openai_api_key),
         temperature=config.llm.accurate_model.temperature,
+        timeout=llm_timeout_sec,
     )
 elif clarin_api_key:
     llm = ChatOpenAI(
         model_name=config.llm.clarin.name,
         base_url=config.llm.clarin.base_url,
         api_key=clarin_api_key,
+        timeout=llm_timeout_sec,
     )
 elif google_api_key:
     llm = ChatGoogleGenerativeAI(
         model=config.llm.gemini.name,
         google_api_key=google_api_key,
         temperature=1.0,
+        timeout=llm_timeout_sec,
     )
 else:
     raise ValueError(
@@ -130,7 +136,10 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
     if handler is not None:
         invoke_config["callbacks"] = [handler]
 
-    llm_response = await llm.ainvoke(final_prompt, config=invoke_config)
+    try:
+        llm_response = await llm.ainvoke(final_prompt, config=invoke_config)
+    except TimeoutError as exc:
+        raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
 
     print(llm_response.content)
     return llm_response
