@@ -27,9 +27,17 @@ llm:
   accurate_model:
     name: "gpt-5.4-mini"
     temperature: 0
+  provider_fallback_order:
+    - "openai"
+    - "deepseek"
+    - "google"
   clarin:
     name: "pllum"
     base_url: "https://services.clarin-pl.eu/api/v1/oapi"
+  deepseek:
+    base_url: "https://api.deepseek.com"
+    fast_model: "deepseek-chat"
+    accurate_model: "deepseek-chat"
   gemini:
     name: "gemini-2.5-flash-lite"
 
@@ -146,8 +154,11 @@ prompts:
     You are a classifier for a Wrocław University of Science and Technology (Politechnika Wrocławska) assistant.
     Assume that any question mentioning professors, teachers, courses, classes, departments, buildings,
     research, or other academic topics refers to Politechnika Wrocławska.
-    Is this question related to university topics (answer "generate_cypher") or completely unrelated (answer "end")?
-    Answer ONLY: "generate_cypher" or "end"
+    Decide whether to continue graph retrieval ("generate") or stop ("end").
+    Answer ONLY with valid JSON in this exact shape:
+    {{"decision": "generate"}}
+    or
+    {{"decision": "end"}}
 
     Question: {user_question}
     Answer:

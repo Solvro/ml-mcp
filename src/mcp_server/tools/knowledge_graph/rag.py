@@ -1,8 +1,10 @@
 import asyncio
 import json
 import os
-from typing import Any, Dict
+from enum import Enum
+from typing import Any, Dict, List
 
+from google.genai.errors import ServerError as GoogleServerError
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -10,6 +12,7 @@ from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
+from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
 
 from ....config.config import get_config
 from ....config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
@@ -22,6 +25,28 @@ from .cypher_guardrails import (
 )
 from .graph_visualizer import GraphVisualizer
 from .state import State
+
+PROVIDER_FALLBACK_EXCEPTIONS = (
+    APITimeoutError,
+    APIConnectionError,
+    RateLimitError,
+    InternalServerError,
+    GoogleServerError,
+)
+
+GUARDRAIL_DECISION_ALIASES = {
+    "generate": "generate_cypher",
+    "generate_cypher": "generate_cypher",
+    "end": "end",
+}
+
+
+class LLMProvider(Enum):
+    """Available LLM providers for the runtime fallback chain."""
+
+    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
+    GOOGLE = "google"
 
 
 class RAG:
@@ -48,50 +73,24 @@ class RAG:
             neo4j_password: Neo4j password
             enable_debug: Enable debug output (default: False)
             max_results: Maximum number of results from Neo4j (default: 5)
+            llm_timeout_sec: Per-call HTTP timeout for each LLM client
+            graph_timeout_sec: Wall-clock budget for the whole RAG run
         """
         config = get_config()
 
         self.api_key = api_key
-        self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
-        self.max_results = max_results if max_results is not None else config.rag.max_results
+        self.config = config
         self.llm_timeout_sec = (
             llm_timeout_sec if llm_timeout_sec is not None else get_llm_timeout_seconds()
         )
         self.graph_timeout_sec = (
             graph_timeout_sec if graph_timeout_sec is not None else get_graph_timeout_seconds()
         )
+        self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
+        self.max_results = max_results if max_results is not None else config.rag.max_results
 
-        # Check for non-empty API keys
-        openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-
-        if openai_key or deepseek_key:
-            self.fast_llm = BaseChatOpenAI(
-                model=config.llm.fast_model.name,
-                api_key=api_key,
-                temperature=config.llm.fast_model.temperature,
-                timeout=self.llm_timeout_sec,
-            )
-
-            self.cypher_llm = BaseChatOpenAI(
-                model=config.llm.accurate_model.name,
-                api_key=api_key,
-                temperature=config.llm.accurate_model.temperature,
-                timeout=self.llm_timeout_sec,
-            )
-        else:
-            self.fast_llm = ChatGoogleGenerativeAI(
-                model=config.llm.gemini.name,
-                google_api_key=api_key,
-                temperature=1.0,
-                timeout=self.llm_timeout_sec,
-            )
-            self.cypher_llm = ChatGoogleGenerativeAI(
-                model=config.llm.gemini.name,
-                google_api_key=api_key,
-                temperature=1.0,
-                timeout=self.llm_timeout_sec,
-            )
+        self.fast_llm = self._build_llm_with_fallback(use_accurate=False)
+        self.cypher_llm = self._build_llm_with_fallback(use_accurate=True)
 
         self._initialize_prompt_templates()
 
@@ -137,6 +136,92 @@ class RAG:
         if handler is not None:
             config["callbacks"] = [handler]
         return config
+
+    @staticmethod
+    def _available_provider_keys() -> Dict[LLMProvider, str]:
+        """Return providers that have a non-empty API key in the environment."""
+        key_by_provider = {
+            LLMProvider.OPENAI: os.environ.get("OPENAI_API_KEY", "").strip(),
+            LLMProvider.DEEPSEEK: os.environ.get("DEEPSEEK_API_KEY", "").strip(),
+            LLMProvider.GOOGLE: os.environ.get("GOOGLE_API_KEY", "").strip(),
+        }
+        return {provider: key for provider, key in key_by_provider.items() if key}
+
+    def _get_configured_providers(self) -> List[LLMProvider]:
+        """Read provider fallback order from config and filter by available API keys."""
+        available = self._available_provider_keys()
+
+        providers: List[LLMProvider] = []
+        for provider_name in self.config.llm.provider_fallback_order:
+            provider = LLMProvider(str(provider_name).strip().lower())
+            if provider in available and provider not in providers:
+                providers.append(provider)
+
+        if providers:
+            return providers
+        return [provider for provider in LLMProvider if provider in available]
+
+    def _build_chat_model(self, provider: LLMProvider, *, use_accurate: bool = False):
+        """Create a single LLM client for the specified provider."""
+        model_cfg = self.config.llm.accurate_model if use_accurate else self.config.llm.fast_model
+
+        if provider == LLMProvider.OPENAI:
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+            return BaseChatOpenAI(
+                model=model_cfg.name,
+                api_key=api_key,
+                temperature=model_cfg.temperature,
+                timeout=self.llm_timeout_sec,
+            )
+
+        if provider == LLMProvider.DEEPSEEK:
+            deepseek_cfg = self.config.llm.deepseek
+            api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip() or self.api_key
+            return BaseChatOpenAI(
+                model=deepseek_cfg.accurate_model if use_accurate else deepseek_cfg.fast_model,
+                api_key=api_key,
+                base_url=self.config.llm.deepseek.base_url,
+                temperature=model_cfg.temperature,
+                timeout=self.llm_timeout_sec,
+            )
+
+        if provider == LLMProvider.GOOGLE:
+            api_key = os.environ.get("GOOGLE_API_KEY", "").strip() or self.api_key
+            return ChatGoogleGenerativeAI(
+                model=self.config.llm.gemini.name,
+                google_api_key=api_key,
+                temperature=model_cfg.temperature,
+                timeout=self.llm_timeout_sec,
+            )
+
+        raise ValueError(f"Unknown provider: {provider}")
+
+    def _build_llm_with_fallback(self, *, use_accurate: bool = False):
+        """
+        Build primary LLM client with provider fallbacks via LangChain with_fallbacks.
+
+        Resilience is provider switching (OpenAI → DeepSeek → Google), not same-provider
+        retries. Only provider/network failures listed in PROVIDER_FALLBACK_EXCEPTIONS
+        trigger a switch.
+        """
+        providers = self._get_configured_providers()
+        if not providers:
+            raise RuntimeError(
+                "No LLM provider available. Set OPENAI_API_KEY, "
+                "DEEPSEEK_API_KEY, or GOOGLE_API_KEY."
+            )
+
+        models = [
+            self._build_chat_model(provider, use_accurate=use_accurate) for provider in providers
+        ]
+        primary, *secondaries = models
+        if not secondaries:
+            return primary
+
+        return primary.with_fallbacks(
+            secondaries,
+            exceptions_to_handle=PROVIDER_FALLBACK_EXCEPTIONS,
+        )
 
     @property
     def schema(self):
@@ -187,6 +272,28 @@ class RAG:
             input_variables=["user_question"], template=config.prompts.guardrails
         )
 
+    def _parse_guardrail_output(self, raw_output: str) -> Dict[str, str]:
+        """Parse guardrail JSON and normalize the decision with a safe fallback."""
+        cleaned_output = strip_code_fences(raw_output)
+
+        try:
+            start = cleaned_output.index("{")
+            payload, _ = json.JSONDecoder().raw_decode(cleaned_output[start:])
+        except (ValueError, json.JSONDecodeError) as exc:
+            if self.enable_debug:
+                print(f"[Guardrails Parse Error] invalid JSON: {exc}; raw={raw_output}")
+            return {"decision": "end"}
+
+        decision = str(payload.get("decision", "")).strip().lower()
+        normalized_decision = GUARDRAIL_DECISION_ALIASES.get(decision)
+
+        if normalized_decision is None:
+            if self.enable_debug:
+                print(f"[Guardrails Parse Error] invalid decision={decision!r}; raw={raw_output}")
+            return {"decision": "end"}
+
+        return {"decision": normalized_decision}
+
     def _build_processing_graph(self):
         """Construct the state machine graph for the RAG pipeline."""
         builder = StateGraph(State)
@@ -233,7 +340,7 @@ class RAG:
     def generate_cypher(self, state: State):
         """
         Generate CYPHER query from user question using database schema.
-        Uses better model (gpt-5-mini) for complex Cypher generation.
+        Uses accurate model with provider fallback (OpenAI → DeepSeek → Google).
 
         Args:
             state: Current pipeline state
@@ -291,14 +398,18 @@ class RAG:
 
         except Exception as e:
             error_msg = str(e)
+
             if self.enable_debug:
                 print(f"[Query Error] {error_msg}")
+
             return {"context": [], "generated_cypher": f"Query failed: {error_msg}"}
 
     def guardrails_system(self, state: State):
         """
         Decide whether to use graph retrieval or general LLM knowledge.
-        Uses fast model (gpt-5-nano) for quick decision.
+        Uses fast model with provider fallback (OpenAI → DeepSeek → Google).
+        Expects JSON response with decision field ("generate" or "end").
+
 
         Args:
             state: Current pipeline state
@@ -308,26 +419,28 @@ class RAG:
         """
         guardrails_chain = self.guard_rails_template | self.fast_llm | StrOutputParser()
 
-        guardrail_output = (
-            guardrails_chain.invoke(
-                {"user_question": state["user_question"]},
-                config=self._get_invoke_config(
-                    trace_id=state.get("trace_id"),
-                    tags=["knowledge_graph", "guardrails"],
-                    run_name="Guardrails",
-                    handler=state.get("callback_handler"),
-                    session_id=state.get("session_id"),
-                ),
-            )
-            .strip()
-            .lower()
+        guardrail_output = guardrails_chain.invoke(
+            {"user_question": state["user_question"]},
+            config=self._get_invoke_config(
+                trace_id=state.get("trace_id"),
+                tags=["knowledge_graph", "guardrails"],
+                run_name="Guardrails",
+                handler=state.get("callback_handler"),
+                session_id=state.get("session_id"),
+            ),
         )
-
-        next_node = "generate_cypher" if "generate" in guardrail_output else "end"
+        guardrail_result = self._parse_guardrail_output(guardrail_output)
+        next_node = guardrail_result["decision"]
+        return {
+            "next_node": next_node,
+            "guardrail_decision": guardrail_result["decision"],
+        }
+        guardrail_result = self._parse_guardrail_output(guardrail_output)
+        next_node = guardrail_result["decision"]
 
         return {
             "next_node": next_node,
-            "guardrail_decision": guardrail_output,
+            "guardrail_decision": guardrail_result["decision"],
         }
 
     def return_none(self, state: State):
