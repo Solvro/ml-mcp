@@ -42,9 +42,7 @@ def test_accepts_read_only_query(query):
 
 @pytest.mark.parametrize("keyword", BLOCKED_KEYWORDS)
 def test_ignores_write_keyword_inside_string_literal(keyword):
-    validate_read_only(
-        f"MATCH (n:Node) WHERE n.value CONTAINS '{keyword}' RETURN n.value LIMIT 10"
-    )
+    validate_read_only(f"MATCH (n:Node) WHERE n.value CONTAINS '{keyword}' RETURN n.value LIMIT 10")
 
 
 @pytest.mark.parametrize("keyword", BLOCKED_KEYWORDS)
