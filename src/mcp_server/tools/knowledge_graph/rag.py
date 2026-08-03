@@ -107,10 +107,10 @@ class RAG:
 
         """
         config = {
+            "run_name": run_name,
             "metadata": {
                 "langfuse_session_id": session_id,
                 "langfuse_tags": tags,
-                "run_name": run_name,
             },
         }
         if handler is not None:
@@ -230,7 +230,7 @@ class RAG:
                 "schema": schema,
             },
             config=self._get_invoke_config(
-                trace_id=state["trace_id"],
+                trace_id=state.get("trace_id"),
                 tags=["knowledge_graph", "generated_cypher"],
                 run_name="Generate Cypher",
                 handler=state.get("callback_handler"),
@@ -286,7 +286,7 @@ class RAG:
             guardrails_chain.invoke(
                 {"user_question": state["user_question"]},
                 config=self._get_invoke_config(
-                    trace_id=state["trace_id"],
+                    trace_id=state.get("trace_id"),
                     tags=["knowledge_graph", "guardrails"],
                     run_name="Guardrails",
                     handler=state.get("callback_handler"),
