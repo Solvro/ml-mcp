@@ -87,19 +87,34 @@ class RAG:
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
 
-        self.handler = None
+    def _get_invoke_config(
+        self,
+        trace_id: str,
+        tags: list,
+        run_name: str,
+        handler=None,
+        session_id: str = None,
+    ) -> dict:
+        """
+        Build invoke config with optional callbacks.
 
-    def _get_invoke_config(self, trace_id: str, tags: list, run_name: str) -> dict:
-        """Build invoke config with optional callbacks."""
+        Args:
+        trace_id: Trace identifier for this single request
+        tags: Langfuse tags applied to the spans
+        run_name: Human-readable name for the span in Langfuse
+        handler: Optional CallbackHandler
+        session_id: Conversation session identifier used as Langfuse session_id
+
+        """
         config = {
+            "run_name": run_name,
             "metadata": {
-                "langfuse_session_id": trace_id,
+                "langfuse_session_id": session_id,
                 "langfuse_tags": tags,
-                "run_name": run_name,
             },
         }
-        if self.handler is not None:
-            config["callbacks"] = [self.handler]
+        if handler is not None:
+            config["callbacks"] = [handler]
         return config
 
     @property
@@ -215,9 +230,11 @@ class RAG:
                 "schema": schema,
             },
             config=self._get_invoke_config(
-                trace_id=state["trace_id"],
+                trace_id=state.get("trace_id"),
                 tags=["knowledge_graph", "generated_cypher"],
                 run_name="Generate Cypher",
+                handler=state.get("callback_handler"),
+                session_id=state.get("session_id"),
             ),
         )
 
@@ -269,9 +286,11 @@ class RAG:
             guardrails_chain.invoke(
                 {"user_question": state["user_question"]},
                 config=self._get_invoke_config(
-                    trace_id=state["trace_id"],
+                    trace_id=state.get("trace_id"),
                     tags=["knowledge_graph", "guardrails"],
                     run_name="Guardrails",
+                    handler=state.get("callback_handler"),
+                    session_id=state.get("session_id"),
                 ),
             )
             .strip()
@@ -350,13 +369,20 @@ class RAG:
         Args:
             message: User's question/input
             session_id: Session identifier for tracking
+            trace_id: Trace identifier for this single chat turn
+            callback_handler: Optional Langfuse CallbackHandler scoped to this request
 
         Returns:
             Dictionary with context from graph or "W bazie danych nie ma informacji"
         """
-        self.handler = callback_handler
-
-        result = await self.graph.ainvoke({"user_question": message, "trace_id": trace_id})
+        result = await self.graph.ainvoke(
+            {
+                "user_question": message,
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "callback_handler": callback_handler,
+            }
+        )
 
         if result.get("answer") == "W bazie danych nie ma informacji":
             return {
