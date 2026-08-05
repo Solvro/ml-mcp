@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 
-from src.config.config import get_config
+from .config import get_config
 
 logger = logging.getLogger(__name__)
 

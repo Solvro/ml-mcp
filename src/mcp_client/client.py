@@ -8,6 +8,7 @@ from fastmcp import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import BaseChatOpenAI
+from openai import APITimeoutError
 from pydantic import SecretStr
 
 from ..config.config import get_config
@@ -138,7 +139,7 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
 
     try:
         llm_response = await llm.ainvoke(final_prompt, config=invoke_config)
-    except TimeoutError as exc:
+    except (APITimeoutError, TimeoutError) as exc:
         raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
 
     print(llm_response.content)

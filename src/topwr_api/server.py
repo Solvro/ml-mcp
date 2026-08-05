@@ -12,6 +12,7 @@ from fastmcp import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langfuse.langchain import CallbackHandler
+from openai import APITimeoutError
 
 from ..config.config import get_config
 from ..config.messages import LLM_CALL_TIMEOUT_MESSAGE
@@ -199,9 +200,10 @@ async def generate_final_answer(
         }
     try:
         response = await llm.ainvoke(final_prompt, config=invoke_config)
-    except TimeoutError as exc:
+    except (APITimeoutError, TimeoutError) as exc:
         raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
     return response.content
+
 
 @app.get("/")
 async def root():

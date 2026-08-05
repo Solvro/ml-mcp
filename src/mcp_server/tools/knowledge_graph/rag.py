@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import os
 from enum import Enum
 from typing import Any, Dict, List
@@ -25,6 +26,8 @@ from .cypher_guardrails import (
 )
 from .graph_visualizer import GraphVisualizer
 from .state import State
+
+logger = logging.getLogger(__name__)
 
 PROVIDER_FALLBACK_EXCEPTIONS = (
     APITimeoutError,
@@ -153,7 +156,12 @@ class RAG:
 
         providers: List[LLMProvider] = []
         for provider_name in self.config.llm.provider_fallback_order:
-            provider = LLMProvider(str(provider_name).strip().lower())
+            name = str(provider_name).strip().lower()
+            try:
+                provider = LLMProvider(name)
+            except ValueError:
+                logger.warning("Unknown provider in config: %r; skipping", provider_name)
+                continue
             if provider in available and provider not in providers:
                 providers.append(provider)
 
@@ -172,6 +180,7 @@ class RAG:
                 api_key=api_key,
                 temperature=model_cfg.temperature,
                 timeout=self.llm_timeout_sec,
+                max_retries=0,
             )
 
         if provider == LLMProvider.DEEPSEEK:
@@ -183,6 +192,7 @@ class RAG:
                 base_url=self.config.llm.deepseek.base_url,
                 temperature=model_cfg.temperature,
                 timeout=self.llm_timeout_sec,
+                max_retries=0,
             )
 
         if provider == LLMProvider.GOOGLE:
@@ -192,6 +202,7 @@ class RAG:
                 google_api_key=api_key,
                 temperature=model_cfg.temperature,
                 timeout=self.llm_timeout_sec,
+                max_retries=0,
             )
 
         raise ValueError(f"Unknown provider: {provider}")
