@@ -12,8 +12,11 @@ from fastmcp import Client
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langfuse.langchain import CallbackHandler
+from openai import APITimeoutError
 
 from ..config.config import get_config
+from ..config.messages import LLM_CALL_TIMEOUT_MESSAGE
+from ..config.timeouts import get_llm_timeout_seconds
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
 
@@ -40,18 +43,21 @@ mcp_client = Client(mcp_url)
 clarin_api_key = os.getenv("CLARIN_API_KEY")
 google_api_key = os.getenv("GOOGLE_API_KEY")
 
+llm_timeout_sec = get_llm_timeout_seconds()
 llm = None
 if clarin_api_key:
     llm = ChatOpenAI(
         model_name=config.llm.clarin.name,
         base_url=config.llm.clarin.base_url,
         api_key=clarin_api_key,
+        timeout=llm_timeout_sec,
     )
 elif google_api_key:
     llm = ChatGoogleGenerativeAI(
         model=config.llm.gemini.name,
         google_api_key=google_api_key,
         temperature=1.0,
+        timeout=llm_timeout_sec,
     )
 else:
     logger.warning("No LLM API key found. Chat will return raw knowledge graph data.")
@@ -192,7 +198,10 @@ async def generate_final_answer(
                 "run_name": "Final Answer",
             },
         }
-    response = await llm.ainvoke(final_prompt, config=invoke_config)
+    try:
+        response = await llm.ainvoke(final_prompt, config=invoke_config)
+    except (APITimeoutError, TimeoutError) as exc:
+        raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
     return response.content
 
 
