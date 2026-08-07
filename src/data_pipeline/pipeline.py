@@ -53,6 +53,15 @@ def _normalize_source_pages(acquired: Any) -> list[tuple[str, str]]:
             if text and str(text).strip():
                 out.append((str(sid), str(text)))
         return out
+    if isinstance(first, dict):
+        out: list[tuple[str, str]] = []
+        for item in acquired:
+            source_id = str(item.get("source_id", "")).strip()
+            content = str(item.get("content", "")).strip()
+            if source_id and content:
+                out.append((source_id, content))
+        return out
+
     return []
 
 
