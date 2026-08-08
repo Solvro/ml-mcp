@@ -13,6 +13,7 @@ from src.data_pipeline.flows.graph_populating import (
     populate_graph,
 )
 from src.data_pipeline.flows.llm_cypher_generation import generate_cypher_queries
+from src.data_pipeline.flows.ocr_extraction import ocr_extraction
 from src.data_pipeline.flows.schema_reflection import reflect_on_schema
 from src.data_pipeline.graph_dump import (
     ensure_host_dump_dir,
@@ -107,7 +108,8 @@ def data_pipeline_flow():
         return
 
     acquired = acquire_data()
-    source_pages = _normalize_source_pages(acquired)
+    extracted = ocr_extraction(acquired)
+    source_pages = _normalize_source_pages(extracted)
     if not source_pages:
         logger.warning("No non-empty pages found; stopping pipeline early")
         return

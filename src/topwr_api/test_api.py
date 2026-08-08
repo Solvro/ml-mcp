@@ -5,7 +5,7 @@ import asyncio
 import httpx
 
 
-async def test_api():
+async def run_api_smoke() -> None:
     """Test the ToPWR API endpoints."""
     base_url = "http://localhost:8000"
 
@@ -79,6 +79,11 @@ async def test_api():
         print("✅ All tests passed!")
 
 
+def main() -> None:
+    """Entry point for the test-topwr-api console script."""
+    asyncio.run(run_api_smoke())
+
+
 if __name__ == "__main__":
     print("\n" + "=" * 60)
     print("ToPWR API Test Suite")
@@ -89,4 +94,4 @@ if __name__ == "__main__":
     print("  uv run topwr-api\n")
     print("=" * 60 + "\n")
 
-    asyncio.run(test_api())
+    main()

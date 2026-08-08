@@ -5,7 +5,7 @@ from typing import Any
 
 from prefect import get_run_logger, task
 
-SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md"}
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
 
 
 def _get_logger() -> Any:
