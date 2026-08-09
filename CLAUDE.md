@@ -81,6 +81,14 @@ AZURE_CONTAINER_NAME=...
 # Concurrent pipeline controls
 DATA_PIPELINE_MAX_CONCURRENCY=4
 DATA_PIPELINE_CLAIM_STALE_MINUTES=30
+
+DATA_PIPELINE_STAGING_DIR=/absolute/path/to/staging-docs
+
+# OCR fallback for scanned/image PDFs
+OCR_MIN_TEXT_CHARS=50
+OCR_PDF_RENDER_SCALE=2.0
+OCR_LANG=pol+eng
+TESSERACT_CMD=/opt/homebrew/bin/tesseract
 ```
 
 **Service ports (have defaults):**
@@ -308,6 +316,13 @@ The data pipeline processes pages in batches with configurable concurrency and h
 - `DATA_PIPELINE_MAX_CONCURRENCY` controls max parallel pages per batch.
 - `ProcessedDocument {hash}` nodes prevent duplicate processing for repeated pages.
 - Failed or stale `processing` claims can be retried/reclaimed based on `DATA_PIPELINE_CLAIM_STALE_MINUTES`.
+- `source_id` is stable per file/page (`file://relative/path#page=N`) so unchanged staged docs are skipped.
+
+### OCR Runtime Requirements
+- OCR fallback is handled by `src/data_pipeline/flows/ocr_extraction.py` with `pytesseract` + `PyMuPDF`.
+- Install Tesseract OCR on the host/container (`tesseract --version` should work).
+- Optionally set `TESSERACT_CMD` when the binary is outside `PATH`.
+- `.docx` files are parsed with `python-docx` (paragraphs and tables), not OCR.
 
 ### Session Management
 `SessionManager` is thread-safe in-memory storage (dict + `threading.Lock`). Not persisted across restarts. Suitable for single-instance deployments only.

@@ -214,6 +214,67 @@ def test_pipeline_incremental_skips_when_source_hashes_unchanged(monkeypatch):
     assert reflect_calls == []
 
 
+def test_pipeline_second_run_is_noop_for_unchanged_extracted_pages(monkeypatch):
+    extracted_pages = [
+        ("file://docs/a.pdf#page=1", "page-one"),
+        ("file://docs/a.pdf#page=2", "page-two"),
+    ]
+
+    state = {"last_source_hashes": {}, "record_calls": 0}
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "acquire_data",
+        lambda: [{"source_id": "file://docs/a.pdf", "path": "/tmp/docs/a.pdf"}],
+    )
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: extracted_pages)
+
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "get_latest_pipeline_source_hashes",
+        lambda self: state["last_source_hashes"],
+    )
+
+    def record_pipeline_run(self, full_source_hashes, mode="full"):
+        state["last_source_hashes"] = dict(full_source_hashes)
+        state["record_calls"] += 1
+
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "record_pipeline_run",
+        record_pipeline_run,
+    )
+
+    reflect_calls: list[int] = []
+
+    def fake_reflect():
+        reflect_calls.append(1)
+        return "schema-summary"
+
+    monkeypatch.setattr(pipeline_module, "reflect_on_schema", fake_reflect)
+
+    claim_stub = SubmitStub(lambda _doc_hash: ImmediateFuture(True))
+    generate_stub = SubmitStub(
+        lambda _page_content, _schema_context: ImmediateFuture("MERGE (n:Entity {title: 'x'})")
+    )
+    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash: ImmediateFuture(None))
+
+    monkeypatch.setattr(pipeline_module, "claim_document_for_processing", claim_stub)
+    monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
+    monkeypatch.setattr(pipeline_module, "populate_graph", populate_stub)
+
+    # First run: should process 2 pages.
+    pipeline_module.data_pipeline_flow()
+    # Second run with unchanged pages: should be no-op.
+    pipeline_module.data_pipeline_flow()
+
+    assert len(claim_stub.calls) == 2
+    assert len(generate_stub.calls) == 2
+    assert len(populate_stub.calls) == 2
+    assert state["record_calls"] == 1
+    assert len(reflect_calls) == 2
+
+
 def test_hash_function_is_stable():
     left = pipeline_module._compute_page_hash("some content")
     right = pipeline_module._compute_page_hash("some content")
