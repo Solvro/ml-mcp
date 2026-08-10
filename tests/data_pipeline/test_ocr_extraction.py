@@ -55,6 +55,36 @@ def test_pdf_text_layer_extraction(monkeypatch, tmp_path: Path):
     assert result[0][0] == "file://text-layer.pdf#page=1"
     assert "Politechnika" in result[0][1]
 
+
+def test_pdf_page_ocr_failure_skips_only_that_page(monkeypatch, tmp_path: Path):
+    pdf_path = tmp_path / "multi.pdf"
+
+    doc = pymupdf.open()
+    for _ in range(3):
+        page = doc.new_page()
+        page.insert_text((72, 72), "abc")  # poniżej progu → wymusza OCR
+    doc.save(str(pdf_path))
+    doc.close()
+
+    monkeypatch.setenv("OCR_MIN_TEXT_CHARS", "50")
+
+    def fake_ocr_pdf_page(_doc, page_index, _scale, _lang):
+        if page_index == 1:
+            raise RuntimeError("tesseract crashed")
+        return f"ocr page {page_index + 1}"
+
+    monkeypatch.setattr(ocr_module, "_ocr_pdf_page", fake_ocr_pdf_page)
+
+    result = ocr_module.ocr_extraction.fn(
+        [{"source_id": "file://multi.pdf", "path": str(pdf_path)}]
+    )
+
+    assert [sid for sid, _ in result] == [
+        "file://multi.pdf#page=1",
+        "file://multi.pdf#page=3",
+    ]
+
+
 def test_pdf_falls_back_to_ocr_when_text_below_threshold(monkeypatch, tmp_path: Path):
     pdf_path = tmp_path / "short-text.pdf"
 

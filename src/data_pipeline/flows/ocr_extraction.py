@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-import fitz
+import pymupdf
 import pytesseract
 from docx import Document
 from PIL import Image
@@ -30,12 +30,41 @@ def _is_text_sufficient(text: str, min_chars: int) -> bool:
     return len(text.strip()) >= min_chars
 
 
-def _ocr_pdf_page(doc: fitz.Document, page_index: int, scale: float, lang: str) -> str:
+def _ocr_pdf_page(doc: pymupdf.Document, page_index: int, scale: float, lang: str) -> str:
     page = doc.load_page(page_index)
-    matrix = fitz.Matrix(scale, scale)
+    matrix = pymupdf.Matrix(scale, scale)
     pixmap = page.get_pixmap(matrix=matrix, alpha=False)
     image = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
     return pytesseract.image_to_string(image, lang=lang)
+
+
+def _extract_page_text(
+    reader_page: Any,
+    doc: pymupdf.Document,
+    page_index: int,
+    min_chars: int,
+    scale: float,
+    lang: str,
+) -> str | None:
+    """Return page text, or None when extraction failed and the page must be retried."""
+    logger = _get_logger()
+
+    try:
+        native_text = _normalize_text(reader_page.extract_text() or "")
+    except Exception as exc:
+        logger.warning("Native text extraction failed for page %d: %s", page_index + 1, exc)
+        native_text = ""
+
+    if _is_text_sufficient(native_text, min_chars):
+        return native_text
+
+    try:
+        ocr_text = _normalize_text(_ocr_pdf_page(doc, page_index, scale, lang))
+    except Exception as exc:
+        logger.warning("OCR failed for page %d, skipping: %s", page_index + 1, exc)
+        return None
+
+    return ocr_text or native_text
 
 
 def _extract_pdf_pages(source_id: str, file_path: Path) -> list[tuple[str, str]]:
@@ -49,18 +78,11 @@ def _extract_pdf_pages(source_id: str, file_path: Path) -> list[tuple[str, str]]
     output: list[tuple[str, str]] = []
     reader = PdfReader(str(file_path))
 
-    with fitz.open(str(file_path)) as doc:
+    with pymupdf.open(str(file_path)) as doc:
         for page_no, page in enumerate(reader.pages, start=1):
-            native_text = _normalize_text(page.extract_text() or "")
-            if _is_text_sufficient(native_text, min_chars):
-                final_text = native_text
-            else:
-                ocr_text = _normalize_text(_ocr_pdf_page(doc, page_no - 1, scale, lang))
-                final_text = ocr_text or native_text
-
+            final_text = _extract_page_text(page, doc, page_no - 1, min_chars, scale, lang)
             if not final_text:
                 continue
-
             output.append((f"{source_id}#page={page_no}", final_text))
 
     return output

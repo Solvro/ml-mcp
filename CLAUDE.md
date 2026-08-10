@@ -317,8 +317,10 @@ The data pipeline processes pages in batches with configurable concurrency and h
 - `ProcessedDocument {hash}` nodes prevent duplicate processing for repeated pages.
 - Failed or stale `processing` claims can be retried/reclaimed based on `DATA_PIPELINE_CLAIM_STALE_MINUTES`.
 - `source_id` is stable per file/page (`file://relative/path#page=N`) so unchanged staged docs are skipped.
+- Pages whose extraction raises are skipped and left out of the run's source hashes, so the next run retries them; pages that extract successfully but yield little text are recorded as-is.
 
 ### OCR Runtime Requirements
+
 - OCR fallback is handled by `src/data_pipeline/flows/ocr_extraction.py` with `pytesseract` + `PyMuPDF`.
 - Install Tesseract OCR on the host/container (`tesseract --version` should work).
 - Optionally set `TESSERACT_CMD` when the binary is outside `PATH`.
