@@ -79,3 +79,6 @@ result
 frontend/node_modules/
 frontend/dist/
 frontend/.env.local
+
+# Runtime input for the OCR stage
+staging/
