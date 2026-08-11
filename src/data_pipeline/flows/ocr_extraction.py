@@ -23,7 +23,9 @@ def _get_logger():
 
 
 def _normalize_text(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "")).strip()
+    collapsed = re.sub(r"[ \t]+", " ", text or "")
+    stripped = "\n".join(line.strip() for line in collapsed.split("\n"))
+    return re.sub(r"\n{3,}", "\n\n", stripped).strip()
 
 
 def _is_text_sufficient(text: str, min_chars: int) -> bool:

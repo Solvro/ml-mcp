@@ -33,7 +33,7 @@ def test_ocr_extraction_docx(monkeypatch, tmp_path: Path):
 
     result = ocr_module.ocr_extraction.fn([{"source_id": "file://doc.docx", "path": str(path)}])
 
-    assert result == [("file://doc.docx", "Ola ma kota kol1 | kol2")]
+    assert result == [("file://doc.docx", "Ola\nma kota\nkol1 | kol2")]
 
 
 def test_pdf_text_layer_extraction(monkeypatch, tmp_path: Path):
