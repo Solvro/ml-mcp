@@ -62,16 +62,16 @@ def test_pdf_page_ocr_failure_skips_only_that_page(monkeypatch, tmp_path: Path):
     doc = pymupdf.open()
     for _ in range(3):
         page = doc.new_page()
-        page.insert_text((72, 72), "abc")  # poniżej progu → wymusza OCR
+        page.insert_text((72, 72), "abc")
     doc.save(str(pdf_path))
     doc.close()
 
     monkeypatch.setenv("OCR_MIN_TEXT_CHARS", "50")
 
-    def fake_ocr_pdf_page(_doc, page_index, _scale, _lang):
-        if page_index == 1:
+    def fake_ocr_pdf_page(page, _scale, _lang):
+        if page.number == 1:
             raise RuntimeError("tesseract crashed")
-        return f"ocr page {page_index + 1}"
+        return f"ocr page {page.number + 1}"
 
     monkeypatch.setattr(ocr_module, "_ocr_pdf_page", fake_ocr_pdf_page)
 
@@ -98,7 +98,7 @@ def test_pdf_falls_back_to_ocr_when_text_below_threshold(monkeypatch, tmp_path: 
 
     called = {"count": 0}
 
-    def fake_ocr_pdf_page(_doc, _page_index, _scale, _lang):
+    def fake_ocr_pdf_page(page, _scale, _lang):
         called["count"] += 1
         return "OCR fallback content"
 
@@ -110,3 +110,27 @@ def test_pdf_falls_back_to_ocr_when_text_below_threshold(monkeypatch, tmp_path: 
 
     assert called["count"] == 1
     assert result == [("file://short-text.pdf#page=1", "OCR fallback content")]
+
+
+def test_invalid_env_value_falls_back_to_default_and_logs_warning(
+    monkeypatch, caplog, tmp_path: Path
+):
+    pdf_path = tmp_path / "text-layer.pdf"
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text((72, 72), "Politechnika Wroclawska test")
+    doc.save(str(pdf_path))
+    doc.close()
+
+    monkeypatch.setenv("OCR_MIN_TEXT_CHARS", "invalid")
+    caplog.set_level("WARNING")
+
+    result = ocr_module.ocr_extraction.fn(
+        [{"source_id": "file://text-layer.pdf", "path": str(pdf_path)}]
+    )
+
+    assert len(result) == 1
+    assert result[0][0] == "file://text-layer.pdf#page=1"
+    assert "Politechnika" in result[0][1]
+    assert "Invalid OCR_MIN_TEXT_CHARS='invalid'; using default 50" in caplog.text

@@ -82,3 +82,7 @@ frontend/.env.local
 
 # Runtime input for the OCR stage
 staging/
+
+# Prefect local runtime state (SQLite DB created by test runs)
+.prefect-test/
+.prefect/

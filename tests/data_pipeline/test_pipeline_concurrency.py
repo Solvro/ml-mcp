@@ -33,14 +33,24 @@ class SubmitStub:
         return self.submit_impl(*args, **kwargs)
 
 
+def _acquired_stub():
+    return [{"source_id": "file://docs/a.pdf", "path": "/tmp/docs/a.pdf"}]
+
+
+def _to_extracted_pages(contents: list[str]) -> list[tuple[str, str]]:
+    return [(f"file://docs/a.pdf#page={i + 1}", c) for i, c in enumerate(contents)]
+
+
 def test_pipeline_uses_batched_parallel_processing(monkeypatch):
     pages = [f"page-{i}" for i in range(10)]
+    extracted_pages = _to_extracted_pages(pages)
     reflection_calls: list[int] = []
     active_populates = 0
     max_active_populates = 0
 
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: extracted_pages)
     monkeypatch.setenv("DATA_PIPELINE_MAX_CONCURRENCY", "3")
-    monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "get_latest_pipeline_source_hashes",
@@ -94,9 +104,11 @@ def test_pipeline_uses_batched_parallel_processing(monkeypatch):
 
 def test_pipeline_skips_duplicate_hashes(monkeypatch):
     pages = ["same", "same", "unique"]
+    extracted_pages = _to_extracted_pages(pages)
 
     monkeypatch.setenv("DATA_PIPELINE_MAX_CONCURRENCY", "4")
-    monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: extracted_pages)
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "get_latest_pipeline_source_hashes",
@@ -136,10 +148,12 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
 
 def test_pipeline_continues_after_page_failure(monkeypatch):
     pages = ["p0", "p1", "p2"]
+    extracted_pages = _to_extracted_pages(pages)
     reflection_calls: list[int] = []
 
     monkeypatch.setenv("DATA_PIPELINE_MAX_CONCURRENCY", "3")
-    monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: extracted_pages)
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "get_latest_pipeline_source_hashes",
@@ -189,8 +203,10 @@ def test_pipeline_continues_after_page_failure(monkeypatch):
 
 def test_pipeline_incremental_skips_when_source_hashes_unchanged(monkeypatch):
     pages = ["page-0", "page-1"]
-    last = {f"legacy://{i}": pipeline_module._compute_page_hash(p) for i, p in enumerate(pages)}
-    monkeypatch.setattr(pipeline_module, "acquire_data", lambda: pages)
+    extracted_pages = _to_extracted_pages(pages)
+    last = {sid: pipeline_module._compute_page_hash(text) for sid, text in extracted_pages}
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: extracted_pages)
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "get_latest_pipeline_source_hashes",

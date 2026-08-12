@@ -21,7 +21,6 @@ dependencies = [
     "prefect>=3.6.7",
     "pydantic>=2.10.0",
     "pymupdf>=1.28.2",
-    "pypdf>=6.6.0",
     "pytesseract>=0.3.13",
     "python-docx>=1.2.0",
     "pyyaml>=6.0.0",

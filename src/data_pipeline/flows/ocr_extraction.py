@@ -2,14 +2,12 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any
 
 import pymupdf
 import pytesseract
 from docx import Document
 from PIL import Image
 from prefect import get_run_logger, task
-from pypdf import PdfReader
 
 MIN_EXTRACTED_TEXT_CHARS = 50
 DEFAULT_PDF_RENDER_SCALE = 2.0
@@ -32,17 +30,31 @@ def _is_text_sufficient(text: str, min_chars: int) -> bool:
     return len(text.strip()) >= min_chars
 
 
-def _ocr_pdf_page(doc: pymupdf.Document, page_index: int, scale: float, lang: str) -> str:
-    page = doc.load_page(page_index)
-    matrix = pymupdf.Matrix(scale, scale)
-    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+def _env_number(name: str, default: int | float) -> int | float:
+    """Read a positive number from env; warn and fall back on invalid input."""
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    try:
+        parsed = type(default)(raw)
+    except ValueError:
+        _get_logger().warning("Invalid %s=%r; using default %s", name, raw, default)
+        return default
+    if parsed <= 0:
+        _get_logger().warning("Non-positive %s=%r; using default %s", name, raw, default)
+        return default
+    return parsed
+
+
+def _ocr_pdf_page(page: pymupdf.Page, scale: float, lang: str) -> str:
+    """Render one page to an image and run Tesseract on it."""
+    pixmap = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
     image = Image.frombytes("RGB", [pixmap.width, pixmap.height], pixmap.samples)
     return pytesseract.image_to_string(image, lang=lang)
 
 
 def _extract_page_text(
-    reader_page: Any,
-    doc: pymupdf.Document,
+    page: pymupdf.Page,
     page_index: int,
     min_chars: int,
     scale: float,
@@ -52,7 +64,7 @@ def _extract_page_text(
     logger = _get_logger()
 
     try:
-        native_text = _normalize_text(reader_page.extract_text() or "")
+        native_text = _normalize_text(page.get_text())
     except Exception as exc:
         logger.warning("Native text extraction failed for page %d: %s", page_index + 1, exc)
         native_text = ""
@@ -61,7 +73,7 @@ def _extract_page_text(
         return native_text
 
     try:
-        ocr_text = _normalize_text(_ocr_pdf_page(doc, page_index, scale, lang))
+        ocr_text = _normalize_text(_ocr_pdf_page(page, scale, lang))
     except Exception as exc:
         logger.warning("OCR failed for page %d, skipping: %s", page_index + 1, exc)
         return None
@@ -70,22 +82,18 @@ def _extract_page_text(
 
 
 def _extract_pdf_pages(source_id: str, file_path: Path) -> list[tuple[str, str]]:
-    min_chars = int(os.getenv("OCR_MIN_TEXT_CHARS", str(MIN_EXTRACTED_TEXT_CHARS)).strip() or "50")
-    scale = float(
-        os.getenv("OCR_PDF_RENDER_SCALE", str(DEFAULT_PDF_RENDER_SCALE)).strip()
-        or str(DEFAULT_PDF_RENDER_SCALE)
-    )
+    min_chars = _env_number("OCR_MIN_TEXT_CHARS", MIN_EXTRACTED_TEXT_CHARS)
+    scale = _env_number("OCR_PDF_RENDER_SCALE", DEFAULT_PDF_RENDER_SCALE)
     lang = os.getenv("OCR_LANG", "pol+eng").strip() or "pol+eng"
 
     output: list[tuple[str, str]] = []
-    reader = PdfReader(str(file_path))
 
     with pymupdf.open(str(file_path)) as doc:
-        for page_no, page in enumerate(reader.pages, start=1):
-            final_text = _extract_page_text(page, doc, page_no - 1, min_chars, scale, lang)
+        for page_index, page in enumerate(doc):
+            final_text = _extract_page_text(page, page_index, min_chars, scale, lang)
             if not final_text:
                 continue
-            output.append((f"{source_id}#page={page_no}", final_text))
+            output.append((f"{source_id}#page={page_index + 1}", final_text))
 
     return output
 
@@ -107,34 +115,13 @@ def _extract_docx_text(file_path: Path) -> str:
     return _normalize_text("\n".join(parts))
 
 
-def _legacy_passthrough(acquired: Any) -> list[tuple[str, str]]:
-    if isinstance(acquired, str):
-        return [("synthetic://default", acquired)] if acquired.strip() else []
-
-    if isinstance(acquired, list) and acquired:
-        if isinstance(acquired[0], str):
-            return [(f"legacy://{i}", p) for i, p in enumerate(acquired) if str(p).strip()]
-        if isinstance(acquired[0], tuple) and len(acquired[0]) == 2:
-            return [
-                (str(source_id), str(content))
-                for source_id, content in acquired
-                if str(content).strip()
-            ]
-
-    return []
-
-
 @task
-def ocr_extraction(acquired_documents: Any) -> list[tuple[str, str]]:
+def ocr_extraction(acquired_documents: list[dict[str, str]]) -> list[tuple[str, str]]:
+    """Extract text from acquired documents, using native text and OCR as needed."""
     logger = _get_logger()
 
     if not acquired_documents:
         return []
-
-    if not isinstance(acquired_documents, list) or (
-        acquired_documents and not isinstance(acquired_documents[0], dict)
-    ):
-        return _legacy_passthrough(acquired_documents)
 
     tesseract_cmd = os.getenv("TESSERACT_CMD", "").strip()
     if tesseract_cmd:
