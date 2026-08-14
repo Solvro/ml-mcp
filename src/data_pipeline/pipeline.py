@@ -1,6 +1,5 @@
 import os
 from hashlib import sha256
-from typing import Any
 
 from dotenv import load_dotenv
 from prefect import flow, get_run_logger
@@ -13,6 +12,7 @@ from src.data_pipeline.flows.graph_populating import (
     populate_graph,
 )
 from src.data_pipeline.flows.llm_cypher_generation import generate_cypher_queries
+from src.data_pipeline.flows.ocr_extraction import ocr_extraction
 from src.data_pipeline.flows.schema_reflection import reflect_on_schema
 from src.data_pipeline.graph_dump import (
     ensure_host_dump_dir,
@@ -38,22 +38,20 @@ def _compute_page_hash(page_content: str) -> str:
     return sha256(normalized_content).hexdigest()
 
 
-def _normalize_source_pages(acquired: Any) -> list[tuple[str, str]]:
-    """Turn ``acquire_data`` output into ``(source_id, content)`` pairs (backwards-compatible)."""
-    if isinstance(acquired, str) and acquired.strip():
-        return [("synthetic://default", acquired)]
-    if not isinstance(acquired, list) or not acquired:
+def _normalize_source_pages(extracted: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """Normalize OCR output to non-empty (source_id, content) pairs."""
+    if not isinstance(extracted, list):
         return []
-    first = acquired[0]
-    if isinstance(first, str):
-        return [(f"legacy://{i}", p) for i, p in enumerate(acquired) if p and str(p).strip()]
-    if isinstance(first, tuple) and len(first) == 2:
-        out: list[tuple[str, str]] = []
-        for sid, text in acquired:
-            if text and str(text).strip():
-                out.append((str(sid), str(text)))
-        return out
-    return []
+    out: list[tuple[str, str]] = []
+    for item in extracted:
+        if not isinstance(item, tuple) or len(item) != 2:
+            continue
+        source_id, content = item
+        source_id_str = str(source_id).strip()
+        content_str = str(content).strip()
+        if source_id_str and content_str:
+            out.append((source_id_str, content_str))
+    return out
 
 
 def _safe_reflect_schema(phase: str, logger) -> str:
@@ -98,7 +96,8 @@ def data_pipeline_flow():
         return
 
     acquired = acquire_data()
-    source_pages = _normalize_source_pages(acquired)
+    extracted = ocr_extraction(acquired)
+    source_pages = _normalize_source_pages(extracted)
     if not source_pages:
         logger.warning("No non-empty pages found; stopping pipeline early")
         return

@@ -25,9 +25,14 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    env_file:
+      - ../.env
     environment:
       PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://prefect:prefect@postgres:5432/prefect"
       PREFECT_API_URL: "http://0.0.0.0:4200/api"
+      DATA_PIPELINE_STAGING_DIR: /app/staging
+    volumes:
+      - ../staging:/app/staging:ro
     ports:
       - "4200:4200"
     restart: unless-stopped
