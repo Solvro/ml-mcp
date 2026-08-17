@@ -326,10 +326,23 @@ async with self.driver.session() as session:
 ```
 
 ### Cypher Generation (Data Pipeline)
-LLM generates Cypher INSERT statements separated by `|` (pipe character). Strict rules enforced via prompt:
+LLM generates Cypher INSERT statements separated by `|` (pipe character). Strict rules are
+enforced via prompt and string values are folded deterministically before execution:
 - Unique variable names per statement
 - Polish characters normalized (ó→o, ę→e, etc.)
 - Token limit: 65536 to avoid DeepSeek API errors
+
+### Text2Cypher Search Normalization
+
+- The Cypher prompt receives both the original Polish question and a lowercase,
+  diacritic-folded search form.
+- Generated Cypher string literals are diacritic-folded again before validation and execution.
+  Case-insensitive human-readable matching uses `toLower(...)` on both sides, while stable IDs
+  retain their original case.
+- Labels, relationship types, property keys, and Cypher clauses are never normalized; they must
+  be copied exactly from the live Neo4j schema.
+- Read-only guardrails remain authoritative after normalization. In particular, `CALL` is still
+  blocked unless a separately reviewed procedure allowlist is introduced.
 
 ### Concurrent Pipeline Idempotency
 The data pipeline processes pages in batches with configurable concurrency and hash-based idempotency:
