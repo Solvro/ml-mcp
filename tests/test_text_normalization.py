@@ -1,6 +1,7 @@
 import pytest
 
 from src.text_normalization import (
+    ensure_case_insensitive_fuzzy_matching,
     fold_diacritics,
     normalize_cypher_string_literals,
     normalize_search_text,
@@ -89,3 +90,46 @@ def test_normalize_cypher_string_literals_preserves_escaping() -> None:
 def test_normalize_cypher_string_literals_preserves_unquoted_query() -> None:
     query = "MATCH (n:Wydział) RETURN n.tytuł LIMIT 10"
     assert normalize_cypher_string_literals(query, normalizer=normalize_search_text) == query
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        (
+            "MATCH (n) WHERE n.title CONTAINS 'Wydzial' RETURN n.title",
+            "MATCH (n) WHERE toLower(n.title) CONTAINS toLower('Wydzial') RETURN n.title",
+        ),
+        (
+            "MATCH (n) WHERE toLower(n.title) STARTS WITH 'Wydzial' RETURN n.title",
+            "MATCH (n) WHERE toLower(n.title) STARTS WITH toLower('Wydzial') RETURN n.title",
+        ),
+        (
+            "MATCH (n) WHERE n.title ENDS WITH toLower('Wodnego') RETURN n.title",
+            "MATCH (n) WHERE toLower(n.title) ENDS WITH toLower('Wodnego') RETURN n.title",
+        ),
+        (
+            "MATCH (n) WHERE n['ExactTitle'] CONTAINS 'Wydzial' RETURN n['ExactTitle']",
+            "MATCH (n) WHERE toLower(n['ExactTitle']) CONTAINS toLower('Wydzial') "
+            "RETURN n['ExactTitle']",
+        ),
+        (
+            'MATCH (n) WHERE n.`display title` CONTAINS "Wydzial" RETURN n',
+            'MATCH (n) WHERE toLower(n.`display title`) CONTAINS toLower("Wydzial") RETURN n',
+        ),
+    ],
+)
+def test_ensure_case_insensitive_fuzzy_matching_wraps_both_sides(
+    query: str,
+    expected: str,
+) -> None:
+    assert ensure_case_insensitive_fuzzy_matching(query) == expected
+
+
+def test_ensure_case_insensitive_fuzzy_matching_is_idempotent() -> None:
+    query = "MATCH (n) WHERE toLower(n.title) CONTAINS toLower('wydzial') RETURN n.title"
+    assert ensure_case_insensitive_fuzzy_matching(query) == query
+
+
+def test_ensure_case_insensitive_fuzzy_matching_preserves_stable_id_equality() -> None:
+    query = "MATCH (n) WHERE n.external_id = 'Faculty-ABC' RETURN n.title"
+    assert ensure_case_insensitive_fuzzy_matching(query) == query

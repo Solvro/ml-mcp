@@ -85,6 +85,26 @@ def test_retrieve_preserves_case_for_stable_ids() -> None:
     assert result["generated_cypher"] == executed_query
 
 
+def test_retrieve_enforces_case_insensitive_fuzzy_matching() -> None:
+    rag = _retrieval_stub()
+    rag.database.query.return_value = [{"title": "Wydzial Zarzadzania"}]
+
+    result = rag.retrieve(
+        {
+            "generated_cypher": (
+                "MATCH (n:Faculty) WHERE n.title CONTAINS 'WYDZIAŁ ZARZĄDZANIA' RETURN n.title"
+            )
+        }
+    )
+
+    executed_query = (
+        "MATCH (n:Faculty) WHERE toLower(n.title) CONTAINS "
+        "toLower('WYDZIAL ZARZADZANIA') RETURN n.title LIMIT 5"
+    )
+    rag.database.query.assert_called_once_with(executed_query)
+    assert result["generated_cypher"] == executed_query
+
+
 def test_retrieve_still_blocks_disallowed_call_after_normalization() -> None:
     rag = _retrieval_stub()
 

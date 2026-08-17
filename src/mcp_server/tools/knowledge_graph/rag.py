@@ -19,6 +19,7 @@ from ....config.config import get_config
 from ....config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
 from ....config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
 from ....text_normalization import (
+    ensure_case_insensitive_fuzzy_matching,
     fold_diacritics,
     normalize_cypher_string_literals,
     normalize_search_text,
@@ -409,6 +410,7 @@ class RAG:
                 cypher_query,
                 normalizer=fold_diacritics,
             )
+            cypher_query = ensure_case_insensitive_fuzzy_matching(cypher_query)
             validate_read_only(cypher_query)
             cypher_query = ensure_limit(cypher_query, self.max_results)
 
