@@ -1,0 +1,503 @@
+{
+  "mode": "diacritic-only",
+  "query_source": "deterministic template (LLM-independent normalization isolation)",
+  "source": "https://pwr.edu.pl/wydzialy",
+  "case_count": 28,
+  "summary": {
+    "canonical": {
+      "total": 7,
+      "hits": 7,
+      "hit_rate": 1.0,
+      "non_empty": 7,
+      "non_empty_rate": 1.0,
+      "tolower_compliant": 0,
+      "tolower_compliance_rate": 0.0
+    },
+    "overall": {
+      "total": 28,
+      "hits": 14,
+      "hit_rate": 0.5,
+      "non_empty": 14,
+      "non_empty_rate": 0.5,
+      "tolower_compliant": 0,
+      "tolower_compliance_rate": 0.0
+    },
+    "diacritics": {
+      "total": 7,
+      "hits": 7,
+      "hit_rate": 1.0,
+      "non_empty": 7,
+      "non_empty_rate": 1.0,
+      "tolower_compliant": 0,
+      "tolower_compliance_rate": 0.0
+    },
+    "case": {
+      "total": 7,
+      "hits": 0,
+      "hit_rate": 0.0,
+      "non_empty": 0,
+      "non_empty_rate": 0.0,
+      "tolower_compliant": 0,
+      "tolower_compliance_rate": 0.0
+    },
+    "case_and_diacritics": {
+      "total": 7,
+      "hits": 0,
+      "hit_rate": 0.0,
+      "non_empty": 0,
+      "non_empty_rate": 0.0,
+      "tolower_compliant": 0,
+      "tolower_compliance_rate": 0.0
+    }
+  },
+  "rows": [
+    {
+      "id": "civil-engineering:canonical",
+      "entity_id": "civil-engineering",
+      "category": "canonical",
+      "question": "Pokaż informacje o jednostce \"Wydzial Budownictwa Ladowego i Wodnego\".",
+      "search_value": "Wydzial Budownictwa Ladowego i Wodnego",
+      "expected": "Wydzial Budownictwa Ladowego i Wodnego",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Budownictwa Ladowego i Wodnego' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Budownictwa Ladowego i Wodnego"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "civil-engineering:diacritics",
+      "entity_id": "civil-engineering",
+      "category": "diacritics",
+      "question": "Pokaż informacje o jednostce \"Wydział Budownictwa Lądowego i Wodnego\".",
+      "search_value": "Wydział Budownictwa Lądowego i Wodnego",
+      "expected": "Wydzial Budownictwa Ladowego i Wodnego",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Budownictwa Ladowego i Wodnego' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Budownictwa Ladowego i Wodnego"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "civil-engineering:case",
+      "entity_id": "civil-engineering",
+      "category": "case",
+      "question": "Pokaż informacje o jednostce \"wydzial budownictwa ladowego i wodnego\".",
+      "search_value": "wydzial budownictwa ladowego i wodnego",
+      "expected": "Wydzial Budownictwa Ladowego i Wodnego",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial budownictwa ladowego i wodnego' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "civil-engineering:case_and_diacritics",
+      "entity_id": "civil-engineering",
+      "category": "case_and_diacritics",
+      "question": "Pokaż informacje o jednostce \"wydział budownictwa lądowego i wodnego\".",
+      "search_value": "wydział budownictwa lądowego i wodnego",
+      "expected": "Wydzial Budownictwa Ladowego i Wodnego",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial budownictwa ladowego i wodnego' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "computer-science:canonical",
+      "entity_id": "computer-science",
+      "category": "canonical",
+      "question": "Pokaż informacje o jednostce \"Wydzial Informatyki i Telekomunikacji\".",
+      "search_value": "Wydzial Informatyki i Telekomunikacji",
+      "expected": "Wydzial Informatyki i Telekomunikacji",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Informatyki i Telekomunikacji' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Informatyki i Telekomunikacji"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "computer-science:diacritics",
+      "entity_id": "computer-science",
+      "category": "diacritics",
+      "question": "Pokaż informacje o jednostce \"Wydział Informatyki i Telekomunikacji\".",
+      "search_value": "Wydział Informatyki i Telekomunikacji",
+      "expected": "Wydzial Informatyki i Telekomunikacji",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Informatyki i Telekomunikacji' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Informatyki i Telekomunikacji"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "computer-science:case",
+      "entity_id": "computer-science",
+      "category": "case",
+      "question": "Pokaż informacje o jednostce \"wydzial informatyki i telekomunikacji\".",
+      "search_value": "wydzial informatyki i telekomunikacji",
+      "expected": "Wydzial Informatyki i Telekomunikacji",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial informatyki i telekomunikacji' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "computer-science:case_and_diacritics",
+      "entity_id": "computer-science",
+      "category": "case_and_diacritics",
+      "question": "Pokaż informacje o jednostce \"wydział informatyki i telekomunikacji\".",
+      "search_value": "wydział informatyki i telekomunikacji",
+      "expected": "Wydzial Informatyki i Telekomunikacji",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial informatyki i telekomunikacji' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "geoengineering:canonical",
+      "entity_id": "geoengineering",
+      "category": "canonical",
+      "question": "Pokaż informacje o jednostce \"Wydzial Geoinzynierii, Gornictwa i Geologii\".",
+      "search_value": "Wydzial Geoinzynierii, Gornictwa i Geologii",
+      "expected": "Wydzial Geoinzynierii, Gornictwa i Geologii",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Geoinzynierii, Gornictwa i Geologii' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Geoinzynierii, Gornictwa i Geologii"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "geoengineering:diacritics",
+      "entity_id": "geoengineering",
+      "category": "diacritics",
+      "question": "Pokaż informacje o jednostce \"Wydział Geoinżynierii, Górnictwa i Geologii\".",
+      "search_value": "Wydział Geoinżynierii, Górnictwa i Geologii",
+      "expected": "Wydzial Geoinzynierii, Gornictwa i Geologii",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Geoinzynierii, Gornictwa i Geologii' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Geoinzynierii, Gornictwa i Geologii"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "geoengineering:case",
+      "entity_id": "geoengineering",
+      "category": "case",
+      "question": "Pokaż informacje o jednostce \"wydzial geoinzynierii, gornictwa i geologii\".",
+      "search_value": "wydzial geoinzynierii, gornictwa i geologii",
+      "expected": "Wydzial Geoinzynierii, Gornictwa i Geologii",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial geoinzynierii, gornictwa i geologii' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "geoengineering:case_and_diacritics",
+      "entity_id": "geoengineering",
+      "category": "case_and_diacritics",
+      "question": "Pokaż informacje o jednostce \"wydział geoinżynierii, górnictwa i geologii\".",
+      "search_value": "wydział geoinżynierii, górnictwa i geologii",
+      "expected": "Wydzial Geoinzynierii, Gornictwa i Geologii",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial geoinzynierii, gornictwa i geologii' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "environmental-engineering:canonical",
+      "entity_id": "environmental-engineering",
+      "category": "canonical",
+      "question": "Pokaż informacje o jednostce \"Wydzial Inzynierii Srodowiska\".",
+      "search_value": "Wydzial Inzynierii Srodowiska",
+      "expected": "Wydzial Inzynierii Srodowiska",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Inzynierii Srodowiska' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Inzynierii Srodowiska"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "environmental-engineering:diacritics",
+      "entity_id": "environmental-engineering",
+      "category": "diacritics",
+      "question": "Pokaż informacje o jednostce \"Wydział Inżynierii Środowiska\".",
+      "search_value": "Wydział Inżynierii Środowiska",
+      "expected": "Wydzial Inzynierii Srodowiska",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Inzynierii Srodowiska' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Inzynierii Srodowiska"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "environmental-engineering:case",
+      "entity_id": "environmental-engineering",
+      "category": "case",
+      "question": "Pokaż informacje o jednostce \"wydzial inzynierii srodowiska\".",
+      "search_value": "wydzial inzynierii srodowiska",
+      "expected": "Wydzial Inzynierii Srodowiska",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial inzynierii srodowiska' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "environmental-engineering:case_and_diacritics",
+      "entity_id": "environmental-engineering",
+      "category": "case_and_diacritics",
+      "question": "Pokaż informacje o jednostce \"wydział inżynierii środowiska\".",
+      "search_value": "wydział inżynierii środowiska",
+      "expected": "Wydzial Inzynierii Srodowiska",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial inzynierii srodowiska' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "management:canonical",
+      "entity_id": "management",
+      "category": "canonical",
+      "question": "Pokaż informacje o jednostce \"Wydzial Zarzadzania\".",
+      "search_value": "Wydzial Zarzadzania",
+      "expected": "Wydzial Zarzadzania",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Zarzadzania' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Zarzadzania"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "management:diacritics",
+      "entity_id": "management",
+      "category": "diacritics",
+      "question": "Pokaż informacje o jednostce \"Wydział Zarządzania\".",
+      "search_value": "Wydział Zarządzania",
+      "expected": "Wydzial Zarzadzania",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Zarzadzania' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Zarzadzania"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "management:case",
+      "entity_id": "management",
+      "category": "case",
+      "question": "Pokaż informacje o jednostce \"wydzial zarzadzania\".",
+      "search_value": "wydzial zarzadzania",
+      "expected": "Wydzial Zarzadzania",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial zarzadzania' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "management:case_and_diacritics",
+      "entity_id": "management",
+      "category": "case_and_diacritics",
+      "question": "Pokaż informacje o jednostce \"wydział zarządzania\".",
+      "search_value": "wydział zarządzania",
+      "expected": "Wydzial Zarzadzania",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial zarzadzania' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "mechanical-energy:canonical",
+      "entity_id": "mechanical-energy",
+      "category": "canonical",
+      "question": "Pokaż informacje o jednostce \"Wydzial Mechaniczno-Energetyczny\".",
+      "search_value": "Wydzial Mechaniczno-Energetyczny",
+      "expected": "Wydzial Mechaniczno-Energetyczny",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Mechaniczno-Energetyczny' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Mechaniczno-Energetyczny"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "mechanical-energy:diacritics",
+      "entity_id": "mechanical-energy",
+      "category": "diacritics",
+      "question": "Pokaż informacje o jednostce \"Wydział Mechaniczno-Energetyczny\".",
+      "search_value": "Wydział Mechaniczno-Energetyczny",
+      "expected": "Wydzial Mechaniczno-Energetyczny",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Mechaniczno-Energetyczny' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Mechaniczno-Energetyczny"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "mechanical-energy:case",
+      "entity_id": "mechanical-energy",
+      "category": "case",
+      "question": "Pokaż informacje o jednostce \"wydzial mechaniczno-energetyczny\".",
+      "search_value": "wydzial mechaniczno-energetyczny",
+      "expected": "Wydzial Mechaniczno-Energetyczny",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial mechaniczno-energetyczny' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "mechanical-energy:case_and_diacritics",
+      "entity_id": "mechanical-energy",
+      "category": "case_and_diacritics",
+      "question": "Pokaż informacje o jednostce \"wydział mechaniczno-energetyczny\".",
+      "search_value": "wydział mechaniczno-energetyczny",
+      "expected": "Wydzial Mechaniczno-Energetyczny",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial mechaniczno-energetyczny' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "electronics-photonics:canonical",
+      "entity_id": "electronics-photonics",
+      "category": "canonical",
+      "question": "Pokaż informacje o jednostce \"Wydzial Elektroniki, Fotoniki i Mikrosystemow\".",
+      "search_value": "Wydzial Elektroniki, Fotoniki i Mikrosystemow",
+      "expected": "Wydzial Elektroniki, Fotoniki i Mikrosystemow",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Elektroniki, Fotoniki i Mikrosystemow' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Elektroniki, Fotoniki i Mikrosystemow"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "electronics-photonics:diacritics",
+      "entity_id": "electronics-photonics",
+      "category": "diacritics",
+      "question": "Pokaż informacje o jednostce \"Wydział Elektroniki, Fotoniki i Mikrosystemów\".",
+      "search_value": "Wydział Elektroniki, Fotoniki i Mikrosystemów",
+      "expected": "Wydzial Elektroniki, Fotoniki i Mikrosystemow",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'Wydzial Elektroniki, Fotoniki i Mikrosystemow' RETURN n.title AS title LIMIT 10",
+      "context": [
+        {
+          "title": "Wydzial Elektroniki, Fotoniki i Mikrosystemow"
+        }
+      ],
+      "hit": true,
+      "non_empty": true,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "electronics-photonics:case",
+      "entity_id": "electronics-photonics",
+      "category": "case",
+      "question": "Pokaż informacje o jednostce \"wydzial elektroniki, fotoniki i mikrosystemow\".",
+      "search_value": "wydzial elektroniki, fotoniki i mikrosystemow",
+      "expected": "Wydzial Elektroniki, Fotoniki i Mikrosystemow",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial elektroniki, fotoniki i mikrosystemow' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    },
+    {
+      "id": "electronics-photonics:case_and_diacritics",
+      "entity_id": "electronics-photonics",
+      "category": "case_and_diacritics",
+      "question": "Pokaż informacje o jednostce \"wydział elektroniki, fotoniki i mikrosystemów\".",
+      "search_value": "wydział elektroniki, fotoniki i mikrosystemów",
+      "expected": "Wydzial Elektroniki, Fotoniki i Mikrosystemow",
+      "executed_cypher": "MATCH (n:Text2CypherNormalizationBenchmark) WHERE n.title CONTAINS 'wydzial elektroniki, fotoniki i mikrosystemow' RETURN n.title AS title LIMIT 10",
+      "context": [],
+      "hit": false,
+      "non_empty": false,
+      "tolower_compliant": false,
+      "error": null
+    }
+  ]
+}

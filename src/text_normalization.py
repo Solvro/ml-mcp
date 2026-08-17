@@ -7,6 +7,24 @@ from collections.abc import Callable
 POLISH_DIACRITIC_TRANSLATION = str.maketrans({"ł": "l", "Ł": "L"})
 CYPHER_STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
 LIST_PREFIX_KEYWORDS = {"IN", "RETURN", "WITH", "UNWIND", "AS", "THEN", "ELSE"}
+_CYPHER_IDENTIFIER = r"(?:`[^`]+`|[A-Za-z_]\w*)"
+_CYPHER_PROPERTY = (
+    rf"{_CYPHER_IDENTIFIER}(?:\s*\.\s*{_CYPHER_IDENTIFIER}"
+    rf"|\s*\[\s*(?:{CYPHER_STRING_LITERAL_RE.pattern})\s*\])"
+)
+_LOWERED_PROPERTY = rf"(?:toLower\s*\(\s*{_CYPHER_PROPERTY}\s*\)|{_CYPHER_PROPERTY})"
+_LOWERED_LITERAL = (
+    rf"(?:toLower\s*\(\s*(?:{CYPHER_STRING_LITERAL_RE.pattern})\s*\)"
+    rf"|(?:{CYPHER_STRING_LITERAL_RE.pattern}))"
+)
+CASE_SENSITIVE_FUZZY_COMPARISON_RE = re.compile(
+    rf"(?P<property>{_LOWERED_PROPERTY})"
+    rf"(?P<before_operator>\s+)"
+    rf"(?P<operator>CONTAINS|STARTS\s+WITH|ENDS\s+WITH)"
+    rf"(?P<after_operator>\s+)"
+    rf"(?P<literal>{_LOWERED_LITERAL})",
+    re.IGNORECASE,
+)
 
 
 def fold_diacritics(value: str) -> str:
@@ -19,6 +37,32 @@ def fold_diacritics(value: str) -> str:
 def normalize_search_text(value: str) -> str:
     """Return the canonical case- and diacritic-insensitive search representation."""
     return fold_diacritics(value).casefold()
+
+
+def ensure_case_insensitive_fuzzy_matching(cypher: str) -> str:
+    """Make human-readable Cypher fuzzy comparisons case-insensitive.
+
+    Exact equality is deliberately left unchanged because the retrieval prompt reserves it for
+    stable IDs, whose spelling and case may be significant.
+    """
+
+    def lower(expression: str) -> str:
+        if re.match(r"toLower\s*\(", expression, re.IGNORECASE):
+            return expression
+        return f"toLower({expression})"
+
+    def replace_comparison(match: re.Match[str]) -> str:
+        return "".join(
+            (
+                lower(match.group("property")),
+                match.group("before_operator"),
+                match.group("operator"),
+                match.group("after_operator"),
+                lower(match.group("literal")),
+            )
+        )
+
+    return CASE_SENSITIVE_FUZZY_COMPARISON_RE.sub(replace_comparison, cypher)
 
 
 def normalize_cypher_string_literals(
