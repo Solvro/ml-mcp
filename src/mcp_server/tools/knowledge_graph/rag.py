@@ -18,6 +18,11 @@ from openai import APIConnectionError, APITimeoutError, InternalServerError, Rat
 from ....config.config import get_config
 from ....config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
 from ....config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
+from ....text_normalization import (
+    fold_diacritics,
+    normalize_cypher_string_literals,
+    normalize_search_text,
+)
 from .cypher_guardrails import (
     UnsafeCypherQueryError,
     ensure_limit,
@@ -275,7 +280,7 @@ class RAG:
         config = get_config()
 
         self.generate_cypher_template = PromptTemplate(
-            input_variables=["user_question", "schema"],
+            input_variables=["user_question", "normalized_question", "schema"],
             template=config.prompts.cypher_search,
         )
 
@@ -348,6 +353,15 @@ class RAG:
 
         return builder.compile()
 
+    @staticmethod
+    def _build_cypher_prompt_payload(user_question: str, schema: str) -> dict[str, str]:
+        """Provide both natural-language and canonical search forms to the LLM."""
+        return {
+            "user_question": user_question,
+            "normalized_question": normalize_search_text(user_question),
+            "schema": schema,
+        }
+
     def generate_cypher(self, state: State):
         """
         Generate CYPHER query from user question using database schema.
@@ -364,10 +378,7 @@ class RAG:
 
         chain = self.generate_cypher_template | self.cypher_llm | StrOutputParser()
         generated_cypher = chain.invoke(
-            {
-                "user_question": state["user_question"],
-                "schema": schema,
-            },
+            self._build_cypher_prompt_payload(state["user_question"], schema),
             config=self._get_invoke_config(
                 trace_id=state.get("trace_id"),
                 tags=["knowledge_graph", "generated_cypher"],
@@ -394,12 +405,16 @@ class RAG:
 
         try:
             cypher_query = strip_code_fences(cypher_query)
+            cypher_query = normalize_cypher_string_literals(
+                cypher_query,
+                normalizer=fold_diacritics,
+            )
             validate_read_only(cypher_query)
             cypher_query = ensure_limit(cypher_query, self.max_results)
 
             response = self.database.query(cypher_query)
 
-            return {"context": response}
+            return {"context": response, "generated_cypher": cypher_query}
 
         except UnsafeCypherQueryError as e:
             error_msg = f"Blocked unsafe Cypher: {e}"
