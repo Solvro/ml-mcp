@@ -20,6 +20,7 @@ RUN groupadd -r mcpuser && useradd -r -g mcpuser mcpuser
 COPY --from=builder /app/.venv /app/.venv
 COPY ./src/mcp_server ./src/mcp_server
 COPY ./src/config ./src/config
+COPY ./src/text_normalization.py ./src/text_normalization.py
 COPY ./src/__init__.py ./src/__init__.py
 COPY ./graph_config.yaml ./graph_config.yaml
 
