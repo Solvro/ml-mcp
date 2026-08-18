@@ -1,10 +1,26 @@
 import logging
+import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+from prefect import flow, get_run_logger
+from prefect.exceptions import MissingContextError
+
+from src.data_pipeline.pipeline import data_pipeline_flow
+from src.data_pipeline.staging import (
+    atomic_write_bytes,
+    get_staging_dir,
+    load_manifest,
+    save_manifest,
+    source_id_for,
+    url_to_relative_path,
+)
 
 module_logger = logging.getLogger(__name__)
 
@@ -134,3 +150,121 @@ class WebConnector:
             etag=response.headers.get("ETag"),
             last_modified=response.headers.get("Last-Modified"),
         )
+
+
+def _get_logger() -> logging.Logger:
+    """Return Prefect run logger when available, otherwise the module logger."""
+    try:
+        return get_run_logger()
+    except MissingContextError:
+        return module_logger
+
+
+def build_connector() -> WebConnector:
+    """Build a WebConnector from environment configuration.
+
+    Raises:
+        ValueError: when DATA_PIPELINE_SOURCE_URLS is empty.
+    """
+    raw_seeds = os.getenv("DATA_PIPELINE_SOURCE_URLS", "")
+    seeds = [s.strip() for s in raw_seeds.split(",") if s.strip()]
+    if not seeds:
+        raise ValueError("DATA_PIPELINE_SOURCE_URLS must list at least one seed URL")
+    try:
+        depth = int(os.getenv("DATA_PIPELINE_CRAWL_DEPTH", "1").strip())
+    except ValueError:
+        depth = 1
+    return WebConnector(seeds, max_depth=depth)
+
+
+@flow(log_prints=True)
+def refresh_sources_flow(
+    trigger_downstream: bool = True,
+    connector: WebConnector | None = None,
+) -> dict[str, int]:
+    """Discover, fetch and stage new/changed source documents.
+
+    Successfully fetched documents are written atomically into the staging
+    directory and recorded in ``manifest.json``. Failed fetches are skipped
+    (retried on the next scheduled run). When at least one document changed,
+    the downstream ``data_pipeline_flow`` runs as a subflow.
+
+    Args:
+        trigger_downstream: When True, run the extraction pipeline on changes.
+        connector: Override for tests; defaults to env-configured WebConnector.
+
+    Returns:
+        Stats dict: discovered / fetched / unchanged / failed counts.
+
+    Raises:
+        RuntimeError: when documents were discovered but none could be fetched.
+    """
+    load_dotenv()
+    logger = _get_logger()
+    connector = connector or build_connector()
+
+    staging_dir = get_staging_dir()
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    manifest = load_manifest(staging_dir)
+
+    documents = connector.discover()
+    stats = {"discovered": len(documents), "fetched": 0, "unchanged": 0, "failed": 0}
+    logger.info("Discovered %d documents", len(documents))
+
+    changed_any = False
+    for doc in documents:
+        relative_path = url_to_relative_path(doc.origin_url, is_html=doc.kind == "html")
+        sid = source_id_for(relative_path)
+        entry = manifest.get(sid, {})
+        result = connector.fetch(
+            doc, etag=entry.get("etag"), last_modified=entry.get("last_modified")
+        )
+
+        if result.status == "failed":
+            stats["failed"] += 1
+            logger.warning("Skipping %s (fetch failed); will retry next run", doc.origin_url)
+            continue
+        if result.status == "unchanged":
+            stats["unchanged"] += 1
+            continue
+
+        content_hash = sha256(result.content or b"").hexdigest()
+        if entry.get("sha256") == content_hash:
+            # Server re-sent identical content (no/changed validators) — refresh
+            # validators but do not rewrite or count as a change.
+            manifest[sid] = {
+                **entry,
+                "etag": result.etag,
+                "last_modified": result.last_modified,
+            }
+            stats["unchanged"] += 1
+            continue
+
+        atomic_write_bytes(staging_dir / relative_path, result.content or b"")
+        manifest[sid] = {
+            "origin": doc.origin_url,
+            "etag": result.etag,
+            "last_modified": result.last_modified,
+            "sha256": content_hash,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+        }
+        stats["fetched"] += 1
+        changed_any = True
+
+    save_manifest(staging_dir, manifest)
+    logger.info(
+        "Refresh summary: discovered=%d fetched=%d unchanged=%d failed=%d",
+        stats["discovered"],
+        stats["fetched"],
+        stats["unchanged"],
+        stats["failed"],
+    )
+
+    if documents and stats["fetched"] == 0 and stats["unchanged"] == 0:
+        raise RuntimeError(f"Source refresh failed for all {len(documents)} documents")
+
+    if changed_any and trigger_downstream:
+        logger.info("Changes staged; triggering downstream data pipeline")
+        data_pipeline_flow()
+
+    return stats
