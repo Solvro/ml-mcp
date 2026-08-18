@@ -21,6 +21,16 @@ class DiscoveredDoc:
     kind: str  # "html" | "pdf" | "txt" | "md"
 
 
+@dataclass
+class FetchResult:
+    """Outcome of fetching one document."""
+
+    status: str  # "fetched" | "unchanged" | "failed"
+    content: bytes | None = None
+    etag: str | None = None
+    last_modified: str | None = None
+
+
 class WebConnector:
     """Discovers and fetches documents from university web pages.
 
@@ -81,3 +91,46 @@ class WebConnector:
                 elif extension in _HTML_EXTENSIONS:
                     frontier.append((link, depth + 1))
         return list(docs.values())
+
+    def fetch(
+        self,
+        doc: DiscoveredDoc,
+        *,
+        etag: str | None = None,
+        last_modified: str | None = None,
+    ) -> FetchResult:
+        """Fetch one document, using conditional GET when validators are known.
+
+        HTML pages are reduced to plain text (bytes, UTF-8) so the staging
+        directory only ever contains text-extractable content.
+        """
+        headers: dict[str, str] = {}
+        if etag:
+            headers["If-None-Match"] = etag
+        if last_modified:
+            headers["If-Modified-Since"] = last_modified
+
+        try:
+            response = self._client.get(doc.origin_url, headers=headers, follow_redirects=True)
+        except httpx.HTTPError as exc:
+            module_logger.warning("Fetch failed for %s: %s", doc.origin_url, exc)
+            return FetchResult(status="failed")
+
+        if response.status_code == 304:
+            return FetchResult(status="unchanged")
+        if response.status_code != 200:
+            module_logger.warning("Fetch got HTTP %d for %s", response.status_code, doc.origin_url)
+            return FetchResult(status="failed")
+
+        if doc.kind == "html":
+            text = BeautifulSoup(response.text, "html.parser").get_text(separator="\n", strip=True)
+            content = text.encode("utf-8")
+        else:
+            content = response.content
+
+        return FetchResult(
+            status="fetched",
+            content=content,
+            etag=response.headers.get("ETag"),
+            last_modified=response.headers.get("Last-Modified"),
+        )
