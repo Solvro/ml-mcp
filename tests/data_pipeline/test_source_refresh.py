@@ -1,6 +1,14 @@
 import httpx
+import pytest
 
-from src.data_pipeline.flows.source_refresh import DiscoveredDoc, WebConnector
+from src.data_pipeline import staging
+from src.data_pipeline.flows import source_refresh
+from src.data_pipeline.flows.source_refresh import (
+    DiscoveredDoc,
+    WebConnector,
+    build_connector,
+    refresh_sources_flow,
+)
 
 
 def make_client(routes: dict[str, httpx.Response]) -> httpx.Client:
@@ -112,3 +120,89 @@ def test_fetch_error_and_non_200_return_failed():
 
     connector_404 = WebConnector([HOME], client=make_client({}))
     assert connector_404.fetch(DiscoveredDoc(origin_url=PDF, kind="pdf")).status == "failed"
+
+
+@pytest.fixture
+def staging_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("DATA_PIPELINE_STAGING_DIR", str(tmp_path))
+    return tmp_path
+
+
+def routes_v1() -> dict[str, httpx.Response]:
+    return {
+        HOME: httpx.Response(
+            200, text=f'<html><body>Strona główna <a href="{PDF}">pdf</a></body></html>'
+        ),
+        PDF: httpx.Response(200, content=b"%PDF-1.4 v1"),
+    }
+
+
+def test_refresh_stages_documents_and_writes_manifest(staging_env):
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    stats = refresh_sources_flow(trigger_downstream=False, connector=connector)
+    assert stats["fetched"] == 2
+    staged_pdf = staging_env / "pwr.edu.pl" / "files" / "regulamin.pdf"
+    assert staged_pdf.read_bytes() == b"%PDF-1.4 v1"
+    manifest = staging.load_manifest(staging_env)
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    assert manifest[sid]["origin"] == PDF
+    assert manifest[sid]["sha256"]
+
+
+def test_refresh_second_run_is_idempotent(staging_env):
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=False, connector=connector)
+    connector2 = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    stats = refresh_sources_flow(trigger_downstream=False, connector=connector2)
+    assert stats["fetched"] == 0
+    assert stats["unchanged"] == 2
+
+
+def test_refresh_partial_failure_stages_successes(staging_env):
+    routes = routes_v1()
+    routes[PDF] = httpx.Response(500)
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes))
+    stats = refresh_sources_flow(trigger_downstream=False, connector=connector)
+    assert stats["fetched"] == 1  # the HTML page
+    assert stats["failed"] == 1  # the PDF; retried next run
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    assert sid not in staging.load_manifest(staging_env)
+
+
+def test_refresh_raises_when_everything_fails(staging_env):
+    routes = {HOME: httpx.Response(200, text=f'<a href="{PDF}">x</a>')}
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes))
+
+    def failing_fetch(doc, *, etag=None, last_modified=None):
+        return source_refresh.FetchResult(status="failed")
+
+    connector.fetch = failing_fetch
+    with pytest.raises(RuntimeError):
+        refresh_sources_flow(trigger_downstream=False, connector=connector)
+
+
+def test_refresh_triggers_downstream_only_on_change(staging_env, monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", lambda: calls.append("run"))
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+    assert calls == ["run"]
+
+    connector2 = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector2)
+    assert calls == ["run"]  # unchanged content -> no second trigger
+
+
+def test_build_connector_requires_seeds(monkeypatch):
+    monkeypatch.delenv("DATA_PIPELINE_SOURCE_URLS", raising=False)
+    with pytest.raises(ValueError):
+        build_connector()
+
+
+def test_build_connector_reads_env(monkeypatch):
+    monkeypatch.setenv("DATA_PIPELINE_SOURCE_URLS", f"{HOME}, https://wit.pwr.edu.pl/")
+    monkeypatch.setenv("DATA_PIPELINE_CRAWL_DEPTH", "2")
+    connector = build_connector()
+    assert connector.seed_urls == [HOME, "https://wit.pwr.edu.pl/"]
+    assert connector.max_depth == 2
