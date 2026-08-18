@@ -29,9 +29,15 @@ def fake_populator(monkeypatch):
     return fake
 
 
-def test_populate_graph_splits_pipe_joined_statements(fake_populator):
-    graph_populating.populate_graph.fn("MERGE (a:X)|MERGE (b:Y)| MERGE (c:Z) ", "hash1")
-    assert fake_populator.executed == ["MERGE (a:X)", "MERGE (b:Y)", "MERGE (c:Z)"]
+def test_populate_graph_runs_pipe_joined_clauses_as_one_query(fake_populator):
+    """Relationship clauses reference variables from node clauses, so all
+    clauses of a document must execute in a single query context."""
+    graph_populating.populate_graph.fn(
+        "MERGE (a:X {t: 'x'})|MERGE (b:Y {t: 'y'})| MERGE (a)-[:REL]->(b) ", "hash1"
+    )
+    assert fake_populator.executed == [
+        "MERGE (a:X {t: 'x'})\nMERGE (b:Y {t: 'y'})\nMERGE (a)-[:REL]->(b)"
+    ]
     assert fake_populator.processed == ["hash1"]
     assert fake_populator.failed == []
 
@@ -45,7 +51,7 @@ def test_populate_graph_single_statement_unchanged(fake_populator):
 def test_populate_graph_failure_marks_failed_and_raises(fake_populator):
     fake_populator.fail_on = "b:Y"
     with pytest.raises(RuntimeError):
-        graph_populating.populate_graph.fn("MERGE (a:X)|MERGE (b:Y)|MERGE (c:Z)", "hash3")
-    assert fake_populator.executed == ["MERGE (a:X)"]
+        graph_populating.populate_graph.fn("MERGE (a:X)|MERGE (b:Y)", "hash3")
+    assert fake_populator.executed == []
     assert fake_populator.processed == []
     assert fake_populator.failed and fake_populator.failed[0][0] == "hash3"
