@@ -218,12 +218,16 @@ def claim_document_for_processing(doc_hash: str) -> bool:
 
 @task
 def populate_graph(cypher_query: str, doc_hash: str = ""):
-    """Execute a cypher query against the configured Neo4j instance."""
+    """Execute pipe-separated cypher statements against the configured Neo4j instance."""
     logger = _get_logger()
     logger.info("populate_graph task received query of length %d", len(cypher_query or ""))
+    # The LLM step joins statements with "|" (see generate_cypher_queries);
+    # Neo4j accepts only one statement per query, so split before executing.
+    statements = [part.strip() for part in (cypher_query or "").split("|") if part.strip()]
     pop = GraphPopulator()
     try:
-        pop.execute_cypher(cypher_query)
+        for statement in statements:
+            pop.execute_cypher(statement)
         pop.mark_document_processed(doc_hash)
     except Exception as exc:
         pop.mark_document_failed(doc_hash, str(exc))
