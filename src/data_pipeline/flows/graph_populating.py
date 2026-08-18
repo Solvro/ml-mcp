@@ -226,13 +226,16 @@ def populate_graph(cypher_query: str, doc_hash: str = ""):
     """Execute pipe-separated cypher statements against the configured Neo4j instance."""
     logger = _get_logger()
     logger.info("populate_graph task received query of length %d", len(cypher_query or ""))
-    # The LLM step joins statements with "|" (see generate_cypher_queries);
-    # Neo4j accepts only one statement per query, so split before executing.
+    # The LLM step joins MERGE clauses with "|" (see generate_cypher_queries).
+    # They must run as ONE query: relationship clauses reference node variables
+    # bound by earlier clauses, so executing them separately would create
+    # unlabeled placeholder nodes instead of connecting the merged ones.
     statements = [part.strip() for part in (cypher_query or "").split("|") if part.strip()]
+    combined = "\n".join(statements)
     pop = GraphPopulator()
     try:
-        for statement in statements:
-            pop.execute_cypher(statement)
+        if combined:
+            pop.execute_cypher(combined)
         pop.mark_document_processed(doc_hash)
     except Exception as exc:
         pop.mark_document_failed(doc_hash, str(exc))
