@@ -41,7 +41,30 @@ jobs:
       - name: Run linting
         run: just lint
 
-  # ── 2. Python build & entry-point check ─────────────────────────────────────
+  # ── 2. Tests (pytest) ─────────────────────────────────────────────────────────
+  test:
+    runs-on: ubuntu-latest
+    needs: [lint]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - uses: extractions/setup-just@v2
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run test suite
+        run: just test
+
+  # ── 3. Python build & entry-point check ─────────────────────────────────────
   build-check:
     runs-on: ubuntu-latest
     needs: [lint]
@@ -72,7 +95,7 @@ jobs:
           uv run kg --help || true
           uv run pipeline --help || true
 
-  # ── 3. Frontend TypeScript + Vite build ─────────────────────────────────────
+  # ── 4. Frontend TypeScript + Vite build ─────────────────────────────────────
   frontend-build:
     runs-on: ubuntu-latest
     needs: [lint]
@@ -91,10 +114,10 @@ jobs:
       - name: Type-check and build
         run: cd frontend && npm run build
 
-  # ── 4. Integration — full `just up` stack ────────────────────────────────────
+  # ── 5. Integration — full `just up` stack ────────────────────────────────────
   integration:
     runs-on: ubuntu-latest
-    needs: [build-check, frontend-build]
+    needs: [build-check, frontend-build, test]
     steps:
       - uses: actions/checkout@v4
 
