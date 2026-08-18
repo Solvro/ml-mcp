@@ -82,7 +82,12 @@ AZURE_CONTAINER_NAME=...
 DATA_PIPELINE_MAX_CONCURRENCY=4
 DATA_PIPELINE_CLAIM_STALE_MINUTES=30
 
-DATA_PIPELINE_STAGING_DIR=/absolute/path/to/staging-docs
+DATA_PIPELINE_STAGING_DIR=data/staging
+
+# Source acquisition / refresh (source_refresh.py)
+DATA_PIPELINE_SOURCE_URLS=          # comma-separated seed URLs (required for refresh)
+DATA_PIPELINE_CRAWL_DEPTH=1         # link hops from each seed (0 = seeds only)
+DATA_PIPELINE_REFRESH_CRON=0 3 * * *
 
 # OCR fallback for scanned/image PDFs
 OCR_MIN_TEXT_CHARS=50
@@ -154,9 +159,11 @@ ml-mcp/
 │   │   └── client.py            # CLI client for knowledge graph queries
 │   ├── data_pipeline/
 │   │   ├── pipeline.py          # Top-level Prefect @flow orchestrator
+│   │   ├── staging.py           # Staging dir, manifest, atomic writes, source_id mapping
 │   │   └── flows/
-│   │       ├── data_acquisition.py      # Azure Blob download
-│   │       ├── text_extraction.py       # PDF/TXT → text
+│   │       ├── source_refresh.py        # Scheduled discovery + fetch of source docs (web connector)
+│   │       ├── data_acquisition.py      # Staging dir scan → document references
+│   │       ├── ocr_extraction.py        # PDF/TXT/DOCX → text (OCR fallback)
 │   │       ├── llm_cypher_generation.py # LLM → Cypher INSERT statements
 │   │       └── graph_populating.py      # Execute Cypher against Neo4j
 │   └── scripts/
@@ -328,6 +335,15 @@ The data pipeline processes pages in batches with configurable concurrency and h
 - Failed or stale `processing` claims can be retried/reclaimed based on `DATA_PIPELINE_CLAIM_STALE_MINUTES`.
 - `source_id` is stable per file/page (`file://relative/path#page=N`) so unchanged staged docs are skipped.
 - Pages whose extraction raises are skipped and left out of the run's source hashes, so the next run retries them; pages that extract successfully but yield little text are recorded as-is.
+
+### Source Refresh (Acquisition)
+`refresh_sources_flow` (scheduled via `prefect-refresh`, cron in `DATA_PIPELINE_REFRESH_CRON`)
+crawls `DATA_PIPELINE_SOURCE_URLS`, stages `.pdf/.txt/.md` (HTML saved as stripped-text `.md`)
+into `DATA_PIPELINE_STAGING_DIR` with atomic `*.part` → rename writes, and tracks state in
+`manifest.json` (`source_id = file://{relative_path}` → etag/last-modified/sha256).
+Only changed docs trigger the downstream pipeline; failed fetches are retried next run.
+`acquire_data()` scans the staging dir and feeds document references to `ocr_extraction` →
+`pipeline.py`. Run once with `just refresh`; serve the schedule with `just refresh-serve`.
 
 ### OCR Runtime Requirements
 
