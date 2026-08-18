@@ -268,3 +268,18 @@ def refresh_sources_flow(
         data_pipeline_flow()
 
     return stats
+
+
+def serve_refresh() -> None:
+    """Serve ``refresh_sources_flow`` as a scheduled Prefect deployment.
+
+    Cadence comes from ``DATA_PIPELINE_REFRESH_CRON`` (default: daily 03:00).
+    Blocks forever; intended as a container/console entry point.
+    """
+    load_dotenv()
+    cron = os.getenv("DATA_PIPELINE_REFRESH_CRON", "0 3 * * *").strip() or "0 3 * * *"
+    refresh_sources_flow.serve(name="source-refresh", cron=cron)
+
+
+if __name__ == "__main__":
+    refresh_sources_flow()
