@@ -134,7 +134,7 @@ prefect-logs:
 # Run data pipeline locally
 [group('prefect')]
 pipeline:
-    uv run prefect-pipeline
+    uv run prefect_pipeline
 
 # Run source refresh once (discover + fetch + stage + trigger pipeline)
 [group('prefect')]
