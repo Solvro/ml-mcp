@@ -89,11 +89,16 @@ def data_pipeline_flow():
     logger = get_run_logger()
     populator = GraphPopulator()
 
-    if host_dump_path().is_file():
-        import_graph_from_cypher_dump()
-        populator.record_restore_run()
-        logger.info("Loaded graph from dump; skipped LLM extraction.")
-        return
+    # A dump is a bootstrap for a fresh database only; once the graph has any
+    # data, scheduled runs must keep extracting instead of restoring.
+    if host_dump_path().is_file() and not populator.graph_has_data():
+        try:
+            import_graph_from_cypher_dump()
+            populator.record_restore_run()
+            logger.info("Loaded graph from dump; skipped LLM extraction.")
+            return
+        except Exception as exc:
+            logger.warning("Dump restore failed (%s); continuing with extraction", exc)
 
     acquired = acquire_data()
     extracted = ocr_extraction(acquired)
