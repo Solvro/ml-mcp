@@ -9,6 +9,21 @@ MANIFEST_FILENAME = "manifest.json"
 
 _UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._/-]")
 
+# Filesystems cap file names at 255 bytes; stay well below to leave room
+# for the ".md"/".part" suffixes appended later.
+_MAX_SEGMENT_CHARS = 100
+
+
+def _shorten_segment(segment: str) -> str:
+    """Truncate an overlong path segment, keeping determinism and extension."""
+    if len(segment) <= _MAX_SEGMENT_CHARS:
+        return segment
+    digest = sha256(segment.encode("utf-8")).hexdigest()[:8]
+    dot = segment.rfind(".")
+    extension = segment[dot:] if 0 < dot and len(segment) - dot <= 10 else ""
+    stem_len = _MAX_SEGMENT_CHARS - len(digest) - 1 - len(extension)
+    return f"{segment[:stem_len]}_{digest}{extension}"
+
 
 def get_staging_dir() -> Path:
     """Resolve the staging root directory from DATA_PIPELINE_STAGING_DIR.
@@ -37,6 +52,7 @@ def url_to_relative_path(url: str, *, is_html: bool) -> str:
     parsed = urlparse(url)
     path = unquote(parsed.path).strip("/") or "index"
     path = _UNSAFE_CHARS.sub("_", path)
+    path = "/".join(_shorten_segment(segment) for segment in path.split("/"))
     if parsed.query:
         query_hash = sha256(parsed.query.encode("utf-8")).hexdigest()[:8]
         path = f"{path}_{query_hash}"

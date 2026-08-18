@@ -70,3 +70,23 @@ def test_load_manifest_missing_or_corrupt_returns_empty(tmp_path):
     assert staging.load_manifest(tmp_path) == {}
     (tmp_path / staging.MANIFEST_FILENAME).write_text("{not json", encoding="utf-8")
     assert staging.load_manifest(tmp_path) == {}
+
+
+def test_url_to_relative_path_truncates_overlong_segments():
+    long_token = "A" * 400
+    url = f"https://wit.pwr.edu.pl/addtrack/{long_token}"
+    path = staging.url_to_relative_path(url, is_html=True)
+    assert all(len(seg.encode("utf-8")) <= 255 for seg in path.split("/"))
+    assert path == staging.url_to_relative_path(url, is_html=True)
+    other = staging.url_to_relative_path(
+        f"https://wit.pwr.edu.pl/addtrack/{'B' * 400}", is_html=True
+    )
+    assert path != other
+    assert path.endswith(".md")
+
+
+def test_url_to_relative_path_truncation_keeps_pdf_extension():
+    url = f"https://pwr.edu.pl/files/{'x' * 300}.pdf"
+    path = staging.url_to_relative_path(url, is_html=False)
+    assert path.endswith(".pdf")
+    assert all(len(seg.encode("utf-8")) <= 255 for seg in path.split("/"))

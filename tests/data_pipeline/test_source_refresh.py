@@ -219,3 +219,18 @@ def test_serve_refresh_uses_cron_from_env(monkeypatch):
     source_refresh.serve_refresh()
     assert captured["cron"] == "0 5 * * 1"
     assert captured["name"] == "source-refresh"
+
+
+def test_refresh_write_failure_counts_as_failed_and_continues(staging_env, monkeypatch):
+    def failing_write(target, data):
+        if target.name.endswith(".pdf"):
+            raise OSError(63, "File name too long")
+        staging.atomic_write_bytes(target, data)
+
+    monkeypatch.setattr(source_refresh, "atomic_write_bytes", failing_write)
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    stats = refresh_sources_flow(trigger_downstream=False, connector=connector)
+    assert stats["fetched"] == 1  # HTML page staged
+    assert stats["failed"] == 1  # PDF write failed, run survived
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    assert sid not in staging.load_manifest(staging_env)
