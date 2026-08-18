@@ -206,3 +206,16 @@ def test_build_connector_reads_env(monkeypatch):
     connector = build_connector()
     assert connector.seed_urls == [HOME, "https://wit.pwr.edu.pl/"]
     assert connector.max_depth == 2
+
+
+def test_serve_refresh_uses_cron_from_env(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_serve(self, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setenv("DATA_PIPELINE_REFRESH_CRON", "0 5 * * 1")
+    monkeypatch.setattr(type(refresh_sources_flow), "serve", fake_serve)
+    source_refresh.serve_refresh()
+    assert captured["cron"] == "0 5 * * 1"
+    assert captured["name"] == "source-refresh"

@@ -136,6 +136,16 @@ prefect-logs:
 pipeline:
     uv run prefect-pipeline
 
+# Run source refresh once (discover + fetch + stage + trigger pipeline)
+[group('prefect')]
+refresh:
+    uv run python -m src.data_pipeline.flows.source_refresh
+
+# Serve scheduled source refresh deployment (blocks; cron from DATA_PIPELINE_REFRESH_CRON)
+[group('prefect')]
+refresh-serve:
+    uv run prefect-refresh
+
 # ============================================================================
 # 🧪 QUALITY & TESTING
 # ============================================================================
