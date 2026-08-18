@@ -240,7 +240,12 @@ def refresh_sources_flow(
             stats["unchanged"] += 1
             continue
 
-        atomic_write_bytes(staging_dir / relative_path, result.content or b"")
+        try:
+            atomic_write_bytes(staging_dir / relative_path, result.content or b"")
+        except OSError as exc:
+            stats["failed"] += 1
+            logger.warning("Staging write failed for %s: %s", doc.origin_url, exc)
+            continue
         manifest[sid] = {
             "origin": doc.origin_url,
             "etag": result.etag,
