@@ -151,6 +151,11 @@ class GraphPopulator:
             logger.error("Failed to execute cypher: %s", e)
             raise
 
+    def graph_has_data(self) -> bool:
+        """Return True when the graph contains any node at all."""
+        rows = self.graph_db.query("MATCH (n) RETURN count(n) AS total LIMIT 1")
+        return bool(rows and rows[0].get("total"))
+
     def get_latest_pipeline_source_hashes(self) -> dict[str, str]:
         """Latest ``PipelineRun`` source id → content hash map."""
         rows = self.graph_db.query(
