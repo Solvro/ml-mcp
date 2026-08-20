@@ -4,6 +4,17 @@ import pytest
 
 from src.mcp_server.tools.knowledge_graph.rag import RAG
 
+READ_QUERY = "MATCH (n:Node) RETURN n"
+READ_QUERY_WITH_LIMIT = f"{READ_QUERY} LIMIT 2"
+FENCED_QUERY = "```cypher\nMATCH (n) RETURN n\n```"
+BLOCKED_PREFIX = "Blocked unsafe Cypher"
+
+MUTATING_QUERIES = [
+    "MATCH (n) DETACH DELETE n RETURN n",
+    "MATCH (n:Node) SET n.value = 1 RETURN n",
+    "CREATE (n:Node) RETURN n",
+]
+
 
 class FakeDatabase:
     def __init__(
@@ -13,7 +24,7 @@ class FakeDatabase:
         self.error = error
         self.calls: list[str] = []
 
-    def query(self, cypher_query: str):
+    def query(self, cypher_query: str) -> list[dict[str, Any]]:
         self.calls.append(cypher_query)
         if self.error is not None:
             raise self.error
@@ -35,14 +46,7 @@ def _build_rag_for_test(
     return rag, fake_db
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        "MATCH (n) DETACH DELETE n RETURN n",
-        "MATCH (n:Node) SET n.value = 1 RETURN n",
-        "CREATE (n:Node) RETURN n",
-    ],
-)
+@pytest.mark.parametrize("query", MUTATING_QUERIES)
 def test_retrieve_blocks_mutating_query_before_db_call(query):
     rag, fake_db = _build_rag_for_test()
 
@@ -50,13 +54,13 @@ def test_retrieve_blocks_mutating_query_before_db_call(query):
 
     assert fake_db.calls == []
     assert result["context"] == []
-    assert "Blocked unsafe Cypher" in result["generated_cypher"]
+    assert BLOCKED_PREFIX in result["generated_cypher"]
 
 
 def test_retrieve_reports_database_failure():
     rag, fake_db = _build_rag_for_test(db_error=RuntimeError("neo4j unavailable"))
 
-    result = rag.retrieve({"generated_cypher": "MATCH (n:Node) RETURN n"})
+    result = rag.retrieve({"generated_cypher": READ_QUERY})
 
     assert len(fake_db.calls) == 1
     assert result["context"] == []
@@ -69,14 +73,14 @@ def test_retrieve_blocks_missing_cypher():
     result = rag.retrieve({})
 
     assert fake_db.calls == []
-    assert "Blocked unsafe Cypher" in result["generated_cypher"]
+    assert result["context"] == []
+    assert BLOCKED_PREFIX in result["generated_cypher"]
 
 
 def test_retrieve_executes_safe_query_with_enforced_limit():
     rag, fake_db = _build_rag_for_test(max_results=5, db_response=[{"id": 1}])
 
-    state = {"generated_cypher": "MATCH (n:Node) RETURN n"}
-    result = rag.retrieve(state)
+    result = rag.retrieve({"generated_cypher": READ_QUERY})
 
     assert len(fake_db.calls) == 1
     assert fake_db.calls[0].strip().endswith("LIMIT 5")
@@ -86,8 +90,7 @@ def test_retrieve_executes_safe_query_with_enforced_limit():
 def test_retrieve_preserves_existing_limit():
     rag, fake_db = _build_rag_for_test(max_results=5, db_response=[{"id": 1}])
 
-    state = {"generated_cypher": "MATCH (n:Node) RETURN n LIMIT 2"}
-    result = rag.retrieve(state)
+    result = rag.retrieve({"generated_cypher": READ_QUERY_WITH_LIMIT})
 
     assert len(fake_db.calls) == 1
     assert fake_db.calls[0].strip().endswith("LIMIT 2")
@@ -97,8 +100,7 @@ def test_retrieve_preserves_existing_limit():
 def test_retrieve_strips_code_fences_before_query():
     rag, fake_db = _build_rag_for_test(max_results=3, db_response=[{"name": "x"}])
 
-    state = {"generated_cypher": "```cypher\nMATCH (n) RETURN n\n```"}
-    result = rag.retrieve(state)
+    result = rag.retrieve({"generated_cypher": FENCED_QUERY})
 
     assert len(fake_db.calls) == 1
     assert "```" not in fake_db.calls[0]
