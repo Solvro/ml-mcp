@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -27,6 +28,14 @@ module_logger = logging.getLogger(__name__)
 DOWNLOADABLE_EXTENSIONS = {".pdf", ".txt", ".md"}
 _HTML_EXTENSIONS = {"", ".html", ".htm", ".php", ".aspx"}
 _REQUEST_TIMEOUT_SECONDS = 30.0
+_USER_AGENT = (
+    "SolvroMCP-SourceRefresh/1.0 (knowledge graph ingestion; contact: kn.solvro@pwr.edu.pl)"
+)
+
+# Servers answer bot checks and maintenance pages with HTTP 200, so a document
+# collapsing to a fraction of its known size is treated as a failed fetch
+# instead of overwriting good staged content.
+_SUSPICIOUS_SHRINK_RATIO = 0.3
 
 
 @dataclass
@@ -60,16 +69,30 @@ class WebConnector:
         seed_urls: list[str],
         max_depth: int = 1,
         client: httpx.Client | None = None,
+        request_delay: float = 0.0,
     ):
         self.seed_urls = [u for u in (s.strip() for s in seed_urls) if u]
         self.max_depth = max(0, max_depth)
+        self.request_delay = max(0.0, request_delay)
         self._client = client or httpx.Client(
             timeout=_REQUEST_TIMEOUT_SECONDS, follow_redirects=True
         )
         self._allowed_hosts = {urlparse(u).netloc for u in self.seed_urls}
+        self._last_request_at: float | None = None
 
     def _same_domain(self, url: str) -> bool:
         return urlparse(url).netloc in self._allowed_hosts
+
+    def _get(self, url: str, headers: dict[str, str] | None = None) -> httpx.Response:
+        """Issue one paced GET that identifies the crawler."""
+        if self.request_delay and self._last_request_at is not None:
+            elapsed = time.monotonic() - self._last_request_at
+            if elapsed < self.request_delay:
+                time.sleep(self.request_delay - elapsed)
+        self._last_request_at = time.monotonic()
+        return self._client.get(
+            url, headers={"User-Agent": _USER_AGENT, **(headers or {})}, follow_redirects=True
+        )
 
     def discover(self) -> list[DiscoveredDoc]:
         """Crawl seed pages and return every unique discovered document."""
@@ -83,7 +106,7 @@ class WebConnector:
                 continue
             seen_pages.add(url)
             try:
-                response = self._client.get(url, follow_redirects=True)
+                response = self._get(url)
             except httpx.HTTPError as exc:
                 module_logger.warning("Discovery failed for %s: %s", url, exc)
                 continue
@@ -127,7 +150,7 @@ class WebConnector:
             headers["If-Modified-Since"] = last_modified
 
         try:
-            response = self._client.get(doc.origin_url, headers=headers, follow_redirects=True)
+            response = self._get(doc.origin_url, headers)
         except httpx.HTTPError as exc:
             module_logger.warning("Fetch failed for %s: %s", doc.origin_url, exc)
             return FetchResult(status="failed")
@@ -174,7 +197,11 @@ def build_connector() -> WebConnector:
         depth = int(os.getenv("DATA_PIPELINE_CRAWL_DEPTH", "1").strip())
     except ValueError:
         depth = 1
-    return WebConnector(seeds, max_depth=depth)
+    try:
+        delay = float(os.getenv("DATA_PIPELINE_REQUEST_DELAY", "1.0").strip())
+    except ValueError:
+        delay = 1.0
+    return WebConnector(seeds, max_depth=depth, request_delay=delay)
 
 
 @flow(log_prints=True)
@@ -228,7 +255,20 @@ def refresh_sources_flow(
             stats["unchanged"] += 1
             continue
 
-        content_hash = sha256(result.content or b"").hexdigest()
+        content = result.content or b""
+        previous_size = entry.get("size")
+        if previous_size and len(content) < previous_size * _SUSPICIOUS_SHRINK_RATIO:
+            stats["failed"] += 1
+            logger.warning(
+                "Keeping staged %s: server returned %d bytes for a %d byte document "
+                "(bot check or outage?); will retry next run",
+                doc.origin_url,
+                len(content),
+                previous_size,
+            )
+            continue
+
+        content_hash = sha256(content).hexdigest()
         if entry.get("sha256") == content_hash:
             # Server re-sent identical content (no/changed validators) — refresh
             # validators but do not rewrite or count as a change.
@@ -241,7 +281,7 @@ def refresh_sources_flow(
             continue
 
         try:
-            atomic_write_bytes(staging_dir / relative_path, result.content or b"")
+            atomic_write_bytes(staging_dir / relative_path, content)
         except OSError as exc:
             stats["failed"] += 1
             logger.warning("Staging write failed for %s: %s", doc.origin_url, exc)
@@ -251,6 +291,7 @@ def refresh_sources_flow(
             "etag": result.etag,
             "last_modified": result.last_modified,
             "sha256": content_hash,
+            "size": len(content),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
         }
         stats["fetched"] += 1

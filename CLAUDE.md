@@ -87,6 +87,7 @@ DATA_PIPELINE_STAGING_DIR=data/staging
 # Source acquisition / refresh (source_refresh.py)
 DATA_PIPELINE_SOURCE_URLS=          # comma-separated seed URLs (required for refresh)
 DATA_PIPELINE_CRAWL_DEPTH=1         # link hops from each seed (0 = seeds only)
+DATA_PIPELINE_REQUEST_DELAY=1.0     # seconds between requests (too fast trips bot protection)
 DATA_PIPELINE_REFRESH_CRON=0 3 * * *
 
 # OCR fallback for scanned/image PDFs
@@ -342,6 +343,9 @@ crawls `DATA_PIPELINE_SOURCE_URLS`, stages `.pdf/.txt/.md` (HTML saved as stripp
 into `DATA_PIPELINE_STAGING_DIR` with atomic `*.part` → rename writes, and tracks state in
 `manifest.json` (`source_id = file://{relative_path}` → etag/last-modified/sha256).
 Only changed docs trigger the downstream pipeline; failed fetches are retried next run.
+Requests are paced by `DATA_PIPELINE_REQUEST_DELAY` and identify the crawler via User-Agent;
+a document that collapses to under 30% of its known size (bot check, outage) is treated as a
+failed fetch so good staged content is never overwritten.
 `acquire_data()` scans the staging dir and feeds document references to `ocr_extraction` →
 `pipeline.py`. Run once with `just refresh`; serve the schedule with `just refresh-serve`.
 

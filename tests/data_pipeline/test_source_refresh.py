@@ -1,3 +1,5 @@
+import time
+
 import httpx
 import pytest
 
@@ -234,3 +236,62 @@ def test_refresh_write_failure_counts_as_failed_and_continues(staging_env, monke
     assert stats["failed"] == 1  # PDF write failed, run survived
     sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
     assert sid not in staging.load_manifest(staging_env)
+
+
+def test_fetch_sends_identifying_user_agent():
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(dict(request.headers))
+        return httpx.Response(200, content=b"ok")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    connector = WebConnector([HOME], client=client)
+    connector.fetch(DiscoveredDoc(origin_url=PDF, kind="pdf"))
+    assert "solvro" in captured["user-agent"].lower()
+
+
+def test_refresh_keeps_staged_file_when_content_shrinks_drastically(staging_env):
+    routes = routes_v1()
+    routes[PDF] = httpx.Response(200, content=b"%PDF-1.4 " + b"real document body " * 20)
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes))
+    refresh_sources_flow(trigger_downstream=False, connector=connector)
+
+    staged_pdf = staging_env / "pwr.edu.pl" / "files" / "regulamin.pdf"
+    original = staged_pdf.read_bytes()
+    manifest = staging.load_manifest(staging_env)
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    assert manifest[sid]["size"] == len(original)
+
+    # Server now answers with a tiny bot-check page instead of the document.
+    routes[PDF] = httpx.Response(200, content=b"robot check")
+    connector2 = WebConnector([HOME], max_depth=1, client=make_client(routes))
+    stats = refresh_sources_flow(trigger_downstream=False, connector=connector2)
+
+    assert stats["failed"] == 1
+    assert staged_pdf.read_bytes() == original
+    assert staging.load_manifest(staging_env)[sid]["sha256"] == manifest[sid]["sha256"]
+
+
+def test_build_connector_reads_request_delay(monkeypatch):
+    monkeypatch.setenv("DATA_PIPELINE_SOURCE_URLS", HOME)
+    monkeypatch.setenv("DATA_PIPELINE_REQUEST_DELAY", "2.5")
+    assert build_connector().request_delay == 2.5
+
+    monkeypatch.delenv("DATA_PIPELINE_REQUEST_DELAY", raising=False)
+    assert build_connector().request_delay == 1.0
+
+
+def test_connector_paces_requests():
+    calls: list[float] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(time.monotonic())
+        return httpx.Response(200, content=b"ok")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    connector = WebConnector([HOME], client=client, request_delay=0.05)
+    doc = DiscoveredDoc(origin_url=PDF, kind="pdf")
+    connector.fetch(doc)
+    connector.fetch(doc)
+    assert calls[1] - calls[0] >= 0.05
