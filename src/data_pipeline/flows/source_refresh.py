@@ -1,11 +1,13 @@
 import logging
 import os
 import time
+import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
 
 import httpx
 from bs4 import BeautifulSoup
@@ -36,6 +38,9 @@ _USER_AGENT = (
 # collapsing to a fraction of its known size is treated as a failed fetch
 # instead of overwriting good staged content.
 _SUSPICIOUS_SHRINK_RATIO = 0.3
+
+# Sitemap indexes point at further sitemaps; bound how deep that nesting is followed.
+_MAX_SITEMAP_DEPTH = 2
 
 
 @dataclass
@@ -70,15 +75,20 @@ class WebConnector:
         max_depth: int = 1,
         client: httpx.Client | None = None,
         request_delay: float = 0.0,
+        exclude_patterns: list[str] | None = None,
+        max_documents: int = 0,
     ):
         self.seed_urls = [u for u in (s.strip() for s in seed_urls) if u]
         self.max_depth = max(0, max_depth)
         self.request_delay = max(0.0, request_delay)
+        self.exclude_patterns = [p for p in (exclude_patterns or []) if p]
+        self.max_documents = max(0, max_documents)
         self._client = client or httpx.Client(
             timeout=_REQUEST_TIMEOUT_SECONDS, follow_redirects=True
         )
         self._allowed_hosts = {urlparse(u).netloc for u in self.seed_urls}
         self._last_request_at: float | None = None
+        self._robots: dict[str, RobotFileParser | None] = {}
 
     def _same_domain(self, url: str) -> bool:
         return urlparse(url).netloc in self._allowed_hosts
@@ -94,15 +104,106 @@ class WebConnector:
             url, headers={"User-Agent": _USER_AGENT, **(headers or {})}, follow_redirects=True
         )
 
+    def _robots_for(self, url: str) -> RobotFileParser | None:
+        """Fetch and cache the robots.txt rules for the host serving ``url``."""
+        parsed = urlparse(url)
+        origin = f"{parsed.scheme}://{parsed.netloc}"
+        if origin in self._robots:
+            return self._robots[origin]
+
+        rules: RobotFileParser | None = None
+        try:
+            response = self._get(f"{origin}/robots.txt")
+            if response.status_code == 200:
+                rules = RobotFileParser()
+                rules.parse(response.text.splitlines())
+        except httpx.HTTPError as exc:
+            module_logger.warning("robots.txt unavailable for %s: %s", origin, exc)
+        self._robots[origin] = rules
+        return rules
+
+    def _is_allowed(self, url: str) -> bool:
+        """True when the URL passes the exclude list and the host's robots.txt."""
+        if any(pattern in url for pattern in self.exclude_patterns):
+            return False
+        rules = self._robots_for(url)
+        return True if rules is None else rules.can_fetch(_USER_AGENT, url)
+
+    def _sitemap_urls(self, sitemap_url: str, depth: int = 0) -> list[str]:
+        """Read page URLs out of a sitemap, following sitemap indexes."""
+        if depth > _MAX_SITEMAP_DEPTH:
+            return []
+        try:
+            response = self._get(sitemap_url)
+        except httpx.HTTPError as exc:
+            module_logger.warning("Sitemap fetch failed for %s: %s", sitemap_url, exc)
+            return []
+        if response.status_code != 200:
+            return []
+        try:
+            root = ElementTree.fromstring(response.text)
+        except ElementTree.ParseError as exc:
+            module_logger.warning("Sitemap %s is not valid XML: %s", sitemap_url, exc)
+            return []
+
+        locations = [
+            element.text.strip()
+            for element in root.findall(".//{*}loc")
+            if element.text and element.text.strip()
+        ]
+        if not root.tag.lower().endswith("sitemapindex"):
+            return locations
+
+        nested: list[str] = []
+        for location in locations:
+            nested.extend(self._sitemap_urls(location, depth + 1))
+        return nested
+
+    def _discover_from_sitemaps(self) -> list[DiscoveredDoc]:
+        """Collect documents from the sitemaps the seed hosts advertise."""
+        docs: dict[str, DiscoveredDoc] = {}
+        for seed in self.seed_urls:
+            rules = self._robots_for(seed)
+            parsed = urlparse(seed)
+            declared = list(rules.site_maps() or []) if rules else []
+            for sitemap_url in declared or [f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"]:
+                for url in self._sitemap_urls(sitemap_url):
+                    if url in docs or not self._same_domain(url) or not self._is_allowed(url):
+                        continue
+                    docs[url] = DiscoveredDoc(origin_url=url, kind=self._kind_for(url))
+                    if self.max_documents and len(docs) >= self.max_documents:
+                        return list(docs.values())
+        return list(docs.values())
+
+    @staticmethod
+    def _kind_for(url: str) -> str:
+        extension = Path(urlparse(url).path).suffix.lower()
+        return extension.lstrip(".") if extension in DOWNLOADABLE_EXTENSIONS else "html"
+
     def discover(self) -> list[DiscoveredDoc]:
+        """Return every discoverable document, preferring sitemaps over crawling.
+
+        A sitemap lists the site's pages directly, so it replaces hundreds of
+        crawl requests with a couple. Hosts without one fall back to the
+        breadth-first crawl. Both paths honour robots.txt and the exclude list.
+        """
+        from_sitemaps = self._discover_from_sitemaps()
+        if from_sitemaps:
+            module_logger.info("Discovered %d documents from sitemaps", len(from_sitemaps))
+            return from_sitemaps
+        return self._crawl()
+
+    def _crawl(self) -> list[DiscoveredDoc]:
         """Crawl seed pages and return every unique discovered document."""
         seen_pages: set[str] = set()
         docs: dict[str, DiscoveredDoc] = {}
         frontier: list[tuple[str, int]] = [(url, 0) for url in self.seed_urls]
 
         while frontier:
+            if self.max_documents and len(docs) >= self.max_documents:
+                break
             url, depth = frontier.pop(0)
-            if url in seen_pages:
+            if url in seen_pages or not self._is_allowed(url):
                 continue
             seen_pages.add(url)
             try:
@@ -121,7 +222,7 @@ class WebConnector:
             soup = BeautifulSoup(response.text, "html.parser")
             for anchor in soup.find_all("a", href=True):
                 link = urljoin(url, anchor["href"]).split("#")[0].rstrip("/") or url
-                if not self._same_domain(link):
+                if not self._same_domain(link) or not self._is_allowed(link):
                     continue
                 extension = Path(urlparse(link).path).suffix.lower()
                 if extension in DOWNLOADABLE_EXTENSIONS:
@@ -201,7 +302,18 @@ def build_connector() -> WebConnector:
         delay = float(os.getenv("DATA_PIPELINE_REQUEST_DELAY", "1.0").strip())
     except ValueError:
         delay = 1.0
-    return WebConnector(seeds, max_depth=depth, request_delay=delay)
+    excluded = [p.strip() for p in os.getenv("DATA_PIPELINE_EXCLUDE_PATTERNS", "").split(",")]
+    try:
+        max_documents = int(os.getenv("DATA_PIPELINE_MAX_DOCUMENTS", "0").strip())
+    except ValueError:
+        max_documents = 0
+    return WebConnector(
+        seeds,
+        max_depth=depth,
+        request_delay=delay,
+        exclude_patterns=[p for p in excluded if p],
+        max_documents=max_documents,
+    )
 
 
 @flow(log_prints=True)

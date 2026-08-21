@@ -295,3 +295,115 @@ def test_connector_paces_requests():
     connector.fetch(doc)
     connector.fetch(doc)
     assert calls[1] - calls[0] >= 0.05
+
+
+ROBOTS = "https://pwr.edu.pl/robots.txt"
+SITEMAP = "https://pwr.edu.pl/sitemap.xml"
+
+
+def _sitemap_xml(*urls: str) -> str:
+    locs = "".join(f"<url><loc>{u}</loc></url>" for u in urls)
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"{locs}</urlset>"
+    )
+
+
+def _sitemap_response(*urls: str) -> httpx.Response:
+    return httpx.Response(
+        200, text=_sitemap_xml(*urls), headers={"content-type": "application/xml"}
+    )
+
+
+def test_discover_prefers_sitemap_over_crawling():
+    routes = {
+        ROBOTS: httpx.Response(200, text=f"User-agent: *\nSitemap: {SITEMAP}\n"),
+        SITEMAP: _sitemap_response(HOME, SUBPAGE),
+        HOME: httpx.Response(200, text="<html><body>home</body></html>"),
+        SUBPAGE: httpx.Response(200, text="<html><body>studenci</body></html>"),
+    }
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes))
+    urls = sorted(d.origin_url for d in connector.discover())
+    assert urls == sorted([HOME, SUBPAGE])
+
+
+def test_discover_falls_back_to_crawl_without_sitemap():
+    routes = {
+        ROBOTS: httpx.Response(404),
+        SITEMAP: httpx.Response(404),
+        HOME: httpx.Response(200, text=f'<a href="{SUBPAGE}">s</a>'),
+        SUBPAGE: httpx.Response(200, text="<html>studenci</html>"),
+    }
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes))
+    urls = sorted(d.origin_url for d in connector.discover())
+    assert urls == sorted([HOME, SUBPAGE])
+
+
+def test_discover_respects_robots_disallow():
+    routes = {
+        ROBOTS: httpx.Response(200, text="User-agent: *\nDisallow: /files/\n"),
+        SITEMAP: httpx.Response(404),
+        HOME: httpx.Response(200, text=f'<a href="{PDF}">pdf</a><a href="{SUBPAGE}">s</a>'),
+        SUBPAGE: httpx.Response(200, text="<html>studenci</html>"),
+        PDF: httpx.Response(200, content=b"%PDF"),
+    }
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes))
+    urls = [d.origin_url for d in connector.discover()]
+    assert PDF not in urls  # /files/ is disallowed by robots.txt
+    assert SUBPAGE in urls
+
+
+def test_discover_skips_excluded_patterns():
+    tracker = "https://pwr.edu.pl/addtrack/abc123"
+    routes = {
+        ROBOTS: httpx.Response(404),
+        SITEMAP: httpx.Response(404),
+        HOME: httpx.Response(200, text=f'<a href="{tracker}">t</a><a href="{SUBPAGE}">s</a>'),
+        SUBPAGE: httpx.Response(200, text="<html>studenci</html>"),
+        tracker: httpx.Response(200, text="<html>redirect</html>"),
+    }
+    connector = WebConnector(
+        [HOME], max_depth=1, client=make_client(routes), exclude_patterns=["/addtrack/"]
+    )
+    urls = [d.origin_url for d in connector.discover()]
+    assert tracker not in urls
+    assert SUBPAGE in urls
+
+
+def test_discover_follows_sitemap_index():
+    child = "https://pwr.edu.pl/sitemap-pages.xml"
+    index = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+        f"<sitemap><loc>{child}</loc></sitemap></sitemapindex>"
+    )
+    routes = {
+        ROBOTS: httpx.Response(200, text=f"Sitemap: {SITEMAP}\n"),
+        SITEMAP: httpx.Response(200, text=index, headers={"content-type": "application/xml"}),
+        child: _sitemap_response(SUBPAGE),
+        SUBPAGE: httpx.Response(200, text="<html>studenci</html>"),
+    }
+    connector = WebConnector([HOME], client=make_client(routes))
+    assert [d.origin_url for d in connector.discover()] == [SUBPAGE]
+
+
+def test_discover_honours_max_documents():
+    routes = {
+        ROBOTS: httpx.Response(200, text=f"Sitemap: {SITEMAP}\n"),
+        SITEMAP: _sitemap_response(HOME, SUBPAGE, "https://pwr.edu.pl/trzecia"),
+        HOME: httpx.Response(200, text="<html>a</html>"),
+        SUBPAGE: httpx.Response(200, text="<html>b</html>"),
+        "https://pwr.edu.pl/trzecia": httpx.Response(200, text="<html>c</html>"),
+    }
+    connector = WebConnector([HOME], client=make_client(routes), max_documents=2)
+    assert len(connector.discover()) == 2
+
+
+def test_build_connector_reads_exclude_and_limit(monkeypatch):
+    monkeypatch.setenv("DATA_PIPELINE_SOURCE_URLS", HOME)
+    monkeypatch.setenv("DATA_PIPELINE_EXCLUDE_PATTERNS", "/addtrack/, /kalendarz/")
+    monkeypatch.setenv("DATA_PIPELINE_MAX_DOCUMENTS", "50")
+    c = build_connector()
+    assert c.exclude_patterns == ["/addtrack/", "/kalendarz/"]
+    assert c.max_documents == 50
