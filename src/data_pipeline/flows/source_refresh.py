@@ -165,10 +165,15 @@ class WebConnector:
         for seed in self.seed_urls:
             rules = self._robots_for(seed)
             parsed = urlparse(seed)
+            # A seed pointing at a subpath scopes the run to that subtree; only a
+            # host root pulls in the whole sitemap.
+            scope = parsed.path.rstrip("/")
             declared = list(rules.site_maps() or []) if rules else []
             for sitemap_url in declared or [f"{parsed.scheme}://{parsed.netloc}/sitemap.xml"]:
                 for url in self._sitemap_urls(sitemap_url):
                     if url in docs or not self._same_domain(url) or not self._is_allowed(url):
+                        continue
+                    if scope and not urlparse(url).path.rstrip("/").startswith(scope):
                         continue
                     docs[url] = DiscoveredDoc(origin_url=url, kind=self._kind_for(url))
                     if self.max_documents and len(docs) >= self.max_documents:

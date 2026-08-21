@@ -407,3 +407,29 @@ def test_build_connector_reads_exclude_and_limit(monkeypatch):
     c = build_connector()
     assert c.exclude_patterns == ["/addtrack/", "/kalendarz/"]
     assert c.max_documents == 50
+
+
+def test_sitemap_is_scoped_to_seed_path():
+    kursy = "https://pwr.edu.pl/studenci/kursy"
+    inne = "https://pwr.edu.pl/pracownicy"
+    routes = {
+        ROBOTS: httpx.Response(200, text=f"Sitemap: {SITEMAP}\n"),
+        SITEMAP: _sitemap_response(HOME, SUBPAGE, kursy, inne),
+        SUBPAGE: httpx.Response(200, text="<html>studenci</html>"),
+        kursy: httpx.Response(200, text="<html>kursy</html>"),
+    }
+    connector = WebConnector([SUBPAGE], client=make_client(routes))
+    urls = sorted(d.origin_url for d in connector.discover())
+    assert urls == sorted([SUBPAGE, kursy])  # seed path scopes the sitemap
+
+
+def test_sitemap_root_seed_takes_whole_host():
+    inne = "https://pwr.edu.pl/pracownicy"
+    routes = {
+        ROBOTS: httpx.Response(200, text=f"Sitemap: {SITEMAP}\n"),
+        SITEMAP: _sitemap_response(SUBPAGE, inne),
+        SUBPAGE: httpx.Response(200, text="<html>a</html>"),
+        inne: httpx.Response(200, text="<html>b</html>"),
+    }
+    connector = WebConnector([HOME], client=make_client(routes))
+    assert len(connector.discover()) == 2
