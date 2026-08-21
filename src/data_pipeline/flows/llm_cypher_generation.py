@@ -10,6 +10,7 @@ from prefect import get_run_logger, task
 from pydantic import SecretStr
 
 from src.config.config import get_config
+from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
 
 class PipeState(MessagesState):
@@ -95,6 +96,7 @@ def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> st
     logger = get_run_logger()
     llm = LLMPipe()
     parts = llm.run(extracted_text, schema_context)
+    parts = [normalize_cypher_string_literals(part, normalizer=fold_diacritics) for part in parts]
 
     try:
         logger.info("LLM returned %d parts", len(parts))

@@ -140,11 +140,21 @@ prompts:
     Schema (includes sample property values):
     {schema}
 
-    Question: {user_question}
+    Original question (use this to understand intent): {user_question}
+    Normalized search form (use this for string values): {normalized_question}
 
     Rules:
     - Use MATCH, not MERGE or CREATE
-    - For string properties use case-insensitive fuzzy matching: toLower(n.title) CONTAINS toLower('...')
+    - Copy node labels, relationship types, and property keys exactly from the schema,
+      including their case; never invent schema identifiers
+    - Never alter or normalize labels, relationship types, or property keys
+    - Human-readable string comparison literals must come from the normalized search form and
+      use lowercase ASCII text without Polish diacritics
+    - Preserve the exact spelling and case of stable IDs; do not treat IDs as human-readable text
+    - For string properties use case-insensitive matching on both sides, for example:
+      toLower(n.title) CONTAINS toLower('wydzial informatyki')
+    - Prefer CONTAINS for human-readable entity names; use exact equality only for stable IDs or
+      non-string values
     - Always RETURN named properties, not full nodes (e.g. RETURN p.title, c.title)
     - Always add LIMIT 10
 
