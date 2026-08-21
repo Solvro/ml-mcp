@@ -1,0 +1,41 @@
+{
+  "source": "https://pwr.edu.pl/wydzialy",
+  "question_template": "Pokaż informacje o jednostce \"{entity}\".",
+  "entities": [
+    {
+      "id": "civil-engineering",
+      "original": "Wydział Budownictwa Lądowego i Wodnego",
+      "stored": "Wydzial Budownictwa Ladowego i Wodnego"
+    },
+    {
+      "id": "computer-science",
+      "original": "Wydział Informatyki i Telekomunikacji",
+      "stored": "Wydzial Informatyki i Telekomunikacji"
+    },
+    {
+      "id": "geoengineering",
+      "original": "Wydział Geoinżynierii, Górnictwa i Geologii",
+      "stored": "Wydzial Geoinzynierii, Gornictwa i Geologii"
+    },
+    {
+      "id": "environmental-engineering",
+      "original": "Wydział Inżynierii Środowiska",
+      "stored": "Wydzial Inzynierii Srodowiska"
+    },
+    {
+      "id": "management",
+      "original": "Wydział Zarządzania",
+      "stored": "Wydzial Zarzadzania"
+    },
+    {
+      "id": "mechanical-energy",
+      "original": "Wydział Mechaniczno-Energetyczny",
+      "stored": "Wydzial Mechaniczno-Energetyczny"
+    },
+    {
+      "id": "electronics-photonics",
+      "original": "Wydział Elektroniki, Fotoniki i Mikrosystemów",
+      "stored": "Wydzial Elektroniki, Fotoniki i Mikrosystemow"
+    }
+  ]
+}

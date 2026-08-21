@@ -25,6 +25,7 @@ RUN apt-get update \
 COPY --from=builder /app/.venv /app/.venv
 COPY ./src/data_pipeline ./src/data_pipeline
 COPY ./src/config ./src/config
+COPY ./src/text_normalization.py ./src/text_normalization.py
 COPY ./src/__init__.py ./src/__init__.py
 COPY ./graph_config.yaml ./graph_config.yaml
 
