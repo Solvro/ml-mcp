@@ -151,6 +151,11 @@ class GraphPopulator:
             logger.error("Failed to execute cypher: %s", e)
             raise
 
+    def graph_has_data(self) -> bool:
+        """Return True when the graph contains any node at all."""
+        rows = self.graph_db.query("MATCH (n) RETURN count(n) AS total LIMIT 1")
+        return bool(rows and rows[0].get("total"))
+
     def get_latest_pipeline_source_hashes(self) -> dict[str, str]:
         """Latest ``PipelineRun`` source id → content hash map."""
         rows = self.graph_db.query(
@@ -218,12 +223,19 @@ def claim_document_for_processing(doc_hash: str) -> bool:
 
 @task
 def populate_graph(cypher_query: str, doc_hash: str = ""):
-    """Execute a cypher query against the configured Neo4j instance."""
+    """Execute pipe-separated cypher statements against the configured Neo4j instance."""
     logger = _get_logger()
     logger.info("populate_graph task received query of length %d", len(cypher_query or ""))
+    # The LLM step joins MERGE clauses with "|" (see generate_cypher_queries).
+    # They must run as ONE query: relationship clauses reference node variables
+    # bound by earlier clauses, so executing them separately would create
+    # unlabeled placeholder nodes instead of connecting the merged ones.
+    statements = [part.strip() for part in (cypher_query or "").split("|") if part.strip()]
+    combined = "\n".join(statements)
     pop = GraphPopulator()
     try:
-        pop.execute_cypher(cypher_query)
+        if combined:
+            pop.execute_cypher(combined)
         pop.mark_document_processed(doc_hash)
     except Exception as exc:
         pop.mark_document_failed(doc_hash, str(exc))

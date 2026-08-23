@@ -124,7 +124,9 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
         session_id=trace_id,
     )
 
-    final_prompt = config.prompts.final_answer.format(user_input=user_input, data=data)
+    final_prompt = config.prompts.final_answer.format(
+        user_input=user_input, data=data, history="(no prior conversation)"
+    )
 
     # Build config with optional handler
     invoke_config = {
