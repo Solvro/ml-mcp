@@ -173,7 +173,8 @@ class WebConnector:
                 for url in self._sitemap_urls(sitemap_url):
                     if url in docs or not self._same_domain(url) or not self._is_allowed(url):
                         continue
-                    if scope and not urlparse(url).path.rstrip("/").startswith(scope):
+                    candidate = urlparse(url).path.rstrip("/")
+                    if scope and candidate != scope and not candidate.startswith(f"{scope}/"):
                         continue
                     docs[url] = DiscoveredDoc(origin_url=url, kind=self._kind_for(url))
                     if self.max_documents and len(docs) >= self.max_documents:

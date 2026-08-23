@@ -433,3 +433,15 @@ def test_sitemap_root_seed_takes_whole_host():
     }
     connector = WebConnector([HOME], client=make_client(routes))
     assert len(connector.discover()) == 2
+
+
+def test_sitemap_scope_does_not_leak_to_sibling_paths():
+    sibling = "https://pwr.edu.pl/studenci-rekrutacja/terminy"
+    routes = {
+        ROBOTS: httpx.Response(200, text=f"Sitemap: {SITEMAP}\n"),
+        SITEMAP: _sitemap_response(SUBPAGE, sibling),
+        SUBPAGE: httpx.Response(200, text="<html>studenci</html>"),
+        sibling: httpx.Response(200, text="<html>rekrutacja</html>"),
+    }
+    connector = WebConnector([SUBPAGE], client=make_client(routes))
+    assert [d.origin_url for d in connector.discover()] == [SUBPAGE]

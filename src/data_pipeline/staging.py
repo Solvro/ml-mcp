@@ -55,7 +55,11 @@ def url_to_relative_path(url: str, *, is_html: bool) -> str:
     path = "/".join(_shorten_segment(segment) for segment in path.split("/"))
     if parsed.query:
         query_hash = sha256(parsed.query.encode("utf-8")).hexdigest()[:8]
-        path = f"{path}_{query_hash}"
+        stem, dot, extension = path.rpartition(".")
+        if dot and "/" not in extension:
+            path = f"{stem}_{query_hash}.{extension}"
+        else:
+            path = f"{path}_{query_hash}"
     relative = f"{parsed.netloc}/{path}"
     if is_html and not relative.endswith(".md"):
         relative = f"{relative}.md"

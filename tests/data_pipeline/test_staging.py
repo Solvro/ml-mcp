@@ -90,3 +90,10 @@ def test_url_to_relative_path_truncation_keeps_pdf_extension():
     path = staging.url_to_relative_path(url, is_html=False)
     assert path.endswith(".pdf")
     assert all(len(seg.encode("utf-8")) <= 255 for seg in path.split("/"))
+
+
+def test_url_to_relative_path_keeps_extension_when_url_has_query():
+    path = staging.url_to_relative_path("https://x.pwr.edu.pl/docs/plan.pdf?ver=3", is_html=False)
+    assert Path(path).suffix == ".pdf"
+    other = staging.url_to_relative_path("https://x.pwr.edu.pl/docs/plan.pdf?ver=4", is_html=False)
+    assert path != other
