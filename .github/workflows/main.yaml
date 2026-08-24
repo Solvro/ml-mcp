@@ -39,7 +39,7 @@ jobs:
         run: cd frontend && npm ci
 
       - name: Run linting
-        run: just lint
+        run: just lint-check
 
   # ── 2. Tests (pytest) ─────────────────────────────────────────────────────────
   test:
