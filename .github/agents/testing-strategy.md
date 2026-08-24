@@ -14,15 +14,13 @@
 ## Test Location
 
 ```
-tests/                  # All tests live here (inferred — no tests found in repo yet)
-├── unit/
-│   ├── mcp_server/     # RAG pipeline node tests
-│   ├── topwr_api/      # API endpoint + session manager tests
-│   └── data_pipeline/  # Flow tests
-└── integration/        # Full-stack integration tests
+tests/
+├── conftest.py         # Puts the repo root on sys.path
+├── test_*.py           # Knowledge-graph tests: guardrails, RAG nodes, full graph runs
+└── data_pipeline/      # Pipeline flow tests with their own conftest
 ```
 
-Note: `src/topwr_api/test_api.py` is an integration test script (not pytest), run via `uv run test-topwr-api`. It hits a live API at configured host/port.
+Note: `src/scripts/api_smoke.py` is a manual smoke script, not a test. It hits a live API at the configured host/port and prints what it gets back — it asserts nothing and pytest does not collect it. Run it by hand via `uv run api-smoke`.
 
 ## What to Test
 
@@ -129,8 +127,17 @@ def test_get_nonexistent_session_returns_none():
 
 - Aim for high coverage on core business logic: `rag.py`, `session_manager.py`, `pipeline.py`
 - Lower priority for: auto-generated `config_models.py`, Docker entrypoint scripts
-- Integration scripts (`test_api.py`) are not pytest — don't include in coverage
+- Manual scripts under `src/scripts/` are not pytest — they are excluded from coverage via `omit` in `[tool.coverage.run]`
 
 ## Current Test Gap
 
-As of analysis: no `tests/` directory was found in the repository. The only test infrastructure is `src/topwr_api/test_api.py` (integration script). Unit tests need to be created.
+The suite lives in `tests/` and runs via `just test` (pytest + coverage). It runs on every pull request through the `test` job in `.github/workflows/main.yaml`.
+
+- `tests/test_cypher_guardrails.py` — read-only Cypher validation in isolation
+- `tests/test_llm_fallback_guardrails.py` — provider selection and the fallback chain
+- `tests/test_rag_retrieve_path.py` — `retrieve()`: mutating queries never reach the driver, LIMIT is enforced
+- `tests/test_rag_generation_guardrails_path.py` — the `generate_cypher` and `guardrails_system` nodes, driven with stubbed models
+- `tests/test_rag_graph_end_to_end.py` — full graph runs, both guardrail branches, `invoke` and `ainvoke`
+- `tests/data_pipeline/` — pipeline concurrency, data acquisition, OCR extraction
+
+Path-level tests exist because unit tests are structurally blind to wiring bugs: during #45 the Cypher validator was unplugged from `retrieve()` and the whole suite stayed green, because every test verified the validator in isolation and nothing verified it was still being called.
