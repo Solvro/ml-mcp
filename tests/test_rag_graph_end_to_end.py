@@ -11,6 +11,7 @@ from src.mcp_server.tools.knowledge_graph.rag import RAG
 QUESTION = "test question"
 SCHEMA_TEXT = "Node properties: X\nRelationship properties: Y\nThe relationships: Z"
 SAFE_CYPHER = "MATCH (n) RETURN n"
+EXECUTED_CYPHER = f"{SAFE_CYPHER} LIMIT 5"
 EMPTY_ANSWER = "W bazie danych nie ma informacji"
 TIMEOUT_MESSAGE = "exceeded the maximum allowed wait time"
 
@@ -100,7 +101,7 @@ def test_graph_run_generate_branch_executes_retrieve() -> None:
 
     assert result["metadata"]["guardrail_decision"] == "generate_cypher"
     assert result["metadata"]["context"] == [{"value": 1}]
-    assert result["metadata"]["cypher_query"] == SAFE_CYPHER
+    assert result["metadata"]["cypher_query"] == EXECUTED_CYPHER
     assert "value" in result["answer"]
 
     assert len(stub.database.queries) == 1
@@ -141,7 +142,7 @@ def test_async_graph_run_generate_branch_matches_sync_path() -> None:
     result = asyncio.run(stub.rag.ainvoke(QUESTION, session_id="s-1", trace_id="tr-1"))
 
     assert result["metadata"]["guardrail_decision"] == "generate_cypher"
-    assert result["metadata"]["cypher_query"] == SAFE_CYPHER
+    assert result["metadata"]["cypher_query"] == EXECUTED_CYPHER
     assert result["metadata"]["context"] == [{"value": 1}]
     assert stub.database.queries[0].endswith("LIMIT 5")
 
