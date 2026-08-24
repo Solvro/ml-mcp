@@ -58,7 +58,7 @@ jobs:
 
       - uses: extractions/setup-just@v2
 
-            - name: Install OCR runtime
+      - name: Install OCR runtime
         run: |
           sudo apt-get update
           sudo apt-get install -y tesseract-ocr tesseract-ocr-pol
