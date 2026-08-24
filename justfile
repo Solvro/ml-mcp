@@ -143,9 +143,17 @@ pipeline:
 # Format and lint code (Python + Frontend)
 [group('quality')]
 lint:
-    uv run ruff format src
-    uv run ruff check src --fix
+    uv run ruff format src tests
+    uv run ruff check src tests --fix
     cd frontend && npm run format
+    cd frontend && npm run lint
+
+# Verify formatting and lint without modifying files (used by CI)
+[group('quality')]
+lint-check:
+    uv run ruff format --check src tests
+    uv run ruff check src tests
+    cd frontend && npm run format:check
     cd frontend && npm run lint
 
 # Run tests with coverage
@@ -160,7 +168,7 @@ test-verbose:
 
 # Run full CI pipeline
 [group('quality')]
-ci: lint test
+ci: lint-check test
     @echo "✅ All CI checks passed!"
 
 # ============================================================================
