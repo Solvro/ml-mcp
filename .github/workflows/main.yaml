@@ -58,11 +58,20 @@ jobs:
 
       - uses: extractions/setup-just@v2
 
+            - name: Install OCR runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-pol
+
       - name: Install dependencies
         run: uv sync
 
       - name: Run test suite
-        run: just test
+        env:
+          PREFECT_HOME: ${{ runner.temp }}/prefect
+        run: |
+          mkdir -p "$PREFECT_HOME"
+          just test
 
   # ── 3. Python build & entry-point check ─────────────────────────────────────
   build-check:
