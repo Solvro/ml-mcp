@@ -1,4 +1,4 @@
-"""Simple test script for ToPWR API."""
+"""Manual smoke script for the ToPWR API."""
 
 import asyncio
 
@@ -6,24 +6,22 @@ import httpx
 
 
 async def run_api_smoke() -> None:
-    """Test the ToPWR API endpoints."""
+    """Run a basic end-to-end smoke check against a live ToPWR API instance."""
     base_url = "http://localhost:8000"
 
     async with httpx.AsyncClient() as client:
-        print("🧪 Testing ToPWR API...\n")
+        print("Testing ToPWR API...\n")
 
-        # 1. Test health endpoint
-        print("1️⃣ Testing health endpoint...")
+        print("1) Health endpoint")
         response = await client.get(f"{base_url}/health")
         print(f"   Status: {response.status_code}")
         print(f"   Response: {response.json()}\n")
 
-        # 2. Create new conversation
-        print("2️⃣ Creating new conversation...")
+        print("2) Create conversation")
         chat_request = {
             "user_id": "test_user_123",
             "message": "Czym jest nagroda dziekana?",
-            "metadata": {"source": "test"},
+            "metadata": {"source": "smoke"},
         }
         response = await client.post(f"{base_url}/api/chat", json=chat_request)
         print(f"   Status: {response.status_code}")
@@ -33,8 +31,7 @@ async def run_api_smoke() -> None:
 
         session_id = chat_response["session_id"]
 
-        # 3. Continue conversation
-        print("3️⃣ Continuing conversation...")
+        print("3) Continue conversation")
         continue_request = {
             "user_id": "test_user_123",
             "session_id": session_id,
@@ -45,48 +42,44 @@ async def run_api_smoke() -> None:
         chat_response = response.json()
         print(f"   Message count: {chat_response['metadata']['message_count']}\n")
 
-        # 4. Get conversation history
-        print("4️⃣ Getting conversation history...")
+        print("4) Conversation history")
         response = await client.get(f"{base_url}/api/sessions/{session_id}/history")
         print(f"   Status: {response.status_code}")
         history = response.json()
         print(f"   Total messages: {history['total_messages']}")
-        for i, msg in enumerate(history["messages"], 1):
-            print(f"   [{i}] {msg['role']}: {msg['content'][:50]}...")
+        for idx, msg in enumerate(history["messages"], start=1):
+            print(f"   [{idx}] {msg['role']}: {msg['content'][:50]}...")
         print()
 
-        # 5. Get user sessions
-        print("5️⃣ Getting user sessions...")
+        print("5) User sessions")
         response = await client.get(f"{base_url}/api/users/test_user_123/sessions")
         print(f"   Status: {response.status_code}")
         user_sessions = response.json()
         print(f"   Session count: {user_sessions['session_count']}\n")
 
-        # 6. Get system stats
-        print("6️⃣ Getting system statistics...")
+        print("6) System stats")
         response = await client.get(f"{base_url}/api/stats")
         print(f"   Status: {response.status_code}")
         stats = response.json()
         print(f"   Stats: {stats}\n")
 
-        # 7. Get session info
-        print("7️⃣ Getting session info...")
+        print("7) Session info")
         response = await client.get(f"{base_url}/api/sessions/{session_id}")
         print(f"   Status: {response.status_code}")
         session_info = response.json()
         print(f"   Session Info: {session_info}\n")
 
-        print("✅ All tests passed!")
+        print("Smoke check completed.")
 
 
 def main() -> None:
-    """Entry point for the test-topwr-api console script."""
+    """Entry point for the `api-smoke` console script."""
     asyncio.run(run_api_smoke())
 
 
 if __name__ == "__main__":
     print("\n" + "=" * 60)
-    print("ToPWR API Test Suite")
+    print("ToPWR API Smoke Check")
     print("=" * 60 + "\n")
     print("Make sure the API server is running:")
     print("  just topwr-api")

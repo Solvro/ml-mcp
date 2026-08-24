@@ -37,7 +37,7 @@ prefect-refresh = "src.data_pipeline.flows.source_refresh:serve_refresh"
 server = "src.mcp_server.server:main"
 kg = "src.mcp_client.client:call_knowledge_graph_tool"
 topwr-api = "src.topwr_api.server:main"
-test-topwr-api = "src.topwr_api.test_api:main"
+api-smoke = "src.scripts.api_smoke:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -62,6 +62,9 @@ ignore = []
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
+
+[tool.coverage.run]
+omit = ["src/scripts/*"]
 
 [dependency-groups]
 dev = [
