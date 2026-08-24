@@ -441,16 +441,9 @@ class RAG:
             ),
         )
         guardrail_result = self._parse_guardrail_output(guardrail_output)
-        next_node = guardrail_result["decision"]
-        return {
-            "next_node": next_node,
-            "guardrail_decision": guardrail_result["decision"],
-        }
-        guardrail_result = self._parse_guardrail_output(guardrail_output)
-        next_node = guardrail_result["decision"]
 
         return {
-            "next_node": next_node,
+            "next_node": guardrail_result["decision"],
             "guardrail_decision": guardrail_result["decision"],
         }
 
