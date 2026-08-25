@@ -157,8 +157,7 @@ ml-mcp/
 │   ├── topwr_api/
 │   │   ├── server.py            # FastAPI app, endpoints, MCP client integration
 │   │   ├── models.py            # Pydantic models (ChatRequest, ChatResponse, Session)
-│   │   ├── session_manager.py   # Thread-safe in-memory session store
-│   │   └── test_api.py          # Integration test script (uv run test-topwr-api)
+│   │   └── session_manager.py   # Thread-safe in-memory session store
 │   ├── mcp_client/
 │   │   └── client.py            # CLI client for knowledge graph queries
 │   ├── data_pipeline/
@@ -170,8 +169,19 @@ ml-mcp/
 │   │       ├── ocr_extraction.py        # PDF/TXT/DOCX → text (OCR fallback)
 │   │       ├── llm_cypher_generation.py # LLM → Cypher INSERT statements
 │   │       └── graph_populating.py      # Execute Cypher against Neo4j
-│   └── scripts/config/
-│       └── generate_models.py   # Runs datamodel-codegen to regenerate config_models.py
+│   └── scripts/
+│       ├── api_smoke.py         # Manual smoke check against a live API (uv run api-smoke)
+│       ├── populate_graph.py    # One-off graph population script
+│       └── config/
+│           └── generate_models.py   # Runs datamodel-codegen to regenerate config_models.py
+├── tests/
+│   ├── conftest.py                             # Puts the repo root on sys.path
+│   ├── test_cypher_guardrails.py               # Read-only Cypher validation, in isolation
+│   ├── test_llm_fallback_guardrails.py         # Provider selection and fallback chain
+│   ├── test_rag_retrieve_path.py               # retrieve(): blocks mutations, enforces LIMIT
+│   ├── test_rag_generation_guardrails_path.py  # generate_cypher / guardrails_system nodes
+│   ├── test_rag_graph_end_to_end.py            # Full graph run, both branches, sync + async
+│   └── data_pipeline/                          # Concurrency, acquisition, OCR extraction
 ├── docker/
 │   ├── compose.stack.yml        # Full stack (neo4j, postgres, mcp, api, prefect)
 │   ├── compose.prefect.yml      # Data pipeline only

@@ -106,7 +106,7 @@ uv run kg "Kto wykłada analizę matematyczną?"
 uv run prefect_pipeline
 
 # Run API integration tests against live server
-uv run test-topwr-api
+uv run api-smoke
 
 # Check graph schema cached in config
 python -c "from src.config.config import get_config; c = get_config(); print(c.graph.nodes)"
