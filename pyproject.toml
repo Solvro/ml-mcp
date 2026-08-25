@@ -66,6 +66,9 @@ indent-style = "space"
 [tool.coverage.run]
 omit = ["src/scripts/*"]
 
+[tool.coverage.report]
+fail_under = 50
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
