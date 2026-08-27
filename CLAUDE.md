@@ -153,6 +153,8 @@ ml-mcp/
 │   │   └── tools/knowledge_graph/
 │   │       ├── rag.py           # LangGraph state machine (guardrails → cypher → retrieve)
 │   │       ├── state.py         # GraphState TypedDict definition
+│   │       ├── cypher_guardrails.py # Read-only validation, LIMIT enforcement
+│   │       ├── question_analysis.py # Polish question-literal detection, search phrases
 │   │       └── graph_visualizer.py  # Mermaid diagram generator
 │   ├── topwr_api/
 │   │   ├── server.py            # FastAPI app, endpoints, MCP client integration
@@ -181,6 +183,9 @@ ml-mcp/
 │   ├── test_rag_retrieve_path.py               # retrieve(): blocks mutations, enforces LIMIT
 │   ├── test_rag_generation_guardrails_path.py  # generate_cypher / guardrails_system nodes
 │   ├── test_rag_graph_end_to_end.py            # Full graph run, both branches, sync + async
+│   ├── test_rag_empty_retrieval_escalation.py  # Empty-result retries and the abstention answer
+│   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
+│   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   └── data_pipeline/                          # Concurrency, acquisition, OCR extraction
 ├── docker/
 │   ├── compose.stack.yml        # Full stack (neo4j, postgres, mcp, api, prefect)
@@ -343,6 +348,52 @@ enforced via prompt and string values are folded deterministically before execut
   be copied exactly from the live Neo4j schema.
 - Read-only guardrails remain authoritative after normalization. In particular, `CALL` is still
   blocked unless a separately reviewed procedure allowlist is introduced.
+
+### Text2Cypher Determinism and Empty-Result Escalation
+
+Both pipeline models run at `temperature: 0` (`llm.fast_model`, `llm.accurate_model`), so the
+same question routes and generates the same Cypher on every run. Do not reintroduce sampling:
+`tests/test_llm_determinism_config.py` fails if either temperature moves off zero.
+
+A generated query that executes but matches nothing is retried rather than reported as missing
+data, because the two most common Text2Cypher mistakes both surface as zero rows. `retrieve()`
+escalates in `src/mcp_server/tools/knowledge_graph/rag.py`:
+
+1. **primary** — the model's query, after diacritic folding and `toLower` enforcement.
+2. **repaired_literals** — fuzzy predicates whose literal is copied question text (detected by
+   `question_analysis.is_question_like_literal`) are replaced with `true`, keeping the traversal
+   the model wrote but dropping a filter that could never match a stored title.
+3. **label_agnostic_phrases** — `FALLBACK_SEARCH_CYPHER` searches every label's `title` for noun
+   phrases extracted from the question (`question_analysis.extract_search_phrases`), which
+   recovers an answer stored under a label the model did not pick. Gated by
+   `rag.enable_fallback_search`; it is a single unlabeled scan, so turn it off on a large graph.
+
+The chosen step is reported as `metadata.retrieval_strategy` and logged by the MCP server.
+Escalation only follows a *successful* execution — a blocked or failing query is still reported
+as blocked or failed, never retried.
+
+Phrase extraction never starts or ends a phrase with a Polish question word or function word, so
+`"Co obejmuje udział w konferencjach?"` yields `"udzial w konferencjach"` (the stored title) and
+never the truncated `"udzial w"`.
+
+### Abstention Path
+
+There is no "answer from general knowledge" escape hatch. When retrieval finds nothing,
+`RAG._format_result` returns `NO_GRAPH_DATA_MESSAGE` as an explicit sentence rather than an empty
+JSON list, and `prompts.final_answer` instructs the answering model to say it does not know
+instead of presenting the nearest-looking row. A confidently wrong date in a student-facing
+chatbot is worse than an admission of ignorance — keep both halves of this in place.
+
+Two distinct sentinels live in `src/config/messages.py`:
+- `OFF_TOPIC_MESSAGE` — the guardrail routed the question away from retrieval.
+- `NO_GRAPH_DATA_MESSAGE` — retrieval ran and found nothing.
+
+### Guardrail Breadth
+
+`prompts.guardrails` is deliberately permissive and defaults to `generate` when in doubt: a
+wrongly rejected question costs the user an answer, while a wrongly accepted one just produces an
+empty retrieval that the escalation and abstention paths already handle. Malformed guardrail
+output is a separate matter and still fails closed to `end` (`_parse_guardrail_output`).
 
 ### Concurrent Pipeline Idempotency
 The data pipeline processes pages in batches with configurable concurrency and hash-based idempotency:

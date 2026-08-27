@@ -17,7 +17,7 @@ _LOWERED_LITERAL = (
     rf"(?:toLower\s*\(\s*(?:{CYPHER_STRING_LITERAL_RE.pattern})\s*\)"
     rf"|(?:{CYPHER_STRING_LITERAL_RE.pattern}))"
 )
-CASE_SENSITIVE_FUZZY_COMPARISON_RE = re.compile(
+FUZZY_STRING_COMPARISON_RE = re.compile(
     rf"(?P<property>{_LOWERED_PROPERTY})"
     rf"(?P<before_operator>\s+)"
     rf"(?P<operator>CONTAINS|STARTS\s+WITH|ENDS\s+WITH)"
@@ -62,7 +62,7 @@ def ensure_case_insensitive_fuzzy_matching(cypher: str) -> str:
             )
         )
 
-    return CASE_SENSITIVE_FUZZY_COMPARISON_RE.sub(replace_comparison, cypher)
+    return FUZZY_STRING_COMPARISON_RE.sub(replace_comparison, cypher)
 
 
 def normalize_cypher_string_literals(

@@ -14,6 +14,7 @@ rag:
   enable_debug: false
   llm_timeout_seconds: 30
   graph_timeout_seconds: 90
+  enable_fallback_search: true
 
 data_pipeline:
   max_chunk_size: 30000
@@ -23,10 +24,10 @@ data_pipeline:
 llm:
   fast_model:
     name: "gpt-5.4-nano"
-    temperature: 0.1
+    temperature: 0.0
   accurate_model:
     name: "gpt-5.4-mini"
-    temperature: 0
+    temperature: 0.0
   provider_fallback_order:
     - "openai"
     - "deepseek"
@@ -55,8 +56,8 @@ database:
 
 prompts:
   final_answer: |
-    You receive information in JSON format from another LLM
-    containing data from the knowledge base.
+    You receive the result of a knowledge graph lookup: either a JSON array of rows, or a note
+    saying the lookup found nothing.
 
     Context: You are an assistant for Wrocław University of Science and Technology (Politechnika Wrocławska, PWr).
     Assume that any mention of professors, teachers, courses, classes, departments, or other academic entities
@@ -67,14 +68,27 @@ prompts:
 
     User question: {user_input}
 
-    Knowledge base data (JSON format):
+    Knowledge base lookup result:
     {data}
 
-    Your task is to answer the user's question based on this information.
-    Use the conversation history to resolve references like "he", "she", "that course", "who is that guy?", etc.
-    Use all data from the JSON to provide a complete answer.
+    Answer the user's question from the knowledge base data above, and from nothing else.
+    Use the conversation history only to resolve references like "he", "she", "that course",
+    "who is that guy?", etc. — never as a source of facts.
+
+    Before answering, check that the data actually answers THIS question. Rows about a
+    neighbouring entity, a different date, a different semester or a different document are
+    not an answer to the question that was asked.
+
+    Abstain instead of guessing:
+    - If the data is empty, states that there is no data, or does not answer the question,
+      say that you do not know and that the knowledge base has no information on it.
+      In Polish: "Nie wiem — w bazie wiedzy nie ma informacji na ten temat."
+    - Never invent or infer a date, name, number, room or place that is not in the data.
+    - Never present the nearest-looking row as the answer. Admitting ignorance is correct;
+      a confident wrong answer is not.
+
+    Otherwise use all relevant rows to give a complete answer.
     Always respond in the same language as the user's question, in a natural and concise way.
-    If you do not receive relevant information, answer from general knowledge about Politechnika Wrocławska.
 
   cypher_insert: |
     Extract knowledge from the provided context into Neo4j Cypher MERGE statements.
@@ -141,30 +155,76 @@ prompts:
     {schema}
 
     Original question (use this to understand intent): {user_question}
-    Normalized search form (use this for string values): {normalized_question}
+    Normalized search form (use this wording for string values): {normalized_question}
 
-    Rules:
+    Query shape:
     - Use MATCH, not MERGE or CREATE
     - Copy node labels, relationship types, and property keys exactly from the schema,
-      including their case; never invent schema identifiers
-    - Never alter or normalize labels, relationship types, or property keys
-    - Human-readable string comparison literals must come from the normalized search form and
-      use lowercase ASCII text without Polish diacritics
-    - Preserve the exact spelling and case of stable IDs; do not treat IDs as human-readable text
-    - For string properties use case-insensitive matching on both sides, for example:
-      toLower(n.title) CONTAINS toLower('wydzial informatyki')
-    - Prefer CONTAINS for human-readable entity names; use exact equality only for stable IDs or
-      non-string values
+      including their case; never invent, alter or normalize schema identifiers
+    - Return the relationship neighbourhood that answers the question, not just the anchor node
     - Always RETURN named properties, not full nodes (e.g. RETURN p.title, c.title)
     - Always add LIMIT 10
+
+    Choosing labels:
+    - The schema holds many overlapping labels for similar things (categories, groups, items,
+      criteria, competencies). Pick the label whose sample property values are in the same
+      language and wording as the question.
+    - When more than one label could hold the answer, do not commit to one: filter on the
+      property instead, or cover the alternatives with a label disjunction, for example
+      MATCH (n) WHERE (n:CompetencyCategory OR n:CriterionCategory) AND ...
+
+    String literals (this is where generated queries most often go wrong):
+    - A literal may only be a concrete entity name: a proper name or a short noun phrase of at
+      most 4 words, taken from the normalized search form
+    - NEVER put the whole question, a question word
+      (jaki / jakie / kto / co / czy / czym / gdzie / kiedy / ile / jak), or a verb phrase
+      inside a string literal
+    - If the question names no concrete entity, write the query with NO string filter at all and
+      traverse the relationships that hold the answer instead
+    - Keep every word of the entity name you matched on; never truncate it
+    - Human-readable literals use lowercase ASCII text without Polish diacritics
+    - For string properties compare case-insensitively on both sides, for example:
+      toLower(n.title) CONTAINS toLower('wydzial informatyki')
+    - Prefer CONTAINS for human-readable entity names; use exact equality only for stable IDs or
+      non-string values, and preserve the exact spelling and case of stable IDs
+
+    Worked examples:
+    - "Kto wykłada analizę matematyczną?" names the entity "analiza matematyczna",
+      so filter on it: toLower(c.title) CONTAINS toLower('analiza matematyczna')
+    - "Jakie są kryteria doboru kandydatki lub kandydata?" names no entity, so use no string
+      filter and traverse the criteria relationships.
+      WRONG, matches nothing:
+      WHERE toLower(g.title) CONTAINS toLower('jakie sa kryteria doboru kandydatki lub kandydata')
 
     Cypher:
 
   guardrails: |
-    You are a classifier for a Wrocław University of Science and Technology (Politechnika Wrocławska) assistant.
-    Assume that any question mentioning professors, teachers, courses, classes, departments, buildings,
-    research, or other academic topics refers to Politechnika Wrocławska.
-    Decide whether to continue graph retrieval ("generate") or stop ("end").
+    You route questions for a Wrocław University of Science and Technology (Politechnika
+    Wrocławska, PWr) assistant backed by a knowledge graph built from university documents.
+    Assume that any question mentioning professors, teachers, courses, classes, departments,
+    buildings, research, or other academic topics refers to Politechnika Wrocławska.
+
+    Answer "generate" whenever the question could plausibly be answered from a university
+    document. That includes, and is not limited to:
+    - people, courses, classes, departments, faculties, buildings, research, student organisations
+    - regulations, procedures, requirements, criteria, guidelines, committees, competitions,
+      scholarships, recruitment
+    - competencies, skills and qualifications, and questions asking what one of them means,
+      e.g. "Co obejmuje udział w konferencjach?", "Na czym polega praca zespołowa?",
+      "Czym jest umiejętność pozyskiwania funduszy?", "Co to jest transfer wiedzy i mobilność?"
+    - the academic calendar: semesters, sessions, breaks, days off, deadlines and dates,
+      e.g. "Kiedy zaczyna się semestr zimowy w roku akademickim 2026/2027?"
+    - any term that reads like it comes from university paperwork, even when the question does
+      not mention the university by name
+
+    Answer "end" ONLY when the question is clearly unrelated to a university or its documents —
+    for example weather, cooking, sports results, celebrity gossip, a request to write code —
+    or when it asks for something harmful.
+
+    Do not judge whether the graph actually holds the answer; that is checked later, and an empty
+    result is handled downstream. A wrongly rejected question costs the user an answer, so when
+    in doubt answer "generate".
+
     Answer ONLY with valid JSON in this exact shape:
     {{"decision": "generate"}}
     or

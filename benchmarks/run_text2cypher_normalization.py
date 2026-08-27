@@ -144,7 +144,9 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, Any]:
         try:
             generated = rag.generate_cypher({"user_question": case["question"]})["generated_cypher"]
             if args.mode == "full":
-                retrieval = rag.retrieve({"generated_cypher": generated})
+                retrieval = rag.retrieve(
+                    {"generated_cypher": generated, "user_question": case["question"]}
+                )
                 executed_query = retrieval["generated_cypher"]
                 context = retrieval["context"]
             else:
