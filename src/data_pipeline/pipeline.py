@@ -209,6 +209,15 @@ def data_pipeline_flow():
                     exc,
                 )
 
+    # Repair before reflecting, so the summary describes the deduplicated graph.
+    dedup_stats = populator.deduplicate_entities()
+    logger.info(
+        "Deduplication: relabelled=%d keys_backfilled=%d groups_merged=%d",
+        dedup_stats["relabelled_labels"],
+        dedup_stats["keys_backfilled"],
+        dedup_stats["groups_merged"],
+    )
+
     # Run one final reflection only after all futures have settled.
     final_schema = _safe_reflect_schema(phase="after_parallel_batches", logger=logger)
     stats["schema_final_chars"] = len(final_schema)

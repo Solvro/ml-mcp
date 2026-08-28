@@ -164,6 +164,16 @@ class GraphPopulator:
         logger.info("Ensured canonical key indexes for %d labels", len(labels))
         return len(labels)
 
+    def deduplicate_entities(self) -> dict[str, int]:
+        """Run the post-ingest repair for entities split across several nodes.
+
+        Returns:
+            Counts for each repair stage, for the pipeline summary log
+        """
+        from src.data_pipeline.flows.graph_dedup import deduplicate_graph
+
+        return deduplicate_graph(self.graph_db)
+
     def execute_cypher(self, query: str):
         logger = _get_logger()
         if not query or not query.strip():
