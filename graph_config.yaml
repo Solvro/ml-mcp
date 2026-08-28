@@ -315,6 +315,36 @@ prompts:
     MERGE (...) [|MERGE (...)]* [|MERGE (...)-[:...]->(...)]*
     NO OTHER TEXT OR CHARACTERS ALLOWED!
 
+  cypher_insert_missing_rows: |
+    An earlier extraction pass over this page missed the rows below. Extract them now, using the
+    same rules. DO NOT include any additional text or explanations.
+
+    ROWS THAT WERE MISSED:
+    {rows}
+
+    SURROUNDING CONTEXT (for wording and relationships only - do not re-extract it):
+    {context}
+
+    ALLOWED NODE LABELS - use these and nothing else:
+    {node_labels}
+
+    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    {relationship_types}
+
+    RULES:
+    - Produce one node per missed row. Every row above must appear in the output.
+    - A row that carries only a date and a generic description is still a row; extract it exactly
+      like one that carries a proper name.
+    - Include 'title' and 'context' properties; keep dates and numbers verbatim in the title.
+    - Replace Polish characters and use ONLY ASCII characters
+    - Escape single quotes in text with backslash (')
+    - Begin with "MERGE", separate statements with PIPE character (|), use UNIQUE variable names
+      that cannot clash with earlier ones: name them extra1, extra2, and so on.
+
+    OUTPUT MUST BE EXACTLY IN THIS FORMAT:
+    MERGE (...) [|MERGE (...)]*
+    NO OTHER TEXT OR CHARACTERS ALLOWED!
+
   schema_reflection: |
     Analyze the current Neo4j graph schema and summarize it to guide the next extraction pass.
 
