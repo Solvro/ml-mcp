@@ -38,6 +38,11 @@ def _compute_page_hash(page_content: str) -> str:
     return sha256(normalized_content).hexdigest()
 
 
+def _document_id(source_id: str) -> str:
+    """Strip the page fragment so a page id maps back to its document."""
+    return source_id.split("#", 1)[0]
+
+
 def _normalize_source_pages(extracted: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """Normalize OCR output to non-empty (source_id, content) pairs."""
     if not isinstance(extracted, list):
@@ -78,7 +83,7 @@ def _safe_reflect_schema(phase: str, logger) -> str:
 def data_pipeline_flow(
     changed: list[str] | None = None,
     deleted: list[str] | None = None,
-):
+) -> set[str]:
     """Agentic graph extraction loop with batched parallel processing.
 
     Each page is processed through the same generate -> populate chain.
@@ -92,6 +97,12 @@ def data_pipeline_flow(
         changed: List of staging-relative POSIX paths for new/changed documents.
             None means full scan (legacy/manual behavior).
         deleted: List of staging-relative POSIX paths removed upstream.
+
+    Returns:
+        Document-level source ids (``file://relative/path``, no page fragment)
+        confirmed to be in the graph after this run. A document whose extraction
+        produced nothing, or any of whose pages failed, is omitted so the caller
+        retries it.
     """
     load_dotenv()
     logger = get_run_logger()
@@ -111,7 +122,7 @@ def data_pipeline_flow(
             import_graph_from_cypher_dump()
             populator.record_restore_run()
             logger.info("Loaded graph from dump; skipped LLM extraction.")
-            return
+            return set()
         except Exception as exc:
             logger.warning("Dump restore failed (%s); continuing with extraction", exc)
 
@@ -120,8 +131,9 @@ def data_pipeline_flow(
     source_pages = _normalize_source_pages(extracted)
     if not source_pages:
         logger.warning("No non-empty pages found; stopping pipeline early")
-        return
+        return set()
 
+    all_documents = {_document_id(sid) for sid, _ in source_pages}
     last_source_hashes = populator.get_latest_pipeline_source_hashes()
     full_source_hashes = {sid: _compute_page_hash(text) for sid, text in source_pages}
     work_items: list[tuple[str, str]] = [
@@ -131,8 +143,9 @@ def data_pipeline_flow(
     ]
     if not work_items:
         logger.info("No new or changed source files since last pipeline run")
-        return
+        return all_documents
 
+    page_sources = [sid for sid, _ in work_items]
     pages = [text for _, text in work_items]
 
     stats = {
@@ -147,6 +160,7 @@ def data_pipeline_flow(
         "schema_final_chars": 0,
     }
 
+    failed_documents: set[str] = set()
     max_concurrency = _get_max_concurrency()
     logger.info(
         "Submitting %d pages (incremental from %d sources) with max concurrency %d",
@@ -190,6 +204,7 @@ def data_pipeline_flow(
                     page_hash,
                     exc,
                 )
+                failed_documents.add(_document_id(page_sources[page_index - 1]))
                 continue
 
             if not is_claimed:
@@ -222,8 +237,8 @@ def data_pipeline_flow(
                     page_hash,
                     exc,
                 )
+                failed_documents.add(_document_id(page_sources[page_index - 1]))
 
-    # Run one final reflection only after all futures have settled.
     final_schema = _safe_reflect_schema(phase="after_parallel_batches", logger=logger)
     stats["schema_final_chars"] = len(final_schema)
     logger.info("Pipeline complete. Final schema summary length: %d", stats["schema_final_chars"])
@@ -253,7 +268,13 @@ def data_pipeline_flow(
     ensure_host_dump_dir()
     export_graph_to_cypher()
 
-    logger.info("Pipeline complete. Graph is ready for querying.")
+    processed_documents = all_documents - failed_documents
+    logger.info(
+        "Pipeline complete. Graph is ready for querying. Confirmed %d / %d documents",
+        len(processed_documents),
+        len(all_documents),
+    )
+    return processed_documents
 
 
 if __name__ == "__main__":

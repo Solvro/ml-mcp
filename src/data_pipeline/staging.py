@@ -6,6 +6,14 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 MANIFEST_FILENAME = "manifest.json"
+MANIFEST_STATUS_PENDING = "pending"
+MANIFEST_STATUS_PROCESSED = "processed"
+MANIFEST_STATUS_FAILED = "failed"
+_MANIFEST_STATUSES = {
+    MANIFEST_STATUS_PENDING,
+    MANIFEST_STATUS_PROCESSED,
+    MANIFEST_STATUS_FAILED,
+}
 
 _UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._/-]")
 
@@ -89,6 +97,32 @@ def load_manifest(staging_dir: Path) -> dict[str, dict]:
     except (json.JSONDecodeError, OSError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def normalize_manifest_entry(entry: dict | None) -> dict[str, object]:
+    """Return manifest entry with guaranteed processing fields.
+
+    Legacy entries without processing metadata default to "processed"
+    to preserve pre-existing behavior.
+    """
+    normalized: dict[str, object] = dict(entry or {})
+
+    status_raw = str(normalized.get("status", MANIFEST_STATUS_PROCESSED)).strip().lower()
+    status = status_raw if status_raw in _MANIFEST_STATUSES else MANIFEST_STATUS_PROCESSED
+
+    try:
+        attempt_count = int(normalized.get("attempt_count", 0))
+    except (TypeError, ValueError):
+        attempt_count = 0
+
+    last_error = normalized.get("last_error")
+    if not isinstance(last_error, str):
+        last_error = ""
+
+    normalized["status"] = status
+    normalized["attempt_count"] = max(0, attempt_count)
+    normalized["last_error"] = last_error
+    return normalized
 
 
 def save_manifest(staging_dir: Path, manifest: dict[str, dict]) -> None:

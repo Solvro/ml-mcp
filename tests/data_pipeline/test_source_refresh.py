@@ -149,6 +149,9 @@ def test_refresh_stages_documents_and_writes_manifest(staging_env):
     sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
     assert manifest[sid]["origin"] == PDF
     assert manifest[sid]["sha256"]
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PENDING
+    assert manifest[sid]["attempt_count"] == 0
+    assert manifest[sid]["last_error"] == ""
 
 
 def test_refresh_second_run_is_idempotent(staging_env):
@@ -445,3 +448,54 @@ def test_sitemap_scope_does_not_leak_to_sibling_paths():
     }
     connector = WebConnector([SUBPAGE], client=make_client(routes))
     assert [d.origin_url for d in connector.discover()] == [SUBPAGE]
+
+
+def test_refresh_marks_staged_entries_processed_after_downstream_success(staging_env, monkeypatch):
+    calls: list[str] = []
+
+    def fake_pipeline():
+        calls.append("run")
+        current = staging.load_manifest(staging_env)
+        return {s for s, e in current.items() if e.get("status") == staging.MANIFEST_STATUS_PENDING}
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    manifest = staging.load_manifest(staging_env)
+    assert calls == ["run"]
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PROCESSED
+    assert manifest[sid]["attempt_count"] == 0
+    assert manifest[sid]["last_error"] == ""
+
+
+def test_refresh_keeps_pending_when_downstream_fails(staging_env, monkeypatch):
+    def failing_pipeline():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", failing_pipeline)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    with pytest.raises(RuntimeError):
+        refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    manifest = staging.load_manifest(staging_env)
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PENDING
+    assert manifest[sid]["attempt_count"] == 0
+    assert manifest[sid]["last_error"] == ""
+
+
+def test_refresh_keeps_pending_when_downstream_omits_document(staging_env, monkeypatch):
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", lambda: set())
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    manifest = staging.load_manifest(staging_env)
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PENDING
+    assert manifest[sid]["attempt_count"] == 1
+    assert manifest[sid]["last_error"]

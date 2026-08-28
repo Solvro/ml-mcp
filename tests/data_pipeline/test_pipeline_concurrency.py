@@ -133,7 +133,7 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     populate_stub = SubmitStub(lambda _cypher_future, _doc_hash: ImmediateFuture(None))
     monkeypatch.setattr(pipeline_module, "populate_graph", populate_stub)
 
-    pipeline_module.data_pipeline_flow()
+    processed = pipeline_module.data_pipeline_flow()
 
     assert len(claim_stub.calls) == 3
     assert len(generate_stub.calls) == 2
@@ -144,6 +144,7 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     third_hash = claim_stub.calls[2][0][0]
     assert first_hash == second_hash
     assert first_hash != third_hash
+    assert processed == {"file://docs/a.pdf"}
 
 
 def test_pipeline_continues_after_page_failure(monkeypatch):
@@ -300,6 +301,7 @@ def test_hash_function_is_stable():
     assert left != different
     assert len(left) == 64
 
+
 def test_pipeline_accepts_trigger_sets_without_behavior_change(monkeypatch):
     extracted_pages = [
         ("file://docs/a.pdf#page=1", "page-one"),
@@ -350,3 +352,47 @@ def test_pipeline_accepts_trigger_sets_without_behavior_change(monkeypatch):
     assert len(claim_stub.calls) == 2
     assert len(generate_stub.calls) == 2
     assert len(populate_stub.calls) == 2
+
+
+def test_pipeline_returns_documents_confirmed_in_graph(monkeypatch):
+    extracted_pages = _to_extracted_pages(["p0", "p1"])
+
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: extracted_pages)
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "get_latest_pipeline_source_hashes",
+        lambda self: {},
+    )
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "record_pipeline_run",
+        lambda self, *args, **kwargs: None,
+    )
+    monkeypatch.setattr(pipeline_module, "reflect_on_schema", lambda: "schema-summary")
+    monkeypatch.setattr(
+        pipeline_module,
+        "claim_document_for_processing",
+        SubmitStub(lambda _doc_hash: ImmediateFuture(True)),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "generate_cypher_queries",
+        SubmitStub(lambda _page, _schema: ImmediateFuture("MERGE (n:Entity {x: 1})")),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "populate_graph",
+        SubmitStub(lambda _cypher, _hash: ImmediateFuture(None)),
+    )
+
+    assert pipeline_module.data_pipeline_flow() == {"file://docs/a.pdf"}
+
+
+def test_pipeline_returns_empty_when_extraction_yields_nothing(monkeypatch):
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: [])
+
+    processed = pipeline_module.data_pipeline_flow()
+
+    assert processed == set()

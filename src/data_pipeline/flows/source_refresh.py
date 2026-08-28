@@ -17,9 +17,12 @@ from prefect.exceptions import MissingContextError
 
 from src.data_pipeline.pipeline import data_pipeline_flow
 from src.data_pipeline.staging import (
+    MANIFEST_STATUS_PENDING,
+    MANIFEST_STATUS_PROCESSED,
     atomic_write_bytes,
     get_staging_dir,
     load_manifest,
+    normalize_manifest_entry,
     save_manifest,
     source_id_for,
     url_to_relative_path,
@@ -357,10 +360,11 @@ def refresh_sources_flow(
     logger.info("Discovered %d documents", len(documents))
 
     changed_any = False
+    staged_sids: list[str] = []
     for doc in documents:
         relative_path = url_to_relative_path(doc.origin_url, is_html=doc.kind == "html")
         sid = source_id_for(relative_path)
-        entry = manifest.get(sid, {})
+        entry = normalize_manifest_entry(manifest.get(sid))
         result = connector.fetch(
             doc, etag=entry.get("etag"), last_modified=entry.get("last_modified")
         )
@@ -411,7 +415,11 @@ def refresh_sources_flow(
             "sha256": content_hash,
             "size": len(content),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "status": MANIFEST_STATUS_PENDING,
+            "attempt_count": 0,
+            "last_error": "",
         }
+        staged_sids.append(sid)
         stats["fetched"] += 1
         changed_any = True
 
@@ -429,7 +437,21 @@ def refresh_sources_flow(
 
     if changed_any and trigger_downstream:
         logger.info("Changes staged; triggering downstream data pipeline")
-        data_pipeline_flow()
+        processed_sources = data_pipeline_flow() or set()
+
+        for sid in staged_sids:
+            current = normalize_manifest_entry(manifest.get(sid))
+            if sid in processed_sources:
+                current["status"] = MANIFEST_STATUS_PROCESSED
+                current["attempt_count"] = 0
+                current["last_error"] = ""
+            else:
+                current["status"] = MANIFEST_STATUS_PENDING
+                current["attempt_count"] = int(current["attempt_count"]) + 1
+                current["last_error"] = "not confirmed by downstream pipeline"
+            manifest[sid] = current
+
+        save_manifest(staging_dir, manifest)
 
     return stats
 

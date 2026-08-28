@@ -97,3 +97,19 @@ def test_url_to_relative_path_keeps_extension_when_url_has_query():
     assert Path(path).suffix == ".pdf"
     other = staging.url_to_relative_path("https://x.pwr.edu.pl/docs/plan.pdf?ver=4", is_html=False)
     assert path != other
+
+
+def test_normalize_manifest_entry_adds_processing_defaults():
+    out = staging.normalize_manifest_entry({"origin": "https://x/a"})
+    assert out["status"] == staging.MANIFEST_STATUS_PROCESSED
+    assert out["attempt_count"] == 0
+    assert out["last_error"] == ""
+
+
+def test_normalize_manifest_entry_normalizes_invalid_values():
+    out = staging.normalize_manifest_entry(
+        {"status": "???", "attempt_count": "abc", "last_error": None}
+    )
+    assert out["status"] == staging.MANIFEST_STATUS_PROCESSED
+    assert out["attempt_count"] == 0
+    assert out["last_error"] == ""
