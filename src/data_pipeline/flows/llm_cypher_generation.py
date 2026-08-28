@@ -10,7 +10,7 @@ from prefect import get_run_logger, task
 from pydantic import SecretStr
 
 from src.config.config import get_config
-from src.data_pipeline.label_vocabulary import render_allowed_labels
+from src.data_pipeline.label_vocabulary import LabelVocabulary, render_allowed_labels
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
 
@@ -91,6 +91,40 @@ class LLMPipe:
         return result["generated_cypher"]
 
 
+def _canonicalize_labels(parts: List[str], logger) -> List[str]:
+    """Force every generated node label into the configured vocabulary.
+
+    The prompt already lists the allowed labels, but a label it invents anyway is invisible in
+    the output and splits an entity across two nodes, so the set is enforced here as well.
+
+    Args:
+        parts: Generated Cypher statements
+        logger: Prefect run logger used to report the drift that was corrected
+
+    Returns:
+        The statements with every node label resolved to a configured label
+    """
+    vocabulary = LabelVocabulary(get_config().graph_schema)
+    canonical_parts: List[str] = []
+    all_rewrites: dict[str, str] = {}
+
+    for part in parts:
+        rewritten, rewrites = vocabulary.canonicalize_statement(part)
+        canonical_parts.append(rewritten)
+        all_rewrites.update(rewrites)
+
+    if all_rewrites:
+        logger.info(
+            "Rewrote %d off-vocabulary label(s): %s",
+            len(all_rewrites),
+            ", ".join(
+                f"{found} -> {canonical}" for found, canonical in sorted(all_rewrites.items())
+            ),
+        )
+
+    return canonical_parts
+
+
 @task
 def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> str:
     """Generate cypher statements from text using LLMPipe.
@@ -107,6 +141,7 @@ def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> st
     llm = LLMPipe()
     parts = llm.run(extracted_text, schema_context)
     parts = [normalize_cypher_string_literals(part, normalizer=fold_diacritics) for part in parts]
+    parts = _canonicalize_labels(parts, logger)
 
     try:
         logger.info("LLM returned %d parts", len(parts))
