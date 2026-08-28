@@ -33,6 +33,9 @@ CONTEXT_PROPERTY = "context"
 
 # Guards the appended context against unbounded growth as more pages mention the same entity.
 MAX_CONTEXT_LENGTH = 2000
+# Separates appended contexts. Must not contain a pipe: the whole ingestion path splits
+# statements on "|", so a pipe inside a generated literal would tear the statement in half.
+CONTEXT_SEPARATOR = "; "
 
 
 def canonical_entity_key(title: str) -> str:
@@ -151,7 +154,7 @@ def rewrite_merge_to_canonical_key(statement: str) -> str:
             f"WHEN size(coalesce({variable}.{CONTEXT_PROPERTY}, '')) + size({context_literal}) "
             f"> {MAX_CONTEXT_LENGTH} THEN {variable}.{CONTEXT_PROPERTY} "
             f"WHEN coalesce({variable}.{CONTEXT_PROPERTY}, '') = '' THEN {context_literal} "
-            f"ELSE {variable}.{CONTEXT_PROPERTY} + ' | ' + {context_literal} END"
+            f"ELSE {variable}.{CONTEXT_PROPERTY} + '{CONTEXT_SEPARATOR}' + {context_literal} END"
         )
 
     for name, value in properties:

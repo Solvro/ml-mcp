@@ -19,7 +19,7 @@ from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 
 from src.config.config import get_config
-from src.data_pipeline.canonical_nodes import canonical_entity_key
+from src.data_pipeline.canonical_nodes import CONTEXT_SEPARATOR, canonical_entity_key
 from src.data_pipeline.label_vocabulary import LabelVocabulary
 
 module_logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ YIELD node AS merged
 SET merged.title = best_title,
     merged.context = substring(
         reduce(joined = '', part IN contexts |
-               CASE WHEN joined = '' THEN part ELSE joined + ' | ' + part END),
+               CASE WHEN joined = '' THEN part ELSE joined + $context_separator + part END),
         0, $max_context_length)
 RETURN count(merged) AS merged_groups
 """
@@ -157,6 +157,7 @@ def merge_duplicate_nodes(graph: Neo4jGraph) -> int:
             params={
                 "internal_labels": sorted(INTERNAL_LABELS),
                 "max_context_length": MAX_CONTEXT_LENGTH,
+                "context_separator": CONTEXT_SEPARATOR,
             },
         )
     except Exception as exc:

@@ -77,7 +77,7 @@ def test_a_second_mention_appends_a_new_context_instead_of_replacing_it() -> Non
     )
 
     assert "CONTAINS 'Trwa do 23 lutego 2027'" in rewritten
-    assert "node1.context + ' | ' + 'Trwa do 23 lutego 2027'" in rewritten
+    assert "node1.context + '; ' + 'Trwa do 23 lutego 2027'" in rewritten
 
 
 def test_extra_properties_are_preserved_on_create_and_kept_on_match() -> None:
@@ -141,3 +141,41 @@ def test_generation_task_emits_canonical_key_merges(monkeypatch) -> None:
 
     assert result.count("{key: 'cyberbezpieczenstwo'}") == 2
     assert ":Program {" not in result
+
+
+def test_no_generated_statement_contains_the_statement_delimiter() -> None:
+    """The whole ingestion path splits on "|", so a pipe in a literal tears the statement apart."""
+    rewritten = rewrite_merge_to_canonical_key(
+        "MERGE (node1:Semester {title: 'Semestr zimowy', context: 'Trwa do 23 lutego 2027'})"
+    )
+
+    assert "|" not in rewritten
+
+
+def test_appended_contexts_are_separated_without_a_pipe() -> None:
+    rewritten = rewrite_merge_to_canonical_key(
+        "MERGE (node1:Semester {title: 'Semestr zimowy', context: 'Trwa do 23 lutego 2027'})"
+    )
+
+    assert "node1.context + '; ' + 'Trwa do 23 lutego 2027'" in rewritten
+
+
+def test_generated_output_survives_the_pipe_split(monkeypatch) -> None:
+    """What generate_cypher_queries joins with "|", graph_populating must split back intact."""
+
+    class FakePipe:
+        def run(self, context: str, schema_context: str = "") -> list[str]:
+            return [
+                "MERGE (node1:Semester {title: 'Semestr zimowy', context: 'Trwa do 23 lutego'})",
+                "MERGE (node2:Course {title: 'Kryptografia', context: 'Kurs'})",
+            ]
+
+    monkeypatch.setattr(cypher_module, "LLMPipe", FakePipe)
+    monkeypatch.setattr(cypher_module, "get_run_logger", MagicMock)
+
+    result = cypher_module.generate_cypher_queries.fn("source text")
+    statements = [part.strip() for part in result.split("|") if part.strip()]
+
+    assert len(statements) == 2
+    assert all(statement.startswith("MERGE (") for statement in statements)
+    assert all(statement.endswith("END") for statement in statements)
