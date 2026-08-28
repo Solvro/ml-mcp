@@ -251,45 +251,65 @@ prompts:
 
   cypher_insert: |
     Extract knowledge from the provided context into Neo4j Cypher MERGE statements.
-    Invent node labels and relationship types that best represent the content.
-    Use the current graph schema to stay consistent with existing structure where appropriate.
     DO NOT include any additional text or explanations.
 
     CONTEXT: {context}
 
-    CURRENT GRAPH SCHEMA (use for consistency, extend freely):
+    CURRENT GRAPH SCHEMA (use for consistency; do not extend the label set):
     {schema_context}
 
-    STRICT RULES:
-    1. OUTPUT MUST:
+    ALLOWED NODE LABELS - use these and nothing else:
+    {node_labels}
+
+    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    {relationship_types}
+
+    1. COMPLETENESS - this is the most important rule:
+       - Extract EVERY discrete fact in the context. Do not summarise, condense, or sample.
+       - Every row of a list or table becomes its own node. A page with nine bullet points
+         produces nine nodes, not "the three important ones".
+       - Never judge whether an entry is significant enough to keep. An entry that carries only
+         a date and a generic description, such as "2 XI 2026 r. - dzien wolny od zajec", is
+         exactly as important as one with a proper name like "Swieto Niepodleglosci".
+       - Never merge several rows into one summarising node. Two dates are two nodes.
+       - Keep dates, numbers, room codes and identifiers verbatim in the title as the context
+         writes them.
+
+    2. LABELS AND CANONICAL NODES:
+       - Use ONLY labels from ALLOWED NODE LABELS above; never invent a new one. If nothing fits,
+         use Topic.
+       - One node per real entity. Before writing a node, check whether an earlier statement in
+         this same output already covers it and reuse that variable instead.
+       - Use the fullest form of the name as the title. Do not create a second node for an
+         abbreviation or a shortened variant of a name you already used: pick one title such as
+         "Cyberbezpieczenstwo (CBE)" and keep it for every mention.
+       - Put everything the context says about the entity into that one node's context property,
+         instead of emitting one node with dates and another without.
+
+    3. OUTPUT FORMAT:
        - Contain ONLY executable Cypher statements
        - Begin with "MERGE"
        - Separate multiple statements with PIPE character (|)
-       - Use UNIQUE variable names (node1, node2, etc. - never reused)
+       - Use UNIQUE variable names (node1, node2, etc. - never reused for a different entity)
        - LIMIT TOKENS TO 65536 TO AVOID ERRORS WITH DEEPSEEK API
 
-    2. FOR NODES:
+    4. FOR NODES:
        - MERGE each node with unique variable name
        - Include 'title' and 'context' properties
-       - Replace Polish characters (ą→a, ć→c, ę→e, ł→l, ń→n, ó→o, ś→s, ź→z, ż→z)
+       - Replace Polish characters (a->a, c->c, e->e, l->l, n->n, o->o, s->s, z->z)
        - Use ONLY ASCII characters
        - Escape single quotes in text with backslash (\')
 
-    3. FOR RELATIONSHIPS:
+    5. FOR RELATIONSHIPS:
        - MERGE between existing node variables
-       - Use descriptive relationship type names in UPPER_SNAKE_CASE
-       - Direction matters (A→B ≠ B→A)
-
-    4. VARIABLE NAMES:
-       - Must be UNIQUE across entire query
-       - Recommended pattern: (node1), (node2), (person1), (dept1), etc.
-       - NEVER reuse variables - this causes errors
+       - Use UPPER_SNAKE_CASE; prefer a type from PREFERRED RELATIONSHIP TYPES
+       - Direction matters (A->B is not B->A)
 
     EXAMPLE OUTPUT:
     MERGE (node1:Person {{title: 'John Smith',
     context: 'Professor at UW'}})|MERGE (node2:Department
     {{title: 'Computer Science', context: 'CS department'}})|MERGE
-    (node1)-[:WORKS_IN]->(node2)
+    (node1)-[:BELONGS_TO]->(node2)
 
     OUTPUT MUST BE EXACTLY IN THIS FORMAT:
     MERGE (...) [|MERGE (...)]* [|MERGE (...)-[:...]->(...)]*

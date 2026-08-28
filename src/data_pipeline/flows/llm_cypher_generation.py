@@ -10,6 +10,7 @@ from prefect import get_run_logger, task
 from pydantic import SecretStr
 
 from src.config.config import get_config
+from src.data_pipeline.label_vocabulary import render_allowed_labels
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
 
@@ -28,9 +29,16 @@ class LLMPipe:
             temperature=config.llm.accurate_model.temperature,
         )
         self.generate_template = PromptTemplate(
-            input_variables=["context", "schema_context"],
+            input_variables=[
+                "context",
+                "schema_context",
+                "node_labels",
+                "relationship_types",
+            ],
             template=config.prompts.cypher_insert,
         )
+        self.node_labels = render_allowed_labels(config.graph_schema)
+        self.relationship_types = ", ".join(config.graph_schema.relationship_types)
         self._build_pipe_graph()
 
     def _build_pipe_graph(self) -> None:
@@ -48,6 +56,8 @@ class LLMPipe:
         payload = {
             "context": state["context"],
             "schema_context": state.get("schema_context") or "(empty — first pass)",
+            "node_labels": self.node_labels,
+            "relationship_types": self.relationship_types,
         }
 
         logger.debug(
