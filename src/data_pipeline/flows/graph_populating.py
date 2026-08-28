@@ -7,6 +7,8 @@ from langchain_neo4j import Neo4jGraph
 from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 
+from src.config.config import get_config
+
 module_logger = logging.getLogger(__name__)
 
 
@@ -137,6 +139,30 @@ class GraphPopulator:
                 "error_message": error_message[:1000],
             },
         )
+
+    def ensure_entity_key_indexes(self) -> int:
+        """Index the canonical merge key on every configured label.
+
+        Extraction merges on ``key``; without an index each MERGE scans the whole label.
+        Creation is idempotent, so this is safe to call at the start of every run.
+
+        Returns:
+            Number of labels for which an index was requested
+        """
+        logger = _get_logger()
+        labels = get_config().graph_schema.node_labels
+
+        for label in labels:
+            index_name = f"entity_key_{label.lower()}"
+            try:
+                self.graph_db.query(
+                    f"CREATE INDEX {index_name} IF NOT EXISTS FOR (n:`{label}`) ON (n.key)"
+                )
+            except Exception as exc:
+                logger.warning("Could not create key index for label %s: %s", label, exc)
+
+        logger.info("Ensured canonical key indexes for %d labels", len(labels))
+        return len(labels)
 
     def execute_cypher(self, query: str):
         logger = _get_logger()

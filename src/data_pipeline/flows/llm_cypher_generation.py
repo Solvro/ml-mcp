@@ -10,6 +10,7 @@ from prefect import get_run_logger, task
 from pydantic import SecretStr
 
 from src.config.config import get_config
+from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.label_vocabulary import LabelVocabulary, render_allowed_labels
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
@@ -142,6 +143,7 @@ def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> st
     parts = llm.run(extracted_text, schema_context)
     parts = [normalize_cypher_string_literals(part, normalizer=fold_diacritics) for part in parts]
     parts = _canonicalize_labels(parts, logger)
+    parts = [rewrite_merge_to_canonical_key(part) for part in parts]
 
     try:
         logger.info("LLM returned %d parts", len(parts))

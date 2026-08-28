@@ -88,6 +88,7 @@ def data_pipeline_flow():
     load_dotenv()
     logger = get_run_logger()
     populator = GraphPopulator()
+    populator.ensure_entity_key_indexes()
 
     # A dump is a bootstrap for a fresh database only; once the graph has any
     # data, scheduled runs must keep extracting instead of restoring.
