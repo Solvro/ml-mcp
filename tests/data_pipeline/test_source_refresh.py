@@ -187,16 +187,25 @@ def test_refresh_raises_when_everything_fails(staging_env):
 
 
 def test_refresh_triggers_downstream_only_on_change(staging_env, monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(source_refresh, "data_pipeline_flow", lambda: calls.append("run"))
+    calls: list[dict[str, object]] = []
+
+    def fake_pipeline(*, changed=None, deleted=None):
+        calls.append({"changed": changed, "deleted": deleted})
+        return {staging.source_id_for(path) for path in (changed or [])}
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
 
     connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
     refresh_sources_flow(trigger_downstream=True, connector=connector)
-    assert calls == ["run"]
+
+    assert len(calls) == 1
+    assert isinstance(calls[0]["changed"], list)
+    assert calls[0]["deleted"] is None
 
     connector2 = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
     refresh_sources_flow(trigger_downstream=True, connector=connector2)
-    assert calls == ["run"]  # unchanged content -> no second trigger
+
+    assert len(calls) == 1  # unchanged + processed -> no second trigger
 
 
 def test_build_connector_requires_seeds(monkeypatch):
@@ -453,7 +462,7 @@ def test_sitemap_scope_does_not_leak_to_sibling_paths():
 def test_refresh_marks_staged_entries_processed_after_downstream_success(staging_env, monkeypatch):
     calls: list[str] = []
 
-    def fake_pipeline():
+    def fake_pipeline(*, changed=None, deleted=None):
         calls.append("run")
         current = staging.load_manifest(staging_env)
         return {s for s, e in current.items() if e.get("status") == staging.MANIFEST_STATUS_PENDING}
@@ -472,7 +481,7 @@ def test_refresh_marks_staged_entries_processed_after_downstream_success(staging
 
 
 def test_refresh_keeps_pending_when_downstream_fails(staging_env, monkeypatch):
-    def failing_pipeline():
+    def failing_pipeline(*, changed=None, deleted=None):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(source_refresh, "data_pipeline_flow", failing_pipeline)
@@ -489,7 +498,11 @@ def test_refresh_keeps_pending_when_downstream_fails(staging_env, monkeypatch):
 
 
 def test_refresh_keeps_pending_when_downstream_omits_document(staging_env, monkeypatch):
-    monkeypatch.setattr(source_refresh, "data_pipeline_flow", lambda: set())
+    monkeypatch.setattr(
+        source_refresh,
+        "data_pipeline_flow",
+        lambda *, changed=None, deleted=None: set(),
+    )
 
     connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
     refresh_sources_flow(trigger_downstream=True, connector=connector)
@@ -499,3 +512,27 @@ def test_refresh_keeps_pending_when_downstream_omits_document(staging_env, monke
     assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PENDING
     assert manifest[sid]["attempt_count"] == 1
     assert manifest[sid]["last_error"]
+
+
+def test_refresh_triggers_downstream_for_pending(staging_env, monkeypatch):
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=False, connector=connector)  # creates pending
+
+    calls: list[dict[str, object]] = []
+
+    def fake_pipeline(*, changed=None, deleted=None):
+        calls.append({"changed": changed, "deleted": deleted})
+        return set()  # simulate not confirmed
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
+
+    connector2 = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector2)
+
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    manifest = staging.load_manifest(staging_env)
+
+    assert len(calls) == 1
+    assert "pwr.edu.pl/files/regulamin.pdf" in (calls[0]["changed"] or [])
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PENDING
+    assert manifest[sid]["attempt_count"] >= 1

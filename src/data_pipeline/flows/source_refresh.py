@@ -293,6 +293,15 @@ def _get_logger() -> logging.Logger:
         return module_logger
 
 
+def _relative_path_from_source_id(source_id: str) -> str | None:
+    """Convert ``file://...`` source id to staging-relative POSIX path."""
+    prefix = "file://"
+    if not source_id.startswith(prefix):
+        return None
+    relative = source_id[len(prefix) :].strip()
+    return relative or None
+
+
 def build_connector() -> WebConnector:
     """Build a WebConnector from environment configuration.
 
@@ -353,14 +362,30 @@ def refresh_sources_flow(
 
     staging_dir = get_staging_dir()
     staging_dir.mkdir(parents=True, exist_ok=True)
-    manifest = load_manifest(staging_dir)
+    raw_manifest = load_manifest(staging_dir)
+    manifest = {sid: normalize_manifest_entry(entry) for sid, entry in raw_manifest.items()}
 
     documents = connector.discover()
     stats = {"discovered": len(documents), "fetched": 0, "unchanged": 0, "failed": 0}
     logger.info("Discovered %d documents", len(documents))
 
-    changed_any = False
     staged_sids: list[str] = []
+    changed_paths: set[str] = set()
+    retry_sids: set[str] = set()
+
+    for sid, entry in manifest.items():
+        if entry.get("status") == MANIFEST_STATUS_PROCESSED:
+            continue
+        relative = _relative_path_from_source_id(sid)
+        if not relative:
+            continue
+        staged_path = staging_dir / relative
+        if staged_path.is_file():
+            retry_sids.add(sid)
+            changed_paths.add(relative)
+        else:
+            logger.warning("Manifest has non-processed %s but staged file is missing", sid)
+
     for doc in documents:
         relative_path = url_to_relative_path(doc.origin_url, is_html=doc.kind == "html")
         sid = source_id_for(relative_path)
@@ -375,6 +400,9 @@ def refresh_sources_flow(
             continue
         if result.status == "unchanged":
             stats["unchanged"] += 1
+            if entry.get("status") != MANIFEST_STATUS_PROCESSED:
+                retry_sids.add(sid)
+                changed_paths.add(relative_path)
             continue
 
         content = result.content or b""
@@ -420,8 +448,8 @@ def refresh_sources_flow(
             "last_error": "",
         }
         staged_sids.append(sid)
+        changed_paths.add(relative_path)
         stats["fetched"] += 1
-        changed_any = True
 
     save_manifest(staging_dir, manifest)
     logger.info(
@@ -435,11 +463,16 @@ def refresh_sources_flow(
     if documents and stats["fetched"] == 0 and stats["unchanged"] == 0:
         raise RuntimeError(f"Source refresh failed for all {len(documents)} documents")
 
-    if changed_any and trigger_downstream:
-        logger.info("Changes staged; triggering downstream data pipeline")
-        processed_sources = data_pipeline_flow() or set()
+    attempted_sids = set(staged_sids) | retry_sids
 
-        for sid in staged_sids:
+    if trigger_downstream and attempted_sids:
+        logger.info(
+            "Changes/pending docs staged; triggering downstream data pipeline (changed=%d)",
+            len(changed_paths),
+        )
+        processed_sources = data_pipeline_flow(changed=sorted(changed_paths)) or set()
+
+        for sid in attempted_sids:
             current = normalize_manifest_entry(manifest.get(sid))
             if sid in processed_sources:
                 current["status"] = MANIFEST_STATUS_PROCESSED
