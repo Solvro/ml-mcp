@@ -299,3 +299,54 @@ def test_hash_function_is_stable():
     assert left == right
     assert left != different
     assert len(left) == 64
+
+def test_pipeline_accepts_trigger_sets_without_behavior_change(monkeypatch):
+    extracted_pages = [
+        ("file://docs/a.pdf#page=1", "page-one"),
+        ("file://docs/a.pdf#page=2", "page-two"),
+    ]
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "acquire_data",
+        lambda: [{"source_id": "file://docs/a.pdf", "path": "/tmp/docs/a.pdf"}],
+    )
+
+    ocr_calls: list[list[dict[str, str]]] = []
+
+    def ocr_stub(acquired):
+        ocr_calls.append(acquired)
+        return extracted_pages
+
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", ocr_stub)
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "get_latest_pipeline_source_hashes",
+        lambda self: {},
+    )
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "record_pipeline_run",
+        lambda self, *args, **kwargs: None,
+    )
+    monkeypatch.setattr(pipeline_module, "reflect_on_schema", lambda: "schema-summary")
+
+    claim_stub = SubmitStub(lambda _doc_hash: ImmediateFuture(True))
+    generate_stub = SubmitStub(
+        lambda _page_content, _schema_context: ImmediateFuture("MERGE (n:Entity {title: 'x'})")
+    )
+    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash: ImmediateFuture(None))
+
+    monkeypatch.setattr(pipeline_module, "claim_document_for_processing", claim_stub)
+    monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
+    monkeypatch.setattr(pipeline_module, "populate_graph", populate_stub)
+
+    pipeline_module.data_pipeline_flow(
+        changed=["docs/not-used-yet.pdf"],
+        deleted=["docs/removed.pdf"],
+    )
+
+    assert len(ocr_calls) == 1
+    assert len(claim_stub.calls) == 2
+    assert len(generate_stub.calls) == 2
+    assert len(populate_stub.calls) == 2

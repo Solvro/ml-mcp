@@ -75,7 +75,10 @@ def _safe_reflect_schema(phase: str, logger) -> str:
 
 
 @flow(log_prints=True)
-def data_pipeline_flow():
+def data_pipeline_flow(
+    changed: list[str] | None = None,
+    deleted: list[str] | None = None,
+):
     """Agentic graph extraction loop with batched parallel processing.
 
     Each page is processed through the same generate -> populate chain.
@@ -84,9 +87,21 @@ def data_pipeline_flow():
 
     Once all batches finish, schema reflection runs once to summarize the final
     graph state for observability.
+
+    Args:
+        changed: List of staging-relative POSIX paths for new/changed documents.
+            None means full scan (legacy/manual behavior).
+        deleted: List of staging-relative POSIX paths removed upstream.
     """
     load_dotenv()
     logger = get_run_logger()
+    changed_summary = "full_scan" if changed is None else f"{len(changed)} paths"
+    deleted_count = 0 if deleted is None else len(deleted)
+    logger.info(
+        "Pipeline trigger payload: changed=%s deleted=%d",
+        changed_summary,
+        deleted_count,
+    )
     populator = GraphPopulator()
 
     # A dump is a bootstrap for a fresh database only; once the graph has any
