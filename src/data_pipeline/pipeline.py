@@ -206,11 +206,8 @@ def data_pipeline_flow(
         logger.info("No new or changed source files since last pipeline run")
         return PipelineOutcome(processed=all_documents, deleted=set())
 
-    page_sources = [sid for sid, _ in work_items]
-    pages = [text for _, text in work_items]
-
     stats = {
-        "total_pages": len(pages),
+        "total_pages": len(work_items),
         "claimed_pages": 0,
         "submitted_pages": 0,
         "skipped_duplicates": 0,
@@ -225,7 +222,7 @@ def data_pipeline_flow(
     max_concurrency = _get_max_concurrency()
     logger.info(
         "Submitting %d pages (incremental from %d sources) with max concurrency %d",
-        len(pages),
+        len(work_items),
         len(source_pages),
         max_concurrency,
     )
@@ -234,25 +231,25 @@ def data_pipeline_flow(
     schema_context = _safe_reflect_schema(phase="before_parallel_batches", logger=logger)
     stats["schema_snapshot_chars"] = len(schema_context)
 
-    for batch_start in range(0, len(pages), max_concurrency):
-        batch_end = min(batch_start + max_concurrency, len(pages))
+    for batch_start in range(0, len(work_items), max_concurrency):
+        batch_end = min(batch_start + max_concurrency, len(work_items))
         logger.info("Processing batch pages %d-%d", batch_start + 1, batch_end)
 
         claim_futures = []
         claim_lookup = {}
         batch_futures = []
 
-        for page_index, page_content in enumerate(
-            pages[batch_start:batch_end],
+        for page_index, (source_id, page_content) in enumerate(
+            work_items[batch_start:batch_end],
             start=batch_start + 1,
         ):
             page_hash = _compute_page_hash(page_content)
             claim_future = claim_document_for_processing.submit(page_hash)
             claim_futures.append(claim_future)
-            claim_lookup[id(claim_future)] = (page_index, page_content, page_hash)
+            claim_lookup[id(claim_future)] = (page_index, source_id, page_content, page_hash)
 
         for claim_future in as_completed(claim_futures):
-            page_index, page_content, page_hash = claim_lookup[id(claim_future)]
+            page_index, source_id, page_content, page_hash = claim_lookup[id(claim_future)]
             try:
                 is_claimed = claim_future.result()
             except Exception as exc:
@@ -261,11 +258,11 @@ def data_pipeline_flow(
                 logger.error(
                     "Claim failed for page %d / %d (hash=%s): %s",
                     page_index,
-                    len(pages),
+                    len(work_items),
                     page_hash,
                     exc,
                 )
-                failed_documents.add(_document_id(page_sources[page_index - 1]))
+                failed_documents.add(_document_id(source_id))
                 continue
 
             if not is_claimed:
@@ -273,19 +270,19 @@ def data_pipeline_flow(
                 logger.info(
                     "Skipping page %d / %d (already processed hash=%s)",
                     page_index,
-                    len(pages),
+                    len(work_items),
                     page_hash,
                 )
                 continue
 
             stats["claimed_pages"] += 1
-            logger.info("Submitting page %d / %d", page_index, len(pages))
+            logger.info("Submitting page %d / %d", page_index, len(work_items))
             cypher_future = generate_cypher_queries.submit(page_content, schema_context)
-            populate_future = populate_graph.submit(cypher_future, page_hash)
+            populate_future = populate_graph.submit(cypher_future, page_hash, source_id)
             stats["submitted_pages"] += 1
-            batch_futures.append((page_index, page_hash, populate_future))
+            batch_futures.append((page_index, source_id, page_hash, populate_future))
 
-        for page_index, page_hash, future in batch_futures:
+        for page_index, source_id, page_hash, future in batch_futures:
             try:
                 future.result()
                 stats["successful_pages"] += 1
@@ -294,11 +291,11 @@ def data_pipeline_flow(
                 logger.error(
                     "Processing failed for page %d / %d (hash=%s): %s",
                     page_index,
-                    len(pages),
+                    len(work_items),
                     page_hash,
                     exc,
                 )
-                failed_documents.add(_document_id(page_sources[page_index - 1]))
+                failed_documents.add(_document_id(source_id))
 
     final_schema = _safe_reflect_schema(phase="after_parallel_batches", logger=logger)
     stats["schema_final_chars"] = len(final_schema)

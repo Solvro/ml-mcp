@@ -13,7 +13,7 @@ def _stub_extraction(monkeypatch, populate_calls):
     generate_stub = SubmitStub(lambda _c, _s: ImmediateFuture("MERGE (n:X)"))
     monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
 
-    def populate_submit(_cypher_future, doc_hash):
+    def populate_submit(_cypher_future, doc_hash, _source_id=""):
         populate_calls.append(doc_hash)
         return ImmediateFuture(None)
 

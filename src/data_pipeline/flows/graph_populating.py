@@ -222,10 +222,14 @@ def claim_document_for_processing(doc_hash: str) -> bool:
 
 
 @task
-def populate_graph(cypher_query: str, doc_hash: str = ""):
+def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -> None:
     """Execute pipe-separated cypher statements against the configured Neo4j instance."""
     logger = _get_logger()
-    logger.info("populate_graph task received query of length %d", len(cypher_query or ""))
+    logger.info(
+        "populate_graph task received query of length %d for source %s",
+        len(cypher_query or ""),
+        source_id or "<unknown>",
+    )
     # The LLM step joins MERGE clauses with "|" (see generate_cypher_queries).
     # They must run as ONE query: relationship clauses reference node variables
     # bound by earlier clauses, so executing them separately would create

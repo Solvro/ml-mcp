@@ -76,7 +76,7 @@ def test_pipeline_uses_batched_parallel_processing(monkeypatch):
     )
     monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
 
-    def populate_submit(_cypher_future, _doc_hash):
+    def populate_submit(_cypher_future, _doc_hash, _source_id):
         nonlocal active_populates
         nonlocal max_active_populates
 
@@ -130,7 +130,7 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     )
     monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
 
-    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash: ImmediateFuture(None))
+    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash, _source_id: ImmediateFuture(None))
     monkeypatch.setattr(pipeline_module, "populate_graph", populate_stub)
 
     outcome = pipeline_module.data_pipeline_flow()
@@ -189,7 +189,7 @@ def test_pipeline_continues_after_page_failure(monkeypatch):
 
     failure_index = {"value": 0}
 
-    def populate_submit(_cypher_future, _doc_hash):
+    def populate_submit(_cypher_future, _doc_hash, _source_id):
         idx = failure_index["value"]
         failure_index["value"] += 1
         if idx == 1:
@@ -277,7 +277,7 @@ def test_pipeline_second_run_is_noop_for_unchanged_extracted_pages(monkeypatch):
     generate_stub = SubmitStub(
         lambda _page_content, _schema_context: ImmediateFuture("MERGE (n:Entity {title: 'x'})")
     )
-    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash: ImmediateFuture(None))
+    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash, _source_id: ImmediateFuture(None))
 
     monkeypatch.setattr(pipeline_module, "claim_document_for_processing", claim_stub)
     monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
@@ -338,7 +338,7 @@ def test_pipeline_filters_extraction_to_changed_paths(monkeypatch):
     generate_stub = SubmitStub(
         lambda _page_content, _schema_context: ImmediateFuture("MERGE (n:Entity {title: 'x'})")
     )
-    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash: ImmediateFuture(None))
+    populate_stub = SubmitStub(lambda _cypher_future, _doc_hash, _source_id: ImmediateFuture(None))
 
     monkeypatch.setattr(pipeline_module, "claim_document_for_processing", claim_stub)
     monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
@@ -386,7 +386,7 @@ def test_pipeline_returns_documents_confirmed_in_graph(monkeypatch):
     monkeypatch.setattr(
         pipeline_module,
         "populate_graph",
-        SubmitStub(lambda _cypher, _hash: ImmediateFuture(None)),
+        SubmitStub(lambda _cypher, _hash, _source_id: ImmediateFuture(None)),
     )
 
     outcome = pipeline_module.data_pipeline_flow()
@@ -462,7 +462,7 @@ def test_full_scan_after_incremental_does_not_reclaim_untouched_documents(monkey
     monkeypatch.setattr(
         pipeline_module,
         "populate_graph",
-        SubmitStub(lambda _cypher, _hash: ImmediateFuture(None)),
+        SubmitStub(lambda _cypher, _hash, _source_id: ImmediateFuture(None)),
     )
 
     pipeline_module.data_pipeline_flow()  # full scan: a and b recorded
