@@ -21,6 +21,7 @@ from src.data_pipeline.graph_dump import (
     host_dump_path,
     import_graph_from_cypher_dump,
 )
+from src.data_pipeline.staging import relative_path_from_source_id
 
 
 class PipelineOutcome(NamedTuple):
@@ -55,6 +56,33 @@ def _compute_page_hash(page_content: str) -> str:
 def _document_id(source_id: str) -> str:
     """Strip the page fragment so a page id maps back to its document."""
     return source_id.split("#", 1)[0]
+
+
+def _filter_acquired_by_changed(
+    acquired: list[dict[str, str]],
+    changed: list[str],
+) -> tuple[list[dict[str, str]], set[str]]:
+    """Keep only acquired docs whose relative path is present in ``changed``."""
+    changed_set = {str(path).strip().replace("\\", "/") for path in changed if str(path).strip()}
+
+    if not changed_set:
+        return [], set()
+
+    selected: list[dict[str, str]] = []
+    matched: set[str] = set()
+
+    for item in acquired:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source_id", "")).strip()
+        relative = relative_path_from_source_id(source_id)
+        if not relative:
+            continue
+        if relative in changed_set:
+            selected.append(item)
+            matched.add(relative)
+
+    return selected, changed_set - matched
 
 
 def _normalize_source_pages(extracted: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -144,6 +172,22 @@ def data_pipeline_flow(
             logger.warning("Dump restore failed (%s); continuing with extraction", exc)
 
     acquired = acquire_data()
+    if changed is not None:
+        filtered_acquired, missing_paths = _filter_acquired_by_changed(acquired, changed)
+
+        for path in sorted(missing_paths):
+            logger.info("Changed path not present in staging scan, skipping: %s", path)
+
+        if not filtered_acquired:
+            logger.info("Trigger reported no matching changed documents; skipping extraction")
+            return PipelineOutcome(processed=set(), deleted=set())
+
+        logger.info(
+            "Changed-path filter selected %d/%d acquired documents",
+            len(filtered_acquired),
+            len(acquired),
+        )
+        acquired = filtered_acquired
     extracted = ocr_extraction(acquired)
     source_pages = _normalize_source_pages(extracted)
     if not source_pages:
@@ -278,8 +322,17 @@ def data_pipeline_flow(
         logger.warning("Pipeline finished with %d failed pages", stats["failed_pages"])
 
     if stats["failed_pages"] == 0 and stats["claim_errors"] == 0:
-        mode = "incremental" if len(work_items) < len(source_pages) else "full"
-        populator.record_pipeline_run(full_source_hashes, mode=mode)
+        if changed is not None:
+            mode = "incremental"
+        else:
+            mode = "incremental" if len(work_items) < len(source_pages) else "full"
+        merged_source_hashes = {
+            sid: page_hash
+            for sid, page_hash in last_source_hashes.items()
+            if _document_id(sid) not in all_documents
+        }
+        merged_source_hashes.update(full_source_hashes)
+        populator.record_pipeline_run(merged_source_hashes, mode=mode)
 
     # Export even on partial failure so the host dump reflects the latest good graph.
     ensure_host_dump_dir()

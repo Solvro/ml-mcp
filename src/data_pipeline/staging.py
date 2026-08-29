@@ -79,6 +79,15 @@ def source_id_for(relative_path: str) -> str:
     return f"file://{relative_path}"
 
 
+def relative_path_from_source_id(source_id: str) -> str | None:
+    """Inverse of :func:`source_id_for`; ``None`` when the id is not a staged file."""
+    prefix = "file://"
+    if not source_id.startswith(prefix):
+        return None
+    relative = source_id[len(prefix) :].strip()
+    return relative or None
+
+
 def atomic_write_bytes(target: Path, data: bytes) -> None:
     """Write bytes atomically: write ``<name>.part`` first, then rename over target."""
     target.parent.mkdir(parents=True, exist_ok=True)

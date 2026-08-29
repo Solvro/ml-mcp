@@ -23,6 +23,7 @@ from src.data_pipeline.staging import (
     get_staging_dir,
     load_manifest,
     normalize_manifest_entry,
+    relative_path_from_source_id,
     save_manifest,
     source_id_for,
     url_to_relative_path,
@@ -299,15 +300,6 @@ def _get_logger() -> logging.Logger:
         return module_logger
 
 
-def _relative_path_from_source_id(source_id: str) -> str | None:
-    """Convert ``file://...`` source id to staging-relative POSIX path."""
-    prefix = "file://"
-    if not source_id.startswith(prefix):
-        return None
-    relative = source_id[len(prefix) :].strip()
-    return relative or None
-
-
 def build_connector() -> WebConnector:
     """Build a WebConnector from environment configuration.
 
@@ -385,7 +377,7 @@ def refresh_sources_flow(
     for sid, entry in manifest.items():
         if entry.get("status") == MANIFEST_STATUS_PROCESSED:
             continue
-        relative = _relative_path_from_source_id(sid)
+        relative = relative_path_from_source_id(sid)
         if not relative:
             continue
         staged_path = staging_dir / relative
@@ -476,7 +468,7 @@ def refresh_sources_flow(
         candidates = [
             relative
             for relative in (
-                _relative_path_from_source_id(sid)
+                relative_path_from_source_id(sid)
                 for sid in sorted(known_sids_before - discovered_sids)
             )
             if relative
