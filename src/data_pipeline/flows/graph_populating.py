@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 
 from langchain_neo4j import Neo4jGraph
@@ -26,6 +27,67 @@ def _get_claim_stale_minutes() -> int:
     except ValueError:
         return 30
     return max(1, parsed)
+
+
+_NODE_MERGE_VAR_RE = re.compile(
+    r"^\s*MERGE\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[A-Za-z_][A-Za-z0-9_]*"
+)
+
+
+def _extract_merged_node_vars(statements: list[str]) -> list[str]:
+    """Extract unique node variables from MERGE (var:Label ...) clauses.
+
+    Only the ``MERGE (var:Label ...)`` form the prompt mandates is recognised,
+    and only the first variable of a clause. A clause that merges node and
+    relationship at once (``MERGE (a:A)-[:R]->(b:B)``) therefore contributes
+    ``a`` but not ``b``.
+    """
+    variables: list[str] = []
+    seen: set[str] = set()
+
+    for statement in statements:
+        match = _NODE_MERGE_VAR_RE.match(statement)
+        if not match:
+            continue
+        var_name = match.group(1)
+        if var_name in seen:
+            continue
+        seen.add(var_name)
+        variables.append(var_name)
+
+    return variables
+
+
+def _build_query_with_provenance(
+    statements: list[str],
+    source_id: str,
+    logger: logging.Logger,
+) -> tuple[str, dict[str, str]]:
+    """Append FROM_SOURCE wiring when MERGE node variables are recoverable."""
+    combined = "\n".join(statements)
+    if not combined or not source_id:
+        return combined, {}
+
+    node_vars = _extract_merged_node_vars(statements)
+    if not node_vars:
+        logger.warning(
+            "No MERGE node variables recovered for source_id=%s; "
+            "executing query without provenance",
+            source_id,
+        )
+        return combined, {}
+
+    source_var = "prov_source"
+    while source_var in node_vars:
+        source_var += "_"
+
+    with_clause = ", ".join(node_vars)
+    provenance_lines = [
+        f"WITH {with_clause}",
+        f"MERGE ({source_var}:Source {{source_id: $source_id}})",
+        *[f"MERGE ({var})-[:FROM_SOURCE]->({source_var})" for var in node_vars],
+    ]
+    return f"{combined}\n" + "\n".join(provenance_lines), {"source_id": source_id}
 
 
 class GraphPopulator:
@@ -138,14 +200,14 @@ class GraphPopulator:
             },
         )
 
-    def execute_cypher(self, query: str):
+    def execute_cypher(self, query: str, params: dict[str, str] | None = None) -> None:
         logger = _get_logger()
         if not query or not query.strip():
             logger.error("Empty Cypher query")
             return
         try:
             logger.info("Executing Cypher query: %s", query)
-            self.graph_db.query(query)
+            self.graph_db.query(query, params=params or {})
             logger.info("Cypher executed successfully")
         except Exception as e:
             logger.error("Failed to execute cypher: %s", e)
@@ -230,16 +292,16 @@ def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -
         len(cypher_query or ""),
         source_id or "<unknown>",
     )
-    # The LLM step joins MERGE clauses with "|" (see generate_cypher_queries).
-    # They must run as ONE query: relationship clauses reference node variables
-    # bound by earlier clauses, so executing them separately would create
-    # unlabeled placeholder nodes instead of connecting the merged ones.
     statements = [part.strip() for part in (cypher_query or "").split("|") if part.strip()]
-    combined = "\n".join(statements)
+    query_to_execute, query_params = _build_query_with_provenance(
+        statements,
+        source_id,
+        logger,
+    )
     pop = GraphPopulator()
     try:
-        if combined:
-            pop.execute_cypher(combined)
+        if query_to_execute:
+            pop.execute_cypher(query_to_execute, params=query_params)
         pop.mark_document_processed(doc_hash)
     except Exception as exc:
         pop.mark_document_failed(doc_hash, str(exc))
