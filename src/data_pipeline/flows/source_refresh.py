@@ -42,6 +42,12 @@ _USER_AGENT = (
 # instead of overwriting good staged content.
 _SUSPICIOUS_SHRINK_RATIO = 0.3
 
+# An incomplete crawl must not look like a mass deletion: cap how much of the
+# known manifest one run may report as removed. The absolute floor keeps small
+# manifests workable, where any ratio would round down to zero.
+_MAX_DELETED_RATIO = 0.2
+_MIN_DELETED_ABSOLUTE = 5
+
 # Sitemap indexes point at further sitemaps; bound how deep that nesting is followed.
 _MAX_SITEMAP_DEPTH = 2
 
@@ -343,8 +349,9 @@ def refresh_sources_flow(
 
     Successfully fetched documents are written atomically into the staging
     directory and recorded in ``manifest.json``. Failed fetches are skipped
-    (retried on the next scheduled run). When at least one document changed,
-    the downstream ``data_pipeline_flow`` runs as a subflow.
+    (retried on the next scheduled run). When documents changed, are pending
+    retry, or were deleted upstream, the downstream ``data_pipeline_flow``
+    runs as a subflow.
 
     Args:
         trigger_downstream: When True, run the extraction pipeline on changes.
@@ -355,6 +362,7 @@ def refresh_sources_flow(
 
     Raises:
         RuntimeError: when documents were discovered but none could be fetched.
+
     """
     load_dotenv()
     logger = _get_logger()
@@ -364,6 +372,7 @@ def refresh_sources_flow(
     staging_dir.mkdir(parents=True, exist_ok=True)
     raw_manifest = load_manifest(staging_dir)
     manifest = {sid: normalize_manifest_entry(entry) for sid, entry in raw_manifest.items()}
+    known_sids_before = set(manifest.keys())
 
     documents = connector.discover()
     stats = {"discovered": len(documents), "fetched": 0, "unchanged": 0, "failed": 0}
@@ -386,9 +395,11 @@ def refresh_sources_flow(
         else:
             logger.warning("Manifest has non-processed %s but staged file is missing", sid)
 
+    discovered_sids: set[str] = set()
     for doc in documents:
         relative_path = url_to_relative_path(doc.origin_url, is_html=doc.kind == "html")
         sid = source_id_for(relative_path)
+        discovered_sids.add(sid)
         entry = normalize_manifest_entry(manifest.get(sid))
         result = connector.fetch(
             doc, etag=entry.get("etag"), last_modified=entry.get("last_modified")
@@ -460,17 +471,47 @@ def refresh_sources_flow(
         stats["failed"],
     )
 
+    deleted_paths: list[str] = []
+    if known_sids_before:
+        candidates = [
+            relative
+            for relative in (
+                _relative_path_from_source_id(sid)
+                for sid in sorted(known_sids_before - discovered_sids)
+            )
+            if relative
+        ]
+        allowed = max(_MIN_DELETED_ABSOLUTE, len(known_sids_before) * _MAX_DELETED_RATIO)
+        if not documents:
+            logger.warning(
+                "Discovery returned no documents; skipping deletion of %d known sources",
+                len(candidates),
+            )
+        elif len(candidates) > allowed:
+            logger.error(
+                "Refusing to delete %d of %d known sources (limit %.0f); "
+                "discovery is likely incomplete",
+                len(candidates),
+                len(known_sids_before),
+                allowed,
+            )
+        else:
+            deleted_paths = candidates
+
     if documents and stats["fetched"] == 0 and stats["unchanged"] == 0:
         raise RuntimeError(f"Source refresh failed for all {len(documents)} documents")
 
     attempted_sids = set(staged_sids) | retry_sids
 
-    if trigger_downstream and attempted_sids:
+    if trigger_downstream and (attempted_sids or deleted_paths):
         logger.info(
-            "Changes/pending docs staged; triggering downstream data pipeline (changed=%d)",
+            "Changes/pending docs staged; triggering downstream data pipeline "
+            "(changed=%d deleted=%d)",
             len(changed_paths),
+            len(deleted_paths),
         )
-        processed_sources = data_pipeline_flow(changed=sorted(changed_paths)) or set()
+        outcome = data_pipeline_flow(changed=sorted(changed_paths), deleted=deleted_paths)
+        processed_sources = outcome.processed if outcome else set()
 
         for sid in attempted_sids:
             current = normalize_manifest_entry(manifest.get(sid))

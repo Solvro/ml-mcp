@@ -1,5 +1,6 @@
 import os
 from hashlib import sha256
+from typing import NamedTuple
 
 from dotenv import load_dotenv
 from prefect import flow, get_run_logger
@@ -20,6 +21,19 @@ from src.data_pipeline.graph_dump import (
     host_dump_path,
     import_graph_from_cypher_dump,
 )
+
+
+class PipelineOutcome(NamedTuple):
+    """What one pipeline run confirmed.
+
+    Attributes:
+        processed: Document-level source ids confirmed to be in the graph.
+        deleted: Document-level source ids whose graph content was confirmed
+            removed. Empty until the deletion stage exists.
+    """
+
+    processed: set[str]
+    deleted: set[str]
 
 
 def _get_max_concurrency() -> int:
@@ -83,7 +97,7 @@ def _safe_reflect_schema(phase: str, logger) -> str:
 def data_pipeline_flow(
     changed: list[str] | None = None,
     deleted: list[str] | None = None,
-) -> set[str]:
+) -> PipelineOutcome:
     """Agentic graph extraction loop with batched parallel processing.
 
     Each page is processed through the same generate -> populate chain.
@@ -99,10 +113,13 @@ def data_pipeline_flow(
         deleted: List of staging-relative POSIX paths removed upstream.
 
     Returns:
-        Document-level source ids (``file://relative/path``, no page fragment)
-        confirmed to be in the graph after this run. A document whose extraction
-        produced nothing, or any of whose pages failed, is omitted so the caller
-        retries it.
+        Outcome of this run. ``processed`` holds document-level source ids
+        (``file://relative/path``, no page fragment) confirmed to be in the
+        graph; a document whose extraction produced nothing, or any of whose
+        pages failed, is omitted so the caller retries it. ``deleted`` holds
+        ids whose graph content was confirmed removed — always empty until
+        the deletion stage lands, so an unconfirmed deletion is reported
+        again on the next run.
     """
     load_dotenv()
     logger = get_run_logger()
@@ -122,7 +139,7 @@ def data_pipeline_flow(
             import_graph_from_cypher_dump()
             populator.record_restore_run()
             logger.info("Loaded graph from dump; skipped LLM extraction.")
-            return set()
+            return PipelineOutcome(processed=set(), deleted=set())
         except Exception as exc:
             logger.warning("Dump restore failed (%s); continuing with extraction", exc)
 
@@ -131,7 +148,7 @@ def data_pipeline_flow(
     source_pages = _normalize_source_pages(extracted)
     if not source_pages:
         logger.warning("No non-empty pages found; stopping pipeline early")
-        return set()
+        return PipelineOutcome(processed=set(), deleted=set())
 
     all_documents = {_document_id(sid) for sid, _ in source_pages}
     last_source_hashes = populator.get_latest_pipeline_source_hashes()
@@ -143,7 +160,7 @@ def data_pipeline_flow(
     ]
     if not work_items:
         logger.info("No new or changed source files since last pipeline run")
-        return all_documents
+        return PipelineOutcome(processed=all_documents, deleted=set())
 
     page_sources = [sid for sid, _ in work_items]
     pages = [text for _, text in work_items]
@@ -274,7 +291,7 @@ def data_pipeline_flow(
         len(processed_documents),
         len(all_documents),
     )
-    return processed_documents
+    return PipelineOutcome(processed=processed_documents, deleted=set())
 
 
 if __name__ == "__main__":

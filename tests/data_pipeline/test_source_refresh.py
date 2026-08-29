@@ -11,6 +11,7 @@ from src.data_pipeline.flows.source_refresh import (
     build_connector,
     refresh_sources_flow,
 )
+from src.data_pipeline.pipeline import PipelineOutcome
 
 
 def make_client(routes: dict[str, httpx.Response]) -> httpx.Client:
@@ -191,7 +192,8 @@ def test_refresh_triggers_downstream_only_on_change(staging_env, monkeypatch):
 
     def fake_pipeline(*, changed=None, deleted=None):
         calls.append({"changed": changed, "deleted": deleted})
-        return {staging.source_id_for(path) for path in (changed or [])}
+        confirmed = {staging.source_id_for(path) for path in (changed or [])}
+        return PipelineOutcome(processed=confirmed, deleted=set())
 
     monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
 
@@ -200,7 +202,7 @@ def test_refresh_triggers_downstream_only_on_change(staging_env, monkeypatch):
 
     assert len(calls) == 1
     assert isinstance(calls[0]["changed"], list)
-    assert calls[0]["deleted"] is None
+    assert calls[0]["deleted"] == []
 
     connector2 = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
     refresh_sources_flow(trigger_downstream=True, connector=connector2)
@@ -465,7 +467,10 @@ def test_refresh_marks_staged_entries_processed_after_downstream_success(staging
     def fake_pipeline(*, changed=None, deleted=None):
         calls.append("run")
         current = staging.load_manifest(staging_env)
-        return {s for s, e in current.items() if e.get("status") == staging.MANIFEST_STATUS_PENDING}
+        pending = {
+            s for s, e in current.items() if e.get("status") == staging.MANIFEST_STATUS_PENDING
+        }
+        return PipelineOutcome(processed=pending, deleted=set())
 
     monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
 
@@ -501,7 +506,7 @@ def test_refresh_keeps_pending_when_downstream_omits_document(staging_env, monke
     monkeypatch.setattr(
         source_refresh,
         "data_pipeline_flow",
-        lambda *, changed=None, deleted=None: set(),
+        lambda *, changed=None, deleted=None: PipelineOutcome(processed=set(), deleted=set()),
     )
 
     connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
@@ -522,7 +527,7 @@ def test_refresh_triggers_downstream_for_pending(staging_env, monkeypatch):
 
     def fake_pipeline(*, changed=None, deleted=None):
         calls.append({"changed": changed, "deleted": deleted})
-        return set()  # simulate not confirmed
+        return PipelineOutcome(processed=set(), deleted=set())  # simulate not confirmed
 
     monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
 
@@ -536,3 +541,67 @@ def test_refresh_triggers_downstream_for_pending(staging_env, monkeypatch):
     assert "pwr.edu.pl/files/regulamin.pdf" in (calls[0]["changed"] or [])
     assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PENDING
     assert manifest[sid]["attempt_count"] >= 1
+
+
+def test_refresh_reports_deleted_when_document_disappears(staging_env, monkeypatch):
+    stale_sid = staging.source_id_for("pwr.edu.pl/files/stary.pdf")
+    staging.save_manifest(
+        staging_env,
+        {
+            stale_sid: {
+                "origin": "https://pwr.edu.pl/files/stary.pdf",
+                "sha256": "abc",
+                "size": 10,
+                "status": staging.MANIFEST_STATUS_PROCESSED,
+                "attempt_count": 0,
+                "last_error": "",
+            }
+        },
+    )
+
+    calls: list[dict[str, object]] = []
+
+    def fake_pipeline(*, changed=None, deleted=None):
+        calls.append({"changed": changed, "deleted": deleted})
+        return PipelineOutcome(processed=set(), deleted=set())
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    assert len(calls) == 1
+    assert calls[0]["deleted"] == ["pwr.edu.pl/files/stary.pdf"]
+
+
+def test_refresh_skips_deletion_when_discovery_is_empty(staging_env, monkeypatch):
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    staging.save_manifest(
+        staging_env,
+        {
+            sid: {
+                "origin": PDF,
+                "sha256": "abc",
+                "size": 10,
+                "status": staging.MANIFEST_STATUS_PROCESSED,
+                "attempt_count": 0,
+                "last_error": "",
+            }
+        },
+    )
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        source_refresh,
+        "data_pipeline_flow",
+        lambda *, changed=None, deleted=None: calls.append(
+            {"changed": changed, "deleted": deleted}
+        ),
+    )
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client({}))
+    monkeypatch.setattr(connector, "discover", lambda: [])
+
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    assert calls == []

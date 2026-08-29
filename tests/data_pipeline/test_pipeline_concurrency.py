@@ -133,7 +133,7 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     populate_stub = SubmitStub(lambda _cypher_future, _doc_hash: ImmediateFuture(None))
     monkeypatch.setattr(pipeline_module, "populate_graph", populate_stub)
 
-    processed = pipeline_module.data_pipeline_flow()
+    outcome = pipeline_module.data_pipeline_flow()
 
     assert len(claim_stub.calls) == 3
     assert len(generate_stub.calls) == 2
@@ -144,7 +144,10 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     third_hash = claim_stub.calls[2][0][0]
     assert first_hash == second_hash
     assert first_hash != third_hash
-    assert processed == {"file://docs/a.pdf"}
+    # A duplicate hash means the page is already in the graph, so the document
+    # still counts as confirmed.
+    assert outcome.processed == {"file://docs/a.pdf"}
+    assert outcome.deleted == set()
 
 
 def test_pipeline_continues_after_page_failure(monkeypatch):
@@ -386,13 +389,16 @@ def test_pipeline_returns_documents_confirmed_in_graph(monkeypatch):
         SubmitStub(lambda _cypher, _hash: ImmediateFuture(None)),
     )
 
-    assert pipeline_module.data_pipeline_flow() == {"file://docs/a.pdf"}
+    outcome = pipeline_module.data_pipeline_flow()
+
+    assert outcome.processed == {"file://docs/a.pdf"}
+    assert outcome.deleted == set()
 
 
 def test_pipeline_returns_empty_when_extraction_yields_nothing(monkeypatch):
     monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
     monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: [])
 
-    processed = pipeline_module.data_pipeline_flow()
+    outcome = pipeline_module.data_pipeline_flow()
 
-    assert processed == set()
+    assert outcome.processed == set()
