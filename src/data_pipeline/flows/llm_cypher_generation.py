@@ -1,4 +1,5 @@
 import os
+import threading
 from typing import List
 
 from dotenv import load_dotenv
@@ -14,6 +15,50 @@ from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.completeness import extract_list_rows, rows_missing_from_cypher
 from src.data_pipeline.label_vocabulary import LabelVocabulary, render_allowed_labels
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
+
+# The second extraction pass is one extra model call per page that lost rows. It only fires on a
+# detected miss and is capped at one pass per page, but on a run of list-heavy pages that is a
+# real cost, so a run can bound it and always reports what it spent.
+_missed_row_passes = 0
+_missed_row_passes_lock = threading.Lock()
+
+
+def _get_missed_row_pass_budget() -> int:
+    """Read the per-run cap on extra extraction passes; 0 means unlimited."""
+    raw_value = os.getenv("DATA_PIPELINE_MAX_MISSED_ROW_PASSES", "0").strip()
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return 0
+    return max(0, parsed)
+
+
+def reset_missed_row_passes() -> None:
+    """Start a fresh budget. Called once by the flow before any page is submitted."""
+    global _missed_row_passes
+    with _missed_row_passes_lock:
+        _missed_row_passes = 0
+
+
+def missed_row_passes_used() -> int:
+    """Number of extra extraction passes spent so far in this run."""
+    with _missed_row_passes_lock:
+        return _missed_row_passes
+
+
+def _claim_missed_row_pass() -> bool:
+    """Take one extra pass from the run's budget.
+
+    Returns:
+        True when the pass may run; False when the run has spent its budget
+    """
+    global _missed_row_passes
+    budget = _get_missed_row_pass_budget()
+    with _missed_row_passes_lock:
+        if budget and _missed_row_passes >= budget:
+            return False
+        _missed_row_passes += 1
+        return True
 
 
 class PipeState(MessagesState):
@@ -159,6 +204,15 @@ def _recover_missed_rows(
         len(rows),
         "; ".join(missing[:10]),
     )
+
+    if not _claim_missed_row_pass():
+        logger.warning(
+            "Missed-row extraction budget spent (DATA_PIPELINE_MAX_MISSED_ROW_PASSES=%d); "
+            "%d row(s) stay absent",
+            _get_missed_row_pass_budget(),
+            len(missing),
+        )
+        return parts
 
     recovered = llm.run_missing_rows(extracted_text, missing)
     if not recovered:

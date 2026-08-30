@@ -8,6 +8,8 @@ the second pass that collects it.
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.data_pipeline.completeness import extract_list_rows, rows_missing_from_cypher
 from src.data_pipeline.flows import llm_cypher_generation as cypher_module
 
@@ -153,3 +155,71 @@ def test_a_failed_second_pass_keeps_the_first_pass_output(monkeypatch) -> None:
     result = cypher_module.generate_cypher_queries.fn(CALENDAR_PAGE)
 
     assert result.count("MERGE") == 4
+
+
+# Review feedback on PR #58: the extra pass is one more model call per page that lost rows, so a
+# run of list-heavy pages is a real cost bump. It stays on by default but is now boundable and
+# always reported.
+def test_the_extra_pass_budget_is_unlimited_by_default(monkeypatch) -> None:
+    monkeypatch.delenv("DATA_PIPELINE_MAX_MISSED_ROW_PASSES", raising=False)
+
+    assert cypher_module._get_missed_row_pass_budget() == 0
+
+
+@pytest.mark.parametrize("raw_value", ["not-a-number", "-3"])
+def test_an_unusable_budget_falls_back_to_unlimited(monkeypatch, raw_value) -> None:
+    monkeypatch.setenv("DATA_PIPELINE_MAX_MISSED_ROW_PASSES", raw_value)
+
+    assert cypher_module._get_missed_row_pass_budget() == 0
+
+
+def test_pages_stop_getting_a_second_pass_once_the_budget_is_spent(monkeypatch) -> None:
+    monkeypatch.setenv("DATA_PIPELINE_MAX_MISSED_ROW_PASSES", "1")
+    cypher_module.reset_missed_row_passes()
+    second_pass_calls: list[int] = []
+
+    class FakePipe:
+        def run(self, context: str, schema_context: str = "") -> list[str]:
+            return list(INCOMPLETE_EXTRACTION)
+
+        def run_missing_rows(self, context: str, rows: list[str]) -> list[str]:
+            second_pass_calls.append(1)
+            return ["MERGE (extra1:DayOff {title: '2 XI 2026 r.', context: 'dzien wolny'})"]
+
+    monkeypatch.setattr(cypher_module, "LLMPipe", FakePipe)
+    monkeypatch.setattr(cypher_module, "get_run_logger", MagicMock)
+
+    cypher_module.generate_cypher_queries.fn(CALENDAR_PAGE)
+    cypher_module.generate_cypher_queries.fn(CALENDAR_PAGE)
+
+    assert second_pass_calls == [1]
+    assert cypher_module.missed_row_passes_used() == 1
+
+
+def test_the_run_reports_what_the_extra_passes_cost(monkeypatch) -> None:
+    monkeypatch.delenv("DATA_PIPELINE_MAX_MISSED_ROW_PASSES", raising=False)
+    cypher_module.reset_missed_row_passes()
+
+    class FakePipe:
+        def run(self, context: str, schema_context: str = "") -> list[str]:
+            return list(INCOMPLETE_EXTRACTION)
+
+        def run_missing_rows(self, context: str, rows: list[str]) -> list[str]:
+            return ["MERGE (extra1:DayOff {title: '2 XI 2026 r.', context: 'dzien wolny'})"]
+
+    monkeypatch.setattr(cypher_module, "LLMPipe", FakePipe)
+    monkeypatch.setattr(cypher_module, "get_run_logger", MagicMock)
+
+    cypher_module.generate_cypher_queries.fn(CALENDAR_PAGE)
+    cypher_module.generate_cypher_queries.fn(CALENDAR_PAGE)
+
+    assert cypher_module.missed_row_passes_used() == 2
+
+
+def test_resetting_the_budget_starts_a_fresh_run(monkeypatch) -> None:
+    cypher_module.reset_missed_row_passes()
+    cypher_module._claim_missed_row_pass()
+
+    cypher_module.reset_missed_row_passes()
+
+    assert cypher_module.missed_row_passes_used() == 0
