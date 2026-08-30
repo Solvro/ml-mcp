@@ -80,15 +80,22 @@ def test_rejects_write_or_admin_operations(query):
         validate_read_only(query)
 
 
+def test_rejects_disallowed_start_clause():
+    with pytest.raises(UnsafeCypherQueryError, match="read-only clause"):
+        validate_read_only("SHOW DATABASES")
+
+
 @pytest.mark.parametrize(
     "query",
     [
         "CALL db.procedure() YIELD value RETURN value",
-        "SHOW DATABASES",
+        "CALL apoc.cypher.runWrite('CREATE (n)', {}) YIELD value RETURN value",
+        "MATCH (n) CALL db.index.fulltext.queryNodes('i', 'x') YIELD node RETURN node",
     ],
 )
-def test_rejects_disallowed_start_clause(query):
-    with pytest.raises(UnsafeCypherQueryError, match="read-only clause"):
+def test_rejects_procedure_calls_without_an_allowlist(query):
+    """Generated Cypher is validated with an empty allowlist, so no CALL is reachable from it."""
+    with pytest.raises(UnsafeCypherQueryError, match="blocked Cypher procedure call"):
         validate_read_only(query)
 
 

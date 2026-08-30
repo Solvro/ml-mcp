@@ -29,15 +29,28 @@ CONFERENCE_ROWS = [{"title": "Udzial w konferencjach", "related": ["HAS_SUBCOMPE
 
 
 class ScriptedDatabase:
-    """Neo4j stand-in that answers each query with a scripted result in order."""
+    """Neo4j stand-in that answers each retrieval query with a scripted result in order.
+
+    Schema statements (label listing, index inspection, index creation) are answered separately
+    so they do not consume a scripted retrieval result or distort the call count.
+    """
 
     def __init__(self, results: list[list[dict[str, Any]] | Exception]) -> None:
         self.results = list(results)
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
+        self.schema_calls: list[str] = []
 
     def query(
         self, cypher_query: str, params: dict[str, Any] | None = None
     ) -> list[dict[str, Any]]:
+        if (
+            "db.labels()" in cypher_query
+            or "SHOW INDEXES" in cypher_query
+            or cypher_query.startswith(("CREATE FULLTEXT", "DROP INDEX"))
+        ):
+            self.schema_calls.append(cypher_query)
+            return [{"label": "Course"}] if "db.labels()" in cypher_query else []
+
         self.calls.append((cypher_query, params))
         result = self.results.pop(0) if self.results else []
         if isinstance(result, Exception):
@@ -58,6 +71,7 @@ def _rag_stub(
     rag.max_results = max_results
     rag.enable_debug = False
     rag.enable_fallback_search = enable_fallback_search
+    rag.fallback_min_score = 0.5
 
     return rag, database
 
@@ -104,9 +118,10 @@ def test_wrong_label_falls_back_to_searching_every_label() -> None:
     assert len(database.calls) == 2, "nothing to repair, so the literal retry is skipped"
 
     fallback_query, params = database.calls[1]
-    assert "MATCH (node)" in fallback_query
+    assert "db.index.fulltext.queryNodes" in fallback_query
     assert "CriterionCategory" not in fallback_query
-    assert "udzial w konferencjach" in params["phrases"]
+    assert "udzial w konferencjach" in params["lucene_query"]
+    assert params["min_score"] == 0.5
     assert fallback_query.count("LIMIT") == 1
     assert "LIMIT 5" in fallback_query
 
@@ -124,7 +139,7 @@ def test_both_retries_run_before_giving_up() -> None:
 
 
 def test_giving_up_reports_the_query_that_was_generated() -> None:
-    rag, database = _rag_stub([[], [], []])
+    rag, database = _rag_stub([[], [], [], []])
 
     result = rag.retrieve(
         {"generated_cypher": QUESTION_LITERAL_CYPHER, "user_question": CRITERIA_QUESTION}
@@ -133,7 +148,10 @@ def test_giving_up_reports_the_query_that_was_generated() -> None:
     assert result["retrieval_strategy"] == "empty"
     assert result["context"] == []
     assert "jakie sa kryteria" in result["generated_cypher"]
-    assert len(database.calls) == 3
+    # primary, repaired, label-agnostic, then label-agnostic once more after refreshing the
+    # index - an empty result can mean the index is missing rather than the answer is.
+    assert len(database.calls) == 4
+    assert any("CREATE FULLTEXT" in statement for statement in database.schema_calls)
 
 
 def test_a_failing_retry_never_turns_an_empty_result_into_an_error() -> None:

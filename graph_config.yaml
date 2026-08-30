@@ -15,6 +15,9 @@ rag:
   llm_timeout_seconds: 30
   graph_timeout_seconds: 90
   enable_fallback_search: true
+  # Lucene relevance floor for the label-agnostic fallback. Scores are corpus-relative, so
+  # this is a junk filter, not a precision guarantee - the grader node is the precision gate.
+  fallback_min_score: 0.5
 
 data_pipeline:
   max_chunk_size: 30000

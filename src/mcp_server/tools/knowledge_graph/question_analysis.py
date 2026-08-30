@@ -118,6 +118,8 @@ PHRASE_BOUNDARY_WORDS = QUESTION_WORDS | frozenset(
 )
 
 SEARCH_TOKEN_RE = re.compile(r"[0-9a-z]+")
+# Phrases reaching the full-text index must carry no Lucene metacharacter.
+LUCENE_SAFE_PHRASE_RE = re.compile(r"[0-9a-z]+(?: [0-9a-z]+)*")
 
 # A literal with no interrogative in it still counts as copied question text when it repeats a
 # long contiguous run of the question verbatim.
@@ -247,3 +249,30 @@ def extract_search_phrases(
             phrases.append(phrase)
 
     return phrases[:max_phrases]
+
+
+def build_lucene_query(phrases: list[str]) -> str:
+    """
+    Turn search phrases into a Lucene query for the graph's full-text index.
+
+    Longer phrases are boosted, so a node matching the whole noun phrase outranks one that only
+    shares a word. The phrases come from `extract_search_phrases`, which emits nothing but
+    lowercase ASCII words and single spaces, so no Lucene metacharacter can appear; any phrase
+    that somehow carries one is dropped rather than escaped, because a malformed query would
+    fail the whole lookup.
+
+    Args:
+        phrases: Search phrases, most specific first
+
+    Returns:
+        A Lucene query string, or an empty string when no phrase is usable
+    """
+    clauses: list[str] = []
+
+    for phrase in phrases:
+        if not phrase or not LUCENE_SAFE_PHRASE_RE.fullmatch(phrase):
+            continue
+        boost = len(phrase.split())
+        clauses.append(f'"{phrase}"^{boost}' if boost > 1 else f'"{phrase}"')
+
+    return " OR ".join(clauses)

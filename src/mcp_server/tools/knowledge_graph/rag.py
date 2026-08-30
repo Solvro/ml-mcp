@@ -35,7 +35,11 @@ from .cypher_guardrails import (
     validate_read_only,
 )
 from .graph_visualizer import GraphVisualizer
-from .question_analysis import extract_search_phrases, strip_question_literal_filters
+from .question_analysis import (
+    build_lucene_query,
+    extract_search_phrases,
+    strip_question_literal_filters,
+)
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -56,24 +60,38 @@ GUARDRAIL_DECISION_ALIASES = {
 
 # Label-agnostic rescue for a generated query that matched nothing. The graph carries many
 # overlapping labels for the same kind of thing, so an answer stored under a label the model did
-# not pick is still reachable by searching every title for the question's noun phrases.
-# Phrases arrive ordered from most to least specific; the earliest match ranks a node highest.
-FALLBACK_SEARCH_CYPHER = """MATCH (node)
-WHERE node.title IS NOT NULL
-WITH node,
-     [rank IN range(0, size($phrases) - 1)
-      WHERE toLower(node.title) CONTAINS $phrases[rank] | rank] AS matched_ranks
-WHERE size(matched_ranks) > 0
-WITH node, matched_ranks[0] AS best_phrase_rank
-ORDER BY best_phrase_rank, node.title
+# not pick is still reachable by searching titles regardless of label.
+#
+# The search is Lucene-backed rather than a CONTAINS scan: an index-backed lookup does not walk
+# every node, and it returns a relevance score, which turns "is this row good enough" into a
+# number instead of a judgement call.
+FULLTEXT_INDEX_NAME = "entity_search"
+# The pipeline's own bookkeeping nodes carry no answer for a user question.
+FULLTEXT_EXCLUDED_LABELS = frozenset({"ProcessedDocument", "PipelineRun"})
+FULLTEXT_SEARCH_PROCEDURE = "db.index.fulltext.queryNodes"
+# The only procedure any retrieval query may call. Generated Cypher is validated with an
+# empty allowlist, so this never widens what the model is allowed to do.
+ALLOWED_RETRIEVAL_PROCEDURES = frozenset({FULLTEXT_SEARCH_PROCEDURE})
+
+FALLBACK_SEARCH_CYPHER = """CALL db.index.fulltext.queryNodes($index_name, $lucene_query)
+YIELD node, score
+WHERE score >= $min_score
+  AND node.title IS NOT NULL
+WITH node, score
+ORDER BY score DESC, node.title
 LIMIT {max_nodes}
 OPTIONAL MATCH (node)-[relation]->(neighbour)
 WHERE neighbour.title IS NOT NULL
 RETURN labels(node) AS labels,
        node.title AS title,
        node.context AS context,
+       score,
        collect(DISTINCT type(relation) + ': ' + neighbour.title) AS related
-ORDER BY title"""
+ORDER BY score DESC, title"""
+
+SHOW_FULLTEXT_INDEX_CYPHER = """SHOW INDEXES YIELD name, type, labelsOrTypes, properties
+WHERE name = $index_name
+RETURN labelsOrTypes AS labels, properties AS properties"""
 
 
 class LLMProvider(Enum):
@@ -133,6 +151,7 @@ class RAG:
         self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
         self.max_results = max_results if max_results is not None else config.rag.max_results
         self.enable_fallback_search = config.rag.enable_fallback_search
+        self.fallback_min_score = config.rag.fallback_min_score
 
         self.fast_llm = self._build_llm_with_fallback(use_accurate=False)
         self.cypher_llm = self._build_llm_with_fallback(use_accurate=True)
@@ -148,6 +167,9 @@ class RAG:
         )
 
         self._cached_schema = None
+
+        if self.enable_fallback_search:
+            self.ensure_fulltext_index()
 
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
@@ -544,7 +566,7 @@ class RAG:
             Retrieved rows, or an empty list when the retry was rejected or failed
         """
         try:
-            validate_read_only(cypher_query)
+            validate_read_only(cypher_query, allowed_procedures=ALLOWED_RETRIEVAL_PROCEDURES)
             if params is None:
                 return self.database.query(cypher_query)
             return self.database.query(cypher_query, params=params)
@@ -552,16 +574,66 @@ class RAG:
             logger.warning("Retrieval retry (%s) failed: %s", description, exc)
             return []
 
+    def ensure_fulltext_index(self) -> bool:
+        """
+        Create or refresh the full-text index the label-agnostic search reads.
+
+        The index has to name its labels, so it is built from the labels the database actually
+        holds and rebuilt when that set changes. Ingestion can introduce a label between
+        restarts; the search re-checks the index when a lookup fails, so a new label is picked
+        up without waiting for a redeploy.
+
+        Returns:
+            True when the index exists and covers the current labels
+        """
+        try:
+            labels = sorted(
+                row["label"]
+                for row in self.database.query("CALL db.labels() YIELD label RETURN label")
+                if row["label"] not in FULLTEXT_EXCLUDED_LABELS
+            )
+        except Exception as exc:
+            logger.warning("Could not read graph labels for the full-text index: %s", exc)
+            return False
+
+        if not labels:
+            return False
+
+        try:
+            existing = self.database.query(
+                SHOW_FULLTEXT_INDEX_CYPHER, params={"index_name": FULLTEXT_INDEX_NAME}
+            )
+            if existing and sorted(existing[0].get("labels") or []) == labels:
+                return True
+
+            if existing:
+                logger.info("Graph labels changed; rebuilding the %s index", FULLTEXT_INDEX_NAME)
+                self.database.query(f"DROP INDEX {FULLTEXT_INDEX_NAME} IF EXISTS")
+
+            label_spec = "|".join(f"`{label}`" for label in labels)
+            self.database.query(
+                f"CREATE FULLTEXT INDEX {FULLTEXT_INDEX_NAME} IF NOT EXISTS "
+                f"FOR (n:{label_spec}) ON EACH [n.title, n.context]"
+            )
+            logger.info("Full-text index %s covers %d labels", FULLTEXT_INDEX_NAME, len(labels))
+            return True
+        except Exception as exc:
+            logger.warning("Could not create the %s full-text index: %s", FULLTEXT_INDEX_NAME, exc)
+            return False
+
     def _search_every_label(self, user_question: str) -> Dict[str, Any] | None:
         """
-        Search all node titles for the question's noun phrases, ignoring labels.
+        Search every label's titles for the question's noun phrases, ranked by relevance.
+
+        Rows scoring below the configured threshold are dropped here rather than being passed on
+        as weak candidates, so the decision to abstain is made on retrieval evidence.
 
         Args:
             user_question: User's natural language question
 
         Returns:
             Updated state with the recovered context, or None when the search is disabled,
-            has nothing to search for, or found nothing
+            has nothing to search for, or found nothing above the score threshold
         """
         if not self.enable_fallback_search:
             return None
@@ -570,13 +642,25 @@ class RAG:
         if not phrases:
             return None
 
-        cypher_query = FALLBACK_SEARCH_CYPHER.format(max_nodes=self.max_results)
-        if self.enable_debug:
-            print(f"[Retrieval Retry] label-agnostic search phrases: {phrases}")
+        lucene_query = build_lucene_query(phrases)
+        if not lucene_query:
+            return None
 
-        response = self._run_recovery_query(
-            cypher_query, "label-agnostic search", params={"phrases": phrases}
-        )
+        cypher_query = FALLBACK_SEARCH_CYPHER.format(max_nodes=self.max_results)
+        params = {
+            "index_name": FULLTEXT_INDEX_NAME,
+            "lucene_query": lucene_query,
+            "min_score": self.fallback_min_score,
+        }
+        if self.enable_debug:
+            print(f"[Retrieval Retry] label-agnostic search: {lucene_query}")
+
+        response = self._run_recovery_query(cypher_query, "label-agnostic search", params=params)
+        if not response and self.ensure_fulltext_index():
+            # The index may be missing entirely, or stale after ingestion added a label.
+            response = self._run_recovery_query(
+                cypher_query, "label-agnostic search (reindexed)", params=params
+            )
         if not response:
             return None
 
