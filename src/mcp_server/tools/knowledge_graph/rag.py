@@ -73,6 +73,10 @@ FULLTEXT_SEARCH_PROCEDURE = "db.index.fulltext.queryNodes"
 # empty allowlist, so this never widens what the model is allowed to do.
 ALLOWED_RETRIEVAL_PROCEDURES = frozenset({FULLTEXT_SEARCH_PROCEDURE})
 
+# How many characters of each candidate row the grader is shown. Enough to judge relevance,
+# short enough that a wide fallback result stays one cheap call.
+GRADER_ROW_CHARS = 400
+
 FALLBACK_SEARCH_CYPHER = """CALL db.index.fulltext.queryNodes($index_name, $lucene_query)
 YIELD node, score
 WHERE score >= $min_score
@@ -108,6 +112,7 @@ class RetrievalStrategy(Enum):
     PRIMARY = "primary"
     REPAIRED_LITERALS = "repaired_literals"
     LABEL_AGNOSTIC_PHRASES = "label_agnostic_phrases"
+    GRADED_OUT = "graded_out"
     EMPTY = "empty"
 
 
@@ -347,6 +352,11 @@ class RAG:
             input_variables=["user_question"], template=config.prompts.guardrails
         )
 
+        self.context_grader_template = PromptTemplate(
+            input_variables=["user_question", "candidates"],
+            template=config.prompts.context_grader,
+        )
+
     def _parse_guardrail_output(self, raw_output: str) -> Dict[str, str]:
         """Parse guardrail JSON and normalize the decision with a safe fallback."""
         cleaned_output = strip_code_fences(raw_output)
@@ -369,6 +379,116 @@ class RAG:
 
         return {"decision": normalized_decision}
 
+    @staticmethod
+    def _render_grader_candidates(context: List[Dict[str, Any]]) -> str:
+        """Render retrieved rows as a numbered list the grader can refer to by index."""
+        lines = []
+        for position, row in enumerate(context, start=1):
+            rendered = json.dumps(row, ensure_ascii=False, default=str)
+            if len(rendered) > GRADER_ROW_CHARS:
+                rendered = f"{rendered[:GRADER_ROW_CHARS]}..."
+            lines.append(f"{position}. {rendered}")
+        return "\n".join(lines)
+
+    def _parse_grader_output(self, raw_output: str, row_count: int) -> List[int] | None:
+        """
+        Read the row numbers the grader kept.
+
+        Args:
+            raw_output: Raw grader reply
+            row_count: How many rows the grader was shown
+
+        Returns:
+            Zero-based indices of the rows to keep, or None when the reply is unusable
+        """
+        cleaned_output = strip_code_fences(raw_output)
+
+        try:
+            start = cleaned_output.index("{")
+            payload, _ = json.JSONDecoder().raw_decode(cleaned_output[start:])
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning("Context grader returned unusable JSON: %s", exc)
+            return None
+
+        relevant = payload.get("relevant")
+        if not isinstance(relevant, list):
+            logger.warning("Context grader reply had no 'relevant' list: %r", raw_output)
+            return None
+
+        kept: List[int] = []
+        for entry in relevant:
+            try:
+                position = int(entry)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= position <= row_count and position - 1 not in kept:
+                kept.append(position - 1)
+
+        return kept
+
+    def grade_context(self, state: State):
+        """
+        Drop retrieved rows that do not answer the question.
+
+        Whether to answer is decided here, on retrieval evidence, rather than left to the
+        answering model: rows recovered by a widened search are candidates, not an answer, and a
+        row that only shares a word with the question is what produces a confident wrong answer.
+
+        A query that ran as the model wrote it is trusted and skips grading. A grader that fails
+        or replies with nonsense leaves the rows untouched - a model outage must not be
+        indistinguishable from an empty graph.
+
+        Args:
+            state: Current pipeline state
+
+        Returns:
+            Updated state with the rows that survived grading
+        """
+        context = state.get("context") or []
+        strategy = state.get("retrieval_strategy")
+
+        if not context or strategy == RetrievalStrategy.PRIMARY.value:
+            return {"context_graded": False}
+
+        grader_chain = self.context_grader_template | self.fast_llm | StrOutputParser()
+
+        try:
+            grader_output = grader_chain.invoke(
+                {
+                    "user_question": state["user_question"],
+                    "candidates": self._render_grader_candidates(context),
+                },
+                config=self._get_invoke_config(
+                    trace_id=state.get("trace_id"),
+                    tags=["knowledge_graph", "context_grader"],
+                    run_name="Context Grader",
+                    handler=state.get("callback_handler"),
+                    session_id=state.get("session_id"),
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Context grading failed; keeping retrieved rows: %s", exc)
+            return {"context_graded": False}
+
+        kept = self._parse_grader_output(grader_output, len(context))
+        if kept is None:
+            return {"context_graded": False}
+
+        graded_context = [context[index] for index in kept]
+
+        if self.enable_debug:
+            print(f"[Context Grader] kept {len(graded_context)} of {len(context)} row(s)")
+
+        if not graded_context:
+            logger.info("Context grader rejected all %d retrieved row(s)", len(context))
+            return {
+                "context": [],
+                "context_graded": True,
+                "retrieval_strategy": RetrievalStrategy.GRADED_OUT.value,
+            }
+
+        return {"context": graded_context, "context_graded": True}
+
     def _build_processing_graph(self):
         """Construct the state machine graph for the RAG pipeline."""
         builder = StateGraph(State)
@@ -378,6 +498,7 @@ class RAG:
             ("guardrails_system", self.guardrails_system),
             ("generate_cypher", self.generate_cypher),
             ("retrieve", self.retrieve),
+            ("grade_context", self.grade_context),
             ("return_none", self.return_none),
         ]
 
@@ -407,8 +528,11 @@ class RAG:
         builder.add_edge("return_none", END)
         visualizer.add_edge("return_none", END)
 
-        builder.add_edge("retrieve", END)
-        visualizer.add_edge("retrieve", END)
+        builder.add_edge("retrieve", "grade_context")
+        visualizer.add_edge("retrieve", "grade_context")
+
+        builder.add_edge("grade_context", END)
+        visualizer.add_edge("grade_context", END)
 
         return builder.compile()
 

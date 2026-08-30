@@ -201,6 +201,30 @@ prompts:
 
     Cypher:
 
+  context_grader: |
+    You are a retrieval grader for a Wrocław University of Science and Technology (Politechnika
+    Wrocławska) assistant. Rows below were recovered by a fallback search, so some of them are
+    only loosely related to the question. Your job is to say which ones actually answer it.
+
+    Question: {user_question}
+
+    Candidate rows:
+    {candidates}
+
+    Keep a row when it contains the fact the question asks for, or names the entity the question
+    is about. Drop a row when it merely mentions a similar word, describes a neighbouring entity,
+    or carries a different date, semester or document than the one asked for.
+
+    Being strict is the point: an empty list is a correct answer and leads to "no data", which is
+    better than an answer built on a row that does not address the question.
+
+    Answer ONLY with valid JSON listing the numbers of the rows to keep, for example:
+    {{"relevant": [1, 3]}}
+    or, when no row answers the question:
+    {{"relevant": []}}
+
+    Answer:
+
   guardrails: |
     You route questions for a Wrocław University of Science and Technology (Politechnika
     Wrocławska, PWr) assistant backed by a knowledge graph built from university documents.
