@@ -11,6 +11,7 @@ import pytest
 
 from src.data_pipeline.canonical_nodes import (
     canonical_entity_key,
+    looks_like_abbreviation,
     rewrite_merge_to_canonical_key,
 )
 from src.data_pipeline.flows import llm_cypher_generation as cypher_module
@@ -28,6 +29,73 @@ from src.data_pipeline.flows import llm_cypher_generation as cypher_module
 )
 def test_spellings_of_one_entity_share_a_key(title, expected) -> None:
     assert canonical_entity_key(title) == expected
+
+
+# Review feedback on PR #58: dropping every trailing bracket fused entities that the bracket is
+# the only thing distinguishing. Fusing two entities into one is worse than splitting one into
+# two, because nothing in the graph shows it happened.
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        ("Informatyka (studia I stopnia)", "Informatyka (studia II stopnia)"),
+        ("Informatyka (I stopnia)", "Informatyka (II stopnia)"),
+        ("Informatyka (stacjonarne)", "Informatyka (niestacjonarne)"),
+        ("Informatyka (II)", "Informatyka (III)"),
+        ("Rekrutacja (2024)", "Rekrutacja (2025)"),
+    ],
+)
+def test_a_qualifying_bracket_keeps_two_entities_apart(first, second) -> None:
+    assert canonical_entity_key(first) != canonical_entity_key(second)
+
+
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Informatyka (studia I stopnia)",
+        "Informatyka (stacjonarne)",
+        "Informatyka (II)",
+        "Rekrutacja (2024)",
+    ],
+)
+def test_a_qualifying_bracket_stays_in_the_key(title) -> None:
+    assert canonical_entity_key(title) != canonical_entity_key("Informatyka")
+    assert canonical_entity_key(title) != canonical_entity_key("Rekrutacja")
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("Cyberbezpieczenstwo (CBE)", "cyberbezpieczenstwo"),
+        ("Politechnika Wroclawska (PWr)", "politechnika wroclawska"),
+        ("Wydzial Informatyki (W8)", "wydzial informatyki"),
+    ],
+)
+def test_an_abbreviating_bracket_is_still_dropped(title, expected) -> None:
+    assert canonical_entity_key(title) == expected
+
+
+@pytest.mark.parametrize(
+    ("bracketed", "is_abbreviation"),
+    [
+        ("CBE", True),
+        ("PWr", True),
+        ("W8", True),
+        ("studia I stopnia", False),
+        ("stacjonarne", False),
+        ("niestacjonarne", False),
+        ("II", False),
+        ("VIII", False),
+        ("2024", False),
+        ("", False),
+        ("BardzoDlugiSkrot", False),
+        ("Nowy", False),
+        ("W4", True),
+    ],
+)
+def test_only_a_short_capitalised_token_reads_as_an_abbreviation(
+    bracketed, is_abbreviation
+) -> None:
+    assert looks_like_abbreviation(bracketed) is is_abbreviation
 
 
 def test_distinct_entities_keep_distinct_keys() -> None:

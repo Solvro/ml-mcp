@@ -23,8 +23,16 @@ SINGLE_NODE_MERGE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
-# A trailing abbreviation in brackets is a spelling of the same entity, not a different one.
-PARENTHETICAL_SUFFIX_RE = re.compile(r"\s*\([^()]*\)\s*$")
+# A trailing bracket may be an abbreviation of the same entity — "Cyberbezpieczenstwo (CBE)" —
+# or the very thing that tells two entities apart: "Informatyka (studia I stopnia)" against
+# "(studia II stopnia)", "(stacjonarne)" against "(niestacjonarne)". Only the first kind may be
+# dropped from the key. Fusing two entities into one is worse than splitting one into two,
+# because the loss is silent.
+PARENTHETICAL_SUFFIX_RE = re.compile(r"\s*\((?P<inner>[^()]*)\)\s*$")
+# Roman numerals mark a degree level or an edition, never an abbreviation of the name.
+ROMAN_NUMERAL_RE = re.compile(r"^[IVXLCDM]+$")
+MAX_ABBREVIATION_LENGTH = 8
+MIN_ABBREVIATION_UPPERCASE = 2
 NON_KEY_CHARACTERS_RE = re.compile(r"[^0-9a-z]+")
 
 KEY_PROPERTY = "key"
@@ -38,12 +46,44 @@ MAX_CONTEXT_LENGTH = 2000
 CONTEXT_SEPARATOR = "; "
 
 
+def looks_like_abbreviation(bracketed_text: str) -> bool:
+    """
+    Report whether a bracketed suffix abbreviates the title rather than qualifying it.
+
+    An abbreviation is one short token carrying capitals — "(CBE)", "(PWr)". Anything that
+    describes a variant of the entity — "(studia I stopnia)", "(stacjonarne)", "(II)" — is what
+    distinguishes two entities and must stay in the key.
+
+    Args:
+        bracketed_text: Text between the brackets, with its original case
+
+    Returns:
+        True when the suffix can be dropped without merging distinct entities
+    """
+    token = bracketed_text.strip()
+    if not token or len(token) > MAX_ABBREVIATION_LENGTH:
+        return False
+    if not token.isalnum():
+        return False
+    if ROMAN_NUMERAL_RE.match(token):
+        return False
+
+    uppercase = sum(1 for character in token if character.isupper())
+    if uppercase >= MIN_ABBREVIATION_UPPERCASE:
+        return True
+    # Faculty codes carry a single capital and a number: "(W8)", "(W4)".
+    return uppercase == 1 and any(character.isdigit() for character in token)
+
+
 def canonical_entity_key(title: str) -> str:
     """
     Derive the merge key that two spellings of one entity have in common.
 
-    Case, Polish diacritics, punctuation and a trailing bracketed abbreviation are all dropped,
-    so "Cyberbezpieczeństwo" and "Cyberbezpieczenstwo (CBE)" produce the same key.
+    Case, Polish diacritics and punctuation are dropped, so "Cyberbezpieczeństwo" and
+    "Cyberbezpieczenstwo" produce the same key. A trailing bracket is dropped only when it
+    abbreviates the title — "Cyberbezpieczenstwo (CBE)" joins them — and kept when it tells two
+    entities apart, so "Informatyka (studia I stopnia)" and "Informatyka (studia II stopnia)"
+    stay two nodes.
 
     Args:
         title: Entity title as the extraction model wrote it
@@ -51,9 +91,18 @@ def canonical_entity_key(title: str) -> str:
     Returns:
         Lowercase ASCII key, or an empty string when the title carries no usable characters
     """
-    folded = normalize_search_text(title)
-    without_abbreviation = PARENTHETICAL_SUFFIX_RE.sub("", folded).strip()
-    return NON_KEY_CHARACTERS_RE.sub(" ", without_abbreviation or folded).strip()
+    suffix = PARENTHETICAL_SUFFIX_RE.search(title)
+    without_abbreviation = title
+    if suffix is not None and looks_like_abbreviation(suffix.group("inner")):
+        without_abbreviation = title[: suffix.start()]
+
+    folded = normalize_search_text(without_abbreviation)
+    key = NON_KEY_CHARACTERS_RE.sub(" ", folded).strip()
+    if key:
+        return key
+
+    # A title that is nothing but the abbreviation still needs a key of its own.
+    return NON_KEY_CHARACTERS_RE.sub(" ", normalize_search_text(title)).strip()
 
 
 def _split_properties(properties: str) -> list[tuple[str, str]]:
