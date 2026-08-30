@@ -142,3 +142,48 @@ def test_deduplicate_graph_reports_every_stage() -> None:
     stats = graph_dedup.deduplicate_graph.fn(graph)
 
     assert stats == {"relabelled_labels": 1, "keys_backfilled": 1, "groups_merged": 2}
+
+
+# Review feedback on PR #58: the repair walked the whole graph on every run, so its cost grew
+# with the database rather than with what changed.
+def test_a_run_scoped_pass_only_examines_the_keys_it_wrote() -> None:
+    graph = FakeGraph(merge_result=[{"merged_groups": 1}])
+
+    stats = graph_dedup.deduplicate_graph.fn(graph, ["analiza matematyczna", "semestr zimowy"])
+
+    assert stats == {"relabelled_labels": 0, "keys_backfilled": 0, "groups_merged": 1}
+    merge_call = next(call for call in graph.calls if "apoc.refactor.mergeNodes" in call[0])
+    assert merge_call[1]["keys"] == ["analiza matematyczna", "semestr zimowy"]
+
+
+def test_a_run_scoped_pass_skips_the_legacy_full_graph_repairs() -> None:
+    """Relabelling and key backfill only ever apply to nodes written before the rules existed."""
+    graph = FakeGraph(labels=["Program"], unkeyed_nodes=[{"node_id": "4:a:1", "title": "Kurs"}])
+
+    graph_dedup.deduplicate_graph.fn(graph, ["kurs"])
+
+    assert not [call for call in graph.calls if "db.labels()" in call[0]]
+    assert not [call for call in graph.calls if "node.key IS NULL" in call[0]]
+
+
+def test_a_run_that_wrote_nothing_does_not_touch_the_graph() -> None:
+    graph = FakeGraph(merge_result=[{"merged_groups": 5}])
+
+    stats = graph_dedup.deduplicate_graph.fn(graph, [])
+
+    assert stats["groups_merged"] == 0
+    assert graph.calls == []
+
+
+def test_the_full_pass_still_walks_everything() -> None:
+    graph = FakeGraph(
+        labels=["Program"],
+        unkeyed_nodes=[{"node_id": "4:a:1", "title": "Kryptografia"}],
+        merge_result=[{"merged_groups": 2}],
+    )
+
+    stats = graph_dedup.deduplicate_graph.fn(graph)
+
+    assert stats == {"relabelled_labels": 1, "keys_backfilled": 1, "groups_merged": 2}
+    merge_call = next(call for call in graph.calls if "apoc.refactor.mergeNodes" in call[0])
+    assert merge_call[1]["keys"] is None

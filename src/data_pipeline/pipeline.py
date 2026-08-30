@@ -121,6 +121,7 @@ def data_pipeline_flow():
 
     pages = [text for _, text in work_items]
 
+    written_keys: set[str] = set()
     stats = {
         "total_pages": len(pages),
         "claimed_pages": 0,
@@ -197,7 +198,7 @@ def data_pipeline_flow():
 
         for page_index, page_hash, future in batch_futures:
             try:
-                future.result()
+                written_keys.update(future.result() or [])
                 stats["successful_pages"] += 1
             except Exception as exc:
                 stats["failed_pages"] += 1
@@ -209,12 +210,13 @@ def data_pipeline_flow():
                     exc,
                 )
 
-    # Repair before reflecting, so the summary describes the deduplicated graph.
-    dedup_stats = populator.deduplicate_entities()
+    # Repair before reflecting, so the summary describes the deduplicated graph. Only the keys
+    # this run wrote are examined, so the cost tracks what changed rather than the graph size;
+    # `uv run dedup-graph` runs the full repair for nodes written before these rules existed.
+    dedup_stats = populator.deduplicate_entities(sorted(written_keys))
     logger.info(
-        "Deduplication: relabelled=%d keys_backfilled=%d groups_merged=%d",
-        dedup_stats["relabelled_labels"],
-        dedup_stats["keys_backfilled"],
+        "Deduplication over %d key(s) written this run: groups_merged=%d",
+        len(written_keys),
         dedup_stats["groups_merged"],
     )
 

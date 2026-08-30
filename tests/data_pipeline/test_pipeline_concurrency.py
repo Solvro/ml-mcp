@@ -230,6 +230,66 @@ def test_pipeline_incremental_skips_when_source_hashes_unchanged(monkeypatch):
     assert reflect_calls == []
 
 
+def test_pipeline_skips_deduplication_when_nothing_changed(monkeypatch):
+    """Review feedback on #58: a no-op run must not walk the graph for nothing."""
+    pages = ["page-0", "page-1"]
+    extracted_pages = _to_extracted_pages(pages)
+    last = {sid: pipeline_module._compute_page_hash(text) for sid, text in extracted_pages}
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(pipeline_module, "ocr_extraction", lambda _acquired: extracted_pages)
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "get_latest_pipeline_source_hashes",
+        lambda self: last,
+    )
+
+    dedup_calls: list[object] = []
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "deduplicate_entities",
+        lambda self, keys=None: dedup_calls.append(keys) or {"groups_merged": 0},
+    )
+
+    pipeline_module.data_pipeline_flow()
+
+    assert dedup_calls == []
+
+
+def test_pipeline_deduplicates_only_the_keys_it_wrote(monkeypatch):
+    pages = ["page-0", "page-1"]
+    monkeypatch.setattr(pipeline_module, "acquire_data", _acquired_stub)
+    monkeypatch.setattr(
+        pipeline_module, "ocr_extraction", lambda _acquired: _to_extracted_pages(pages)
+    )
+    monkeypatch.setattr(
+        pipeline_module.generate_cypher_queries,
+        "submit",
+        lambda *args, **kwargs: ImmediateFuture("cypher"),
+    )
+    monkeypatch.setattr(
+        pipeline_module.claim_document_for_processing,
+        "submit",
+        lambda *args, **kwargs: ImmediateFuture(True),
+    )
+    written = [["semestr zimowy", "analiza"], ["analiza", "kryptografia"]]
+    monkeypatch.setattr(
+        pipeline_module.populate_graph,
+        "submit",
+        lambda *args, **kwargs: ImmediateFuture(written.pop(0) if written else []),
+    )
+
+    dedup_calls: list[object] = []
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "deduplicate_entities",
+        lambda self, keys=None: dedup_calls.append(keys) or {"groups_merged": 0},
+    )
+
+    pipeline_module.data_pipeline_flow()
+
+    assert dedup_calls == [["analiza", "kryptografia", "semestr zimowy"]]
+
+
 def test_pipeline_second_run_is_noop_for_unchanged_extracted_pages(monkeypatch):
     extracted_pages = [
         ("file://docs/a.pdf#page=1", "page-one"),

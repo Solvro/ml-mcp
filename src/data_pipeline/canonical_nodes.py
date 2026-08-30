@@ -36,6 +36,9 @@ MIN_ABBREVIATION_UPPERCASE = 2
 NON_KEY_CHARACTERS_RE = re.compile(r"[^0-9a-z]+")
 
 KEY_PROPERTY = "key"
+# Reads back the key a rewritten MERGE settled on. Keys are folded to [0-9a-z ] before they
+# are written, so the literal can never contain a quote to escape past.
+MERGE_KEY_RE = re.compile(r"\{\s*key\s*:\s*'(?P<key>[^']*)'\s*\}")
 TITLE_PROPERTY = "title"
 CONTEXT_PROPERTY = "context"
 
@@ -216,3 +219,28 @@ def rewrite_merge_to_canonical_key(statement: str) -> str:
         f"ON CREATE SET {', '.join(create_assignments)} "
         f"ON MATCH SET {', '.join(match_assignments)}"
     )
+
+
+def extract_entity_keys(cypher: str) -> list[str]:
+    """
+    Collect the canonical keys a batch of generated statements merges on.
+
+    The post-ingest repair uses these to look at only what a run touched, instead of scanning
+    every node in the graph each time.
+
+    Args:
+        cypher: One or more generated statements, pipe-separated or already joined
+
+    Returns:
+        Deduplicated keys in the order they appear
+    """
+    keys: list[str] = []
+    seen: set[str] = set()
+
+    for match in MERGE_KEY_RE.finditer(cypher or ""):
+        key = match.group("key")
+        if key and key not in seen:
+            seen.add(key)
+            keys.append(key)
+
+    return keys

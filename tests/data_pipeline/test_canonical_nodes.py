@@ -11,6 +11,7 @@ import pytest
 
 from src.data_pipeline.canonical_nodes import (
     canonical_entity_key,
+    extract_entity_keys,
     looks_like_abbreviation,
     rewrite_merge_to_canonical_key,
 )
@@ -247,3 +248,33 @@ def test_generated_output_survives_the_pipe_split(monkeypatch) -> None:
     assert len(statements) == 2
     assert all(statement.startswith("MERGE (") for statement in statements)
     assert all(statement.endswith("END") for statement in statements)
+
+
+def test_written_keys_can_be_read_back_from_the_generated_statements() -> None:
+    """The post-ingest repair scopes itself to these, so they must survive the pipe join."""
+    generated = "|".join(
+        [
+            rewrite_merge_to_canonical_key(
+                "MERGE (n1:Course {title: 'Analiza matematyczna', context: 'x'})"
+            ),
+            rewrite_merge_to_canonical_key(
+                "MERGE (n2:Semester {title: 'Semestr zimowy', context: 'y'})"
+            ),
+            "MERGE (n1)-[:PART_OF]->(n2)",
+        ]
+    )
+
+    assert extract_entity_keys(generated) == ["analiza matematyczna", "semestr zimowy"]
+
+
+def test_repeated_keys_are_reported_once() -> None:
+    statement = rewrite_merge_to_canonical_key(
+        "MERGE (n1:Course {title: 'Analiza matematyczna', context: 'x'})"
+    )
+
+    assert extract_entity_keys(f"{statement}|{statement}") == ["analiza matematyczna"]
+
+
+def test_statements_without_a_canonical_merge_yield_no_keys() -> None:
+    assert extract_entity_keys("MERGE (n1)-[:PART_OF]->(n2)") == []
+    assert extract_entity_keys("") == []

@@ -10,6 +10,11 @@ split until it is repaired, so this pass runs after ingestion:
 
 Merging needs APOC. If the plugin is missing the pass reports what it found and changes nothing,
 because a half-finished merge is worse than a duplicate.
+
+Two modes. A pipeline run passes the keys it just wrote and only those groups are examined, so
+the cost tracks what changed rather than how large the graph has grown. Relabelling and key
+backfill repair nodes written before the rules existed, which no later run can reintroduce, so
+they belong to the full pass — run once with ``uv run dedup-graph``.
 """
 
 import logging
@@ -30,9 +35,12 @@ INTERNAL_LABELS = frozenset({"ProcessedDocument", "PipelineRun"})
 KEY_BACKFILL_BATCH_SIZE = 500
 MAX_CONTEXT_LENGTH = 2000
 
+# $keys is null for a full pass and a list for a run-scoped one, so one query serves both and
+# the two modes cannot drift apart. With a list the key index carries the lookup.
 MERGE_DUPLICATES_CYPHER = """
 MATCH (node)
 WHERE node.key IS NOT NULL
+  AND ($keys IS NULL OR node.key IN $keys)
   AND node.title IS NOT NULL
   AND NOT any(label IN labels(node) WHERE label IN $internal_labels)
 WITH apoc.coll.sort(labels(node)) AS label_set, node.key AS entity_key, collect(node) AS nodes
@@ -137,7 +145,7 @@ def backfill_entity_keys(graph: Neo4jGraph) -> int:
     return len(updates)
 
 
-def merge_duplicate_nodes(graph: Neo4jGraph) -> int:
+def merge_duplicate_nodes(graph: Neo4jGraph, keys: list[str] | None = None) -> int:
     """
     Merge nodes that share a label set and a canonical key into one.
 
@@ -146,11 +154,16 @@ def merge_duplicate_nodes(graph: Neo4jGraph) -> int:
 
     Args:
         graph: Connected Neo4j graph
+        keys: Canonical keys to examine. None looks at the whole graph; a pipeline run passes
+            the keys it wrote, so the work tracks what changed rather than the graph size.
 
     Returns:
         Number of duplicate groups merged, or 0 when APOC is unavailable
     """
     logger = _get_logger()
+    if keys is not None and not keys:
+        return 0
+
     try:
         rows = graph.query(
             MERGE_DUPLICATES_CYPHER,
@@ -158,6 +171,7 @@ def merge_duplicate_nodes(graph: Neo4jGraph) -> int:
                 "internal_labels": sorted(INTERNAL_LABELS),
                 "max_context_length": MAX_CONTEXT_LENGTH,
                 "context_separator": CONTEXT_SEPARATOR,
+                "keys": keys,
             },
         )
     except Exception as exc:
@@ -170,12 +184,17 @@ def merge_duplicate_nodes(graph: Neo4jGraph) -> int:
 
 
 @task
-def deduplicate_graph(graph: Neo4jGraph | None = None) -> dict[str, int]:
+def deduplicate_graph(
+    graph: Neo4jGraph | None = None, keys: list[str] | None = None
+) -> dict[str, int]:
     """
-    Run the full post-ingest repair: relabel, backfill keys, merge duplicates.
+    Repair entities split across several nodes.
 
     Args:
         graph: Connected Neo4j graph; built from the environment when omitted
+        keys: Canonical keys a run just wrote. Passing them keeps the pass proportional to what
+            changed and skips the legacy repairs, which only ever apply to nodes written before
+            the rules existed. None runs the full repair over the whole graph.
 
     Returns:
         Counts for each stage, for the pipeline summary log
@@ -192,6 +211,13 @@ def deduplicate_graph(graph: Neo4jGraph | None = None) -> dict[str, int]:
             logger.warning("Neo4j credentials not set - skipping deduplication")
             return {"relabelled_labels": 0, "keys_backfilled": 0, "groups_merged": 0}
         graph = Neo4jGraph(url=uri, username=username, password=password)
+
+    if keys is not None:
+        return {
+            "relabelled_labels": 0,
+            "keys_backfilled": 0,
+            "groups_merged": merge_duplicate_nodes(graph, keys),
+        }
 
     vocabulary = LabelVocabulary(get_config().graph_schema)
 
