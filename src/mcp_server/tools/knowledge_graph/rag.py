@@ -859,10 +859,12 @@ class RAG:
             Dictionary with the answer and retrieval metadata
         """
         context_data = result.get("context") or []
+        strategy = result.get("retrieval_strategy")
         metadata = {
             "guardrail_decision": result.get("guardrail_decision"),
             "cypher_query": result.get("generated_cypher"),
-            "retrieval_strategy": result.get("retrieval_strategy"),
+            "retrieval_strategy": strategy,
+            "context_graded": result.get("context_graded"),
             "context": context_data,
         }
 
@@ -875,8 +877,15 @@ class RAG:
         if not context_data:
             return {"answer": NO_GRAPH_DATA_MESSAGE, "metadata": metadata}
 
+        # The strategy travels with the rows: how they were found is what says whether they are
+        # an answer or a candidate, and the answering model cannot tell the two apart otherwise.
+        payload = {
+            "retrieval_strategy": strategy,
+            "context_graded": bool(result.get("context_graded")),
+            "rows": context_data,
+        }
         return {
-            "answer": json.dumps(context_data, ensure_ascii=False, indent=2),
+            "answer": json.dumps(payload, ensure_ascii=False, indent=2),
             "metadata": metadata,
         }
 

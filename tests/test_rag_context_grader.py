@@ -6,6 +6,7 @@ candidates, and a candidate that does not address the question is dropped before
 a confident wrong answer.
 """
 
+import json
 from typing import Any
 
 import pytest
@@ -184,3 +185,47 @@ def test_long_rows_are_truncated_before_grading() -> None:
 
     assert "..." in llm.prompts[0]
     assert len(llm.prompts[0]) < 3000
+
+
+def test_the_answer_payload_carries_how_the_rows_were_found() -> None:
+    """The answering model cannot tell an answer from a candidate without the strategy."""
+    formatted = RAG._format_result(
+        {
+            "context": [{"title": "Udział w konferencjach"}],
+            "generated_cypher": "MATCH (n) RETURN n.title",
+            "guardrail_decision": "generate_cypher",
+            "retrieval_strategy": "label_agnostic_phrases",
+            "context_graded": True,
+        }
+    )
+
+    payload = json.loads(formatted["answer"])
+    assert payload["retrieval_strategy"] == "label_agnostic_phrases"
+    assert payload["context_graded"] is True
+    assert payload["rows"] == [{"title": "Udział w konferencjach"}]
+    assert formatted["metadata"]["context_graded"] is True
+
+
+def test_a_trusted_primary_result_says_so_in_the_payload() -> None:
+    formatted = RAG._format_result(
+        {
+            "context": [{"title": "Analiza matematyczna"}],
+            "generated_cypher": "MATCH (n) RETURN n.title",
+            "guardrail_decision": "generate_cypher",
+            "retrieval_strategy": "primary",
+            "context_graded": False,
+        }
+    )
+
+    payload = json.loads(formatted["answer"])
+    assert payload["retrieval_strategy"] == "primary"
+    assert payload["context_graded"] is False
+
+
+def test_the_answer_prompt_explains_both_kinds_of_row() -> None:
+    prompt = get_config().prompts.final_answer
+
+    assert "retrieval_strategy" in prompt
+    assert '"primary"' in prompt
+    assert '"label_agnostic_phrases"' in prompt
+    assert "CANDIDATES" in prompt
