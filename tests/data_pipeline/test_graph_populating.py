@@ -106,3 +106,46 @@ def test_populate_graph_avoids_colliding_with_a_generated_source_variable(fake_p
     assert "MERGE (prov_source_:Source {source_id: $source_id})" in query
     assert "MERGE (prov_source)-[:FROM_SOURCE]->(prov_source_)" in query
     assert params == {"source_id": "file://docs/a.pdf#page=1"}
+
+
+def test_delete_sources_for_documents_confirms_every_completed_id():
+    class FakeGraphDb:
+        def __init__(self):
+            self.calls = []
+
+        def query(self, query, params=None):
+            self.calls.append((query, params))
+            # b.pdf contributed nothing unique, so it leaves no orphans behind —
+            # that is a completed deletion, not a failed one.
+            if params["doc_source_id"] == "file://docs/a.pdf":
+                return [{"orphans_removed": 3}]
+            return [{"orphans_removed": 0}]
+
+    pop = graph_populating.GraphPopulator.__new__(graph_populating.GraphPopulator)
+    pop.graph_db = FakeGraphDb()
+
+    deleted = pop.delete_sources_for_documents(
+        ["file://docs/a.pdf", "file://docs/b.pdf", "file://docs/a.pdf"]
+    )
+
+    assert deleted == {"file://docs/a.pdf", "file://docs/b.pdf"}
+    assert len(pop.graph_db.calls) == 2
+    assert pop.graph_db.calls[0][1] == {
+        "doc_source_id": "file://docs/a.pdf",
+        "doc_prefix": "file://docs/a.pdf#",
+    }
+
+
+def test_delete_sources_for_documents_skips_ids_whose_query_failed():
+    class FailingGraphDb:
+        def query(self, query, params=None):
+            if params["doc_source_id"] == "file://docs/b.pdf":
+                raise RuntimeError("neo4j down")
+            return [{"orphans_removed": 1}]
+
+    pop = graph_populating.GraphPopulator.__new__(graph_populating.GraphPopulator)
+    pop.graph_db = FailingGraphDb()
+
+    deleted = pop.delete_sources_for_documents(["file://docs/a.pdf", "file://docs/b.pdf"])
+
+    assert deleted == {"file://docs/a.pdf"}

@@ -164,6 +164,43 @@ class GraphPopulator:
 
         return bool(result[0].get("claimed"))
 
+    def delete_sources_for_documents(self, document_source_ids: list[str]) -> set[str]:
+        """Delete Source nodes for given document ids and clean now-orphaned nodes."""
+        logger = _get_logger()
+        deleted: set[str] = set()
+
+        for document_source_id in sorted({sid for sid in document_source_ids if sid}):
+            try:
+                rows = self.graph_db.query(
+                    """
+                    MATCH (s:Source)
+                    WHERE s.source_id = $doc_source_id
+                       OR s.source_id STARTS WITH $doc_prefix
+                    OPTIONAL MATCH (n)-[:FROM_SOURCE]->(s)
+                    WITH collect(DISTINCT s) AS sources, collect(DISTINCT n) AS touched
+                    FOREACH (s IN sources | DETACH DELETE s)
+                    WITH touched
+                    UNWIND touched AS n
+                    WITH DISTINCT n
+                    WHERE NOT EXISTS { MATCH (n)-[:FROM_SOURCE]->(:Source) }
+                    DETACH DELETE n
+                    RETURN count(n) AS orphans_removed
+                    """,
+                    params={
+                        "doc_source_id": document_source_id,
+                        "doc_prefix": f"{document_source_id}#",
+                    },
+                )
+            except Exception as exc:
+                logger.error("Deletion failed for %s: %s", document_source_id, exc)
+                continue
+
+            orphans = rows[0].get("orphans_removed", 0) if rows else 0
+            logger.info("Deleted %s; removed %s orphaned nodes", document_source_id, orphans)
+            deleted.add(document_source_id)
+
+        return deleted
+
     def mark_document_processed(self, doc_hash: str) -> None:
         """Mark a previously claimed document hash as processed."""
         if not doc_hash:

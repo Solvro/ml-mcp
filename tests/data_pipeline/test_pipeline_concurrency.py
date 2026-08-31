@@ -345,6 +345,18 @@ def test_pipeline_filters_extraction_to_changed_paths(monkeypatch):
     )
     monkeypatch.setattr(pipeline_module, "reflect_on_schema", lambda: "schema-summary")
 
+    deletion_calls: list[list[str]] = []
+
+    def delete_stub(self, document_source_ids):
+        deletion_calls.append(list(document_source_ids))
+        return set(document_source_ids)
+
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "delete_sources_for_documents",
+        delete_stub,
+    )
+
     claim_stub = SubmitStub(lambda _doc_hash: ImmediateFuture(True))
     generate_stub = SubmitStub(
         lambda _page_content, _schema_context: ImmediateFuture("MERGE (n:Entity {title: 'x'})")
@@ -366,6 +378,8 @@ def test_pipeline_filters_extraction_to_changed_paths(monkeypatch):
     assert len(generate_stub.calls) == 1
     assert len(populate_stub.calls) == 1
     assert outcome.processed == {"file://docs/a.pdf"}
+    assert deletion_calls == [["file://docs/removed.pdf"]]
+    assert outcome.deleted == {"file://docs/removed.pdf"}
 
 
 def test_pipeline_returns_documents_confirmed_in_graph(monkeypatch):

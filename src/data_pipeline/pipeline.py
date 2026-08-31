@@ -21,7 +21,7 @@ from src.data_pipeline.graph_dump import (
     host_dump_path,
     import_graph_from_cypher_dump,
 )
-from src.data_pipeline.staging import relative_path_from_source_id
+from src.data_pipeline.staging import relative_path_from_source_id, source_id_for
 
 
 class PipelineOutcome(NamedTuple):
@@ -29,8 +29,8 @@ class PipelineOutcome(NamedTuple):
 
     Attributes:
         processed: Document-level source ids confirmed to be in the graph.
-        deleted: Document-level source ids whose graph content was confirmed
-            removed. Empty until the deletion stage exists.
+        deleted: Document-level source ids whose Source nodes were detached and
+            whose orphaned entities were removed.
     """
 
     processed: set[str]
@@ -121,6 +121,30 @@ def _safe_reflect_schema(phase: str, logger) -> str:
     return schema_summary
 
 
+def _normalize_deleted_source_ids(deleted: list[str] | None) -> set[str]:
+    if not deleted:
+        return set()
+    out: set[str] = set()
+    for path in deleted:
+        rel = str(path).strip().replace("\\", "/")
+        if rel:
+            out.add(source_id_for(rel))
+    return out
+
+
+def _prune_source_hashes_for_deleted(
+    source_hashes: dict[str, str],
+    deleted_document_source_ids: set[str],
+) -> dict[str, str]:
+    if not deleted_document_source_ids:
+        return dict(source_hashes)
+    return {
+        sid: h
+        for sid, h in source_hashes.items()
+        if _document_id(sid) not in deleted_document_source_ids
+    }
+
+
 @flow(log_prints=True)
 def data_pipeline_flow(
     changed: list[str] | None = None,
@@ -145,9 +169,8 @@ def data_pipeline_flow(
         (``file://relative/path``, no page fragment) confirmed to be in the
         graph; a document whose extraction produced nothing, or any of whose
         pages failed, is omitted so the caller retries it. ``deleted`` holds
-        ids whose graph content was confirmed removed — always empty until
-        the deletion stage lands, so an unconfirmed deletion is reported
-        again on the next run.
+        ids whose removal completed; an id missing from it keeps its manifest
+        entry, so the deletion is reported again on the next run.
     """
     load_dotenv()
     logger = get_run_logger()
@@ -159,6 +182,14 @@ def data_pipeline_flow(
         deleted_count,
     )
     populator = GraphPopulator()
+
+    requested_deleted_source_ids = _normalize_deleted_source_ids(deleted)
+    confirmed_deleted_source_ids: set[str] = set()
+
+    if requested_deleted_source_ids:
+        confirmed_deleted_source_ids = populator.delete_sources_for_documents(
+            sorted(requested_deleted_source_ids)
+        )
 
     # A dump is a bootstrap for a fresh database only; once the graph has any
     # data, scheduled runs must keep extracting instead of restoring.
@@ -172,6 +203,12 @@ def data_pipeline_flow(
             logger.warning("Dump restore failed (%s); continuing with extraction", exc)
 
     acquired = acquire_data()
+
+    last_source_hashes = populator.get_latest_pipeline_source_hashes()
+    pruned_last_source_hashes = _prune_source_hashes_for_deleted(
+        last_source_hashes,
+        requested_deleted_source_ids,
+    )
     if changed is not None:
         filtered_acquired, missing_paths = _filter_acquired_by_changed(acquired, changed)
 
@@ -180,7 +217,11 @@ def data_pipeline_flow(
 
         if not filtered_acquired:
             logger.info("Trigger reported no matching changed documents; skipping extraction")
-            return PipelineOutcome(processed=set(), deleted=set())
+            if requested_deleted_source_ids:
+                populator.record_pipeline_run(pruned_last_source_hashes, mode="incremental")
+                ensure_host_dump_dir()
+                export_graph_to_cypher()
+            return PipelineOutcome(processed=set(), deleted=confirmed_deleted_source_ids)
 
         logger.info(
             "Changed-path filter selected %d/%d acquired documents",
@@ -192,19 +233,22 @@ def data_pipeline_flow(
     source_pages = _normalize_source_pages(extracted)
     if not source_pages:
         logger.warning("No non-empty pages found; stopping pipeline early")
-        return PipelineOutcome(processed=set(), deleted=set())
+        return PipelineOutcome(processed=set(), deleted=confirmed_deleted_source_ids)
 
     all_documents = {_document_id(sid) for sid, _ in source_pages}
-    last_source_hashes = populator.get_latest_pipeline_source_hashes()
     full_source_hashes = {sid: _compute_page_hash(text) for sid, text in source_pages}
     work_items: list[tuple[str, str]] = [
         (sid, text)
         for sid, text in source_pages
-        if last_source_hashes.get(sid) != full_source_hashes[sid]
+        if pruned_last_source_hashes.get(sid) != full_source_hashes[sid]
     ]
     if not work_items:
         logger.info("No new or changed source files since last pipeline run")
-        return PipelineOutcome(processed=all_documents, deleted=set())
+        if requested_deleted_source_ids:
+            populator.record_pipeline_run(pruned_last_source_hashes, mode="incremental")
+            ensure_host_dump_dir()
+            export_graph_to_cypher()
+        return PipelineOutcome(processed=all_documents, deleted=confirmed_deleted_source_ids)
 
     stats = {
         "total_pages": len(work_items),
@@ -334,7 +378,7 @@ def data_pipeline_flow(
             mode = "incremental" if len(work_items) < len(source_pages) else "full"
         merged_source_hashes = {
             sid: page_hash
-            for sid, page_hash in last_source_hashes.items()
+            for sid, page_hash in pruned_last_source_hashes.items()
             if _document_id(sid) not in all_documents
         }
         merged_source_hashes.update(full_source_hashes)
@@ -350,7 +394,7 @@ def data_pipeline_flow(
         len(processed_documents),
         len(all_documents),
     )
-    return PipelineOutcome(processed=processed_documents, deleted=set())
+    return PipelineOutcome(processed=processed_documents, deleted=confirmed_deleted_source_ids)
 
 
 if __name__ == "__main__":
