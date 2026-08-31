@@ -101,6 +101,7 @@ async def knowledge_graph_tool(
 
     metadata = result.get("metadata", {})
     print(f"[Guardrail decision] {metadata.get('guardrail_decision')}")
+    print(f"[Retrieval strategy] {metadata.get('retrieval_strategy')}")
     print(f"[Generated Cypher]\n{metadata.get('cypher_query')}")
     print(f"[Graph context]\n{metadata.get('context')}")
 

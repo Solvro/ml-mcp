@@ -154,8 +154,10 @@ ml-mcp/
 │   ├── mcp_server/
 │   │   ├── server.py            # FastMCP app, tool registration, startup
 │   │   └── tools/knowledge_graph/
-│   │       ├── rag.py           # LangGraph state machine (guardrails → cypher → retrieve)
+│   │       ├── rag.py           # LangGraph state machine (guardrails → cypher → retrieve → grade)
 │   │       ├── state.py         # GraphState TypedDict definition
+│   │       ├── cypher_guardrails.py # Read-only validation, LIMIT enforcement
+│   │       ├── question_analysis.py # Polish question-literal detection, search phrases
 │   │       └── graph_visualizer.py  # Mermaid diagram generator
 │   ├── topwr_api/
 │   │   ├── server.py            # FastAPI app, endpoints, MCP client integration
@@ -188,6 +190,11 @@ ml-mcp/
 │   ├── test_rag_retrieve_path.py               # retrieve(): blocks mutations, enforces LIMIT
 │   ├── test_rag_generation_guardrails_path.py  # generate_cypher / guardrails_system nodes
 │   ├── test_rag_graph_end_to_end.py            # Full graph run, both branches, sync + async
+│   ├── test_rag_empty_retrieval_escalation.py  # Empty-result retries and the abstention answer
+│   ├── test_rag_fulltext_fallback.py           # Scored index-backed rescue, procedure allowlist
+│   ├── test_rag_context_grader.py              # Grading rows before they can become an answer
+│   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
+│   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
 │   └── data_pipeline/                          # Concurrency, acquisition, OCR, extraction quality
 ├── docker/
@@ -430,8 +437,90 @@ duplicate. The pass is idempotent — a second run is a no-op.
   retain their original case.
 - Labels, relationship types, property keys, and Cypher clauses are never normalized; they must
   be copied exactly from the live Neo4j schema.
-- Read-only guardrails remain authoritative after normalization. In particular, `CALL` is still
-  blocked unless a separately reviewed procedure allowlist is introduced.
+- Read-only guardrails remain authoritative after normalization. `CALL` is blocked for generated
+  Cypher; the only reviewed exception is the full-text lookup described below, which passes its
+  one procedure through `validate_read_only(..., allowed_procedures=...)`.
+
+### Text2Cypher Determinism and Empty-Result Escalation
+
+Both pipeline models run at `temperature: 0` (`llm.fast_model`, `llm.accurate_model`), so the
+same question routes and generates the same Cypher on every run. Do not reintroduce sampling:
+`tests/test_llm_determinism_config.py` fails if either temperature moves off zero.
+
+A generated query that executes but matches nothing is retried rather than reported as missing
+data, because the two most common Text2Cypher mistakes both surface as zero rows. `retrieve()`
+escalates in `src/mcp_server/tools/knowledge_graph/rag.py`:
+
+1. **primary** — the model's query, after diacritic folding and `toLower` enforcement.
+2. **repaired_literals** — fuzzy predicates whose literal is copied question text (detected by
+   `question_analysis.is_question_like_literal`) are replaced with `true`, keeping the traversal
+   the model wrote but dropping a filter that could never match a stored title.
+3. **label_agnostic_phrases** — `FALLBACK_SEARCH_CYPHER` queries the `entity_search` full-text
+   index for noun phrases extracted from the question
+   (`question_analysis.extract_search_phrases` → `build_lucene_query`), which recovers an answer
+   stored under a label the model did not pick. Longer phrases are boosted, and hits scoring
+   below `rag.fallback_min_score` never leave the database. Gated by
+   `rag.enable_fallback_search`.
+
+The chosen step is reported as `metadata.retrieval_strategy` and logged by the MCP server.
+Escalation only follows a *successful* execution — a blocked or failing query is still reported
+as blocked or failed, never retried.
+
+Phrase extraction never starts or ends a phrase with a Polish question word or function word, so
+`"Co obejmuje udział w konferencjach?"` yields `"udzial w konferencjach"` (the stored title) and
+never the truncated `"udzial w"`.
+
+### The `entity_search` Full-Text Index
+
+`RAG.ensure_fulltext_index` creates it at startup over `title` and `context`. A full-text index
+must name its labels, so it is built from the labels the database currently holds — minus
+`ProcessedDocument` and `PipelineRun` — and dropped and recreated when that set changes. An empty
+fallback result re-checks the index once before being believed, so a label that ingestion added
+since startup does not stay invisible until the next deploy.
+
+Reading it needs `CALL`, which `validate_read_only` blocks. Rather than loosening the guardrail,
+it takes an explicit `allowed_procedures` allowlist: only the internally authored fallback passes
+one (`ALLOWED_RETRIEVAL_PROCEDURES`), and generated Cypher is still validated with an empty set,
+so the model cannot call anything. `CALL` subqueries are rejected outright — they name no
+procedure to vet.
+
+**Known limitation:** the index uses Lucene's standard analyzer; no Polish analyzer ships with
+this Neo4j build, so inflected forms do not match (`"semestrze zimowym"` does not find
+`"Semestr zimowy"`). The CONTAINS scan this replaced had the same gap, so it is not a
+regression, but it caps fallback recall on inflected questions.
+
+### Abstention Is a Retrieval Decision
+
+Whether to answer is settled before an answer is written, not by the answering model:
+
+1. **Score threshold.** Fallback hits below `rag.fallback_min_score` are filtered in the
+   database. Lucene scores are corpus-relative, so this is a junk floor, not a precision
+   guarantee.
+2. **`grade_context` node** (between `retrieve` and the end of the graph). One cheap fast-model
+   call is shown the question and the retrieved rows and returns which of them actually answer
+   it. Rejecting all of them sets `retrieval_strategy = graded_out` and empties the context, so
+   the caller gets `NO_GRAPH_DATA_MESSAGE` without the answering model being consulted.
+   Rows from a `primary` query skip grading — that query expressed the question's own structure.
+   The grader **fails open**: a failed call or an unreadable reply keeps the rows, because a
+   provider outage must not be indistinguishable from an empty graph.
+3. **The answer payload carries its provenance.** `RAG._format_result` returns
+   `{"retrieval_strategy", "context_graded", "rows"}`, and `prompts.final_answer` treats
+   `primary` rows as the answer and rescue rows as candidates.
+
+There is no "answer from general knowledge" escape hatch anywhere in `prompts.final_answer`. A
+confidently wrong date in a student-facing chatbot is worse than an admission of ignorance —
+keep every layer of this in place.
+
+Two distinct sentinels live in `src/config/messages.py`:
+- `OFF_TOPIC_MESSAGE` — the guardrail routed the question away from retrieval.
+- `NO_GRAPH_DATA_MESSAGE` — retrieval ran and found nothing worth answering with.
+
+### Guardrail Breadth
+
+`prompts.guardrails` is deliberately permissive and defaults to `generate` when in doubt: a
+wrongly rejected question costs the user an answer, while a wrongly accepted one just produces an
+empty retrieval that the escalation and abstention paths already handle. Malformed guardrail
+output is a separate matter and still fails closed to `end` (`_parse_guardrail_output`).
 
 ### Concurrent Pipeline Idempotency
 The data pipeline processes pages in batches with configurable concurrency and hash-based idempotency:

@@ -5,6 +5,7 @@ import pytest
 from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableLambda
 
+from src.config.messages import NO_GRAPH_DATA_MESSAGE, OFF_TOPIC_MESSAGE
 from src.mcp_server.tools.knowledge_graph.graph_visualizer import GraphVisualizer
 from src.mcp_server.tools.knowledge_graph.rag import RAG
 
@@ -12,7 +13,7 @@ QUESTION = "test question"
 SCHEMA_TEXT = "Node properties: X\nRelationship properties: Y\nThe relationships: Z"
 SAFE_CYPHER = "MATCH (n) RETURN n"
 EXECUTED_CYPHER = f"{SAFE_CYPHER} LIMIT 5"
-EMPTY_ANSWER = "W bazie danych nie ma informacji"
+EMPTY_ANSWER = OFF_TOPIC_MESSAGE
 TIMEOUT_MESSAGE = "exceeded the maximum allowed wait time"
 
 
@@ -62,6 +63,7 @@ def _build_rag_graph_stub(
     rag = object.__new__(RAG)
     rag.enable_debug = False
     rag.max_results = max_results
+    rag.enable_fallback_search = False
     rag.graph_timeout_sec = graph_timeout_sec
     rag._cached_schema = None
     rag.visualizer = GraphVisualizer()
@@ -160,6 +162,34 @@ def test_async_graph_run_end_branch_skips_retrieve() -> None:
     assert result["metadata"]["cypher_query"] is None
     assert stub.database.queries == []
     assert stub.cypher_prompts == []
+
+
+def test_graph_run_reports_no_data_when_retrieval_finds_nothing() -> None:
+    """An empty retrieval must reach the user as an explicit abstention, not as "[]"."""
+    stub = _build_rag_graph_stub(
+        guardrails_reply='{"decision":"generate"}',
+        cypher_reply=SAFE_CYPHER,
+        db_rows=[],
+    )
+
+    result = stub.rag.invoke(QUESTION)
+
+    assert result["answer"] == NO_GRAPH_DATA_MESSAGE
+    assert result["metadata"]["retrieval_strategy"] == "empty"
+    assert result["metadata"]["cypher_query"] == EXECUTED_CYPHER
+    assert result["metadata"]["context"] == []
+
+
+def test_graph_run_reports_the_strategy_that_produced_the_context() -> None:
+    stub = _build_rag_graph_stub(
+        guardrails_reply='{"decision":"generate"}',
+        cypher_reply=SAFE_CYPHER,
+        db_rows=[{"value": 1}],
+    )
+
+    result = stub.rag.invoke(QUESTION)
+
+    assert result["metadata"]["retrieval_strategy"] == "primary"
 
 
 def test_async_graph_run_propagates_session_id_to_every_node() -> None:

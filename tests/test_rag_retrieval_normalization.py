@@ -7,6 +7,7 @@ def _retrieval_stub() -> RAG:
     rag = object.__new__(RAG)
     rag.max_results = 5
     rag.enable_debug = False
+    rag.enable_fallback_search = False
     rag.database = MagicMock()
     return rag
 
@@ -46,6 +47,7 @@ def test_retrieve_normalizes_only_string_values_before_database_query() -> None:
     assert result == {
         "context": [{"title": "Wydzial Informatyki"}],
         "generated_cypher": executed_query,
+        "retrieval_strategy": "primary",
     }
 
 
