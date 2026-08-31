@@ -269,6 +269,19 @@ class GraphPopulator:
             params={"run_id": str(uuid.uuid4())},
         )
 
+    def link_processed_document_to_source(self, doc_hash: str, source_id: str) -> None:
+        """Attach processed-document hash bookkeeping to a source id."""
+        if not doc_hash or not source_id:
+            return
+        self.graph_db.query(
+            """
+            MATCH (doc:ProcessedDocument {hash: $doc_hash})
+            MERGE (source:Source {source_id: $source_id})
+            MERGE (doc)-[:FROM_SOURCE]->(source)
+            """,
+            params={"doc_hash": doc_hash, "source_id": source_id},
+        )
+
 
 @task
 def claim_document_for_processing(doc_hash: str) -> bool:
@@ -306,3 +319,8 @@ def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -
     except Exception as exc:
         pop.mark_document_failed(doc_hash, str(exc))
         raise
+    finally:
+        try:
+            pop.link_processed_document_to_source(doc_hash, source_id)
+        except Exception as link_exc:
+            logger.warning("Failed to link hash %s to source %s: %s", doc_hash, source_id, link_exc)

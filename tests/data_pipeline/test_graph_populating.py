@@ -9,6 +9,7 @@ class FakePopulator:
         self.processed: list[str] = []
         self.failed: list[tuple[str, str]] = []
         self.fail_on: str | None = None
+        self.linked: list[tuple[str, str]] = []
 
     def execute_cypher(self, query: str, params: dict[str, str] | None = None) -> None:
         if self.fail_on and self.fail_on in query:
@@ -20,6 +21,9 @@ class FakePopulator:
 
     def mark_document_failed(self, doc_hash: str, error_message: str) -> None:
         self.failed.append((doc_hash, error_message))
+
+    def link_processed_document_to_source(self, doc_hash: str, source_id: str) -> None:
+        self.linked.append((doc_hash, source_id))
 
 
 @pytest.fixture
@@ -51,6 +55,7 @@ def test_populate_graph_runs_pipe_joined_clauses_as_one_query(fake_populator):
     ]
     assert fake_populator.processed == ["hash1"]
     assert fake_populator.failed == []
+    assert fake_populator.linked == [("hash1", "file://docs/a.pdf#page=1")]
 
 
 def test_populate_graph_appends_provenance_to_single_statement(fake_populator):
@@ -79,6 +84,7 @@ def test_populate_graph_failure_marks_failed_and_raises(fake_populator):
     assert fake_populator.executed == []
     assert fake_populator.processed == []
     assert fake_populator.failed and fake_populator.failed[0][0] == "hash3"
+    assert fake_populator.linked == [("hash3", "file://docs/a.pdf#page=1")]
 
 
 def test_populate_graph_without_merge_vars_runs_without_provenance(fake_populator, caplog):

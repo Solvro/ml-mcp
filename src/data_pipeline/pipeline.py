@@ -273,6 +273,15 @@ def data_pipeline_flow(
                     len(work_items),
                     page_hash,
                 )
+                try:
+                    populator.link_processed_document_to_source(page_hash, source_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to link skipped hash %s to source %s: %s",
+                        page_hash,
+                        source_id,
+                        exc,
+                    )
                 continue
 
             stats["claimed_pages"] += 1
