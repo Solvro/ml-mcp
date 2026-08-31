@@ -51,6 +51,179 @@ observability:
     secret_key: ${LANGFUSE_SECRET_KEY}
     public_key: ${LANGFUSE_PUBLIC_KEY}
 
+graph_schema:
+  # Closed label set for ingestion. The extraction model may not invent labels: the same concept
+  # arriving as StudyProgram on one page and Program on the next splits one entity into two nodes
+  # that no single query can find. Anything outside this list is mapped through label_aliases, and
+  # whatever is still unknown becomes the fallback_label.
+  fallback_label: "Topic"
+  node_labels:
+    - "University"
+    - "Faculty"
+    - "Department"
+    - "Person"
+    - "Professor"
+    - "Committee"
+    - "StudentOrganization"
+    - "StudyProgram"
+    - "Specialization"
+    - "Course"
+    - "LearningOutcome"
+    - "Building"
+    - "Room"
+    - "AcademicYear"
+    - "Semester"
+    - "CalendarEvent"
+    - "DayOff"
+    - "Deadline"
+    - "ExamSession"
+    - "Competency"
+    - "CompetencyCategory"
+    - "Subcompetency"
+    - "Criterion"
+    - "CriterionCategory"
+    - "Guideline"
+    - "Document"
+    - "Topic"
+
+  # Labels seen in the graph (or likely to be invented) and the canonical label they belong to.
+  # Matching is case-insensitive and ignores diacritics, so "wydzial" also resolves to Faculty.
+  label_aliases:
+    - invented: "Program"
+      canonical: "StudyProgram"
+    - invented: "Programme"
+      canonical: "StudyProgram"
+    - invented: "StudyProgramme"
+      canonical: "StudyProgram"
+    - invented: "FieldOfStudy"
+      canonical: "StudyProgram"
+    - invented: "Kierunek"
+      canonical: "StudyProgram"
+    - invented: "Wydzial"
+      canonical: "Faculty"
+    - invented: "Lecturer"
+      canonical: "Professor"
+    - invented: "Teacher"
+      canonical: "Professor"
+    - invented: "Instructor"
+      canonical: "Professor"
+    - invented: "Employee"
+      canonical: "Person"
+    - invented: "Staff"
+      canonical: "Person"
+    - invented: "Student"
+      canonical: "Person"
+    - invented: "Candidate"
+      canonical: "Person"
+    - invented: "Author"
+      canonical: "Person"
+    - invented: "Commission"
+      canonical: "Committee"
+    - invented: "Organization"
+      canonical: "StudentOrganization"
+    - invented: "Association"
+      canonical: "StudentOrganization"
+    - invented: "Subject"
+      canonical: "Course"
+    - invented: "Class"
+      canonical: "Course"
+    - invented: "Module"
+      canonical: "Course"
+    - invented: "Place"
+      canonical: "Building"
+    - invented: "Location"
+      canonical: "Building"
+    - invented: "AcademicSemester"
+      canonical: "Semester"
+    - invented: "Year"
+      canonical: "AcademicYear"
+    - invented: "Event"
+      canonical: "CalendarEvent"
+    - invented: "Date"
+      canonical: "CalendarEvent"
+    - invented: "Break"
+      canonical: "CalendarEvent"
+    - invented: "Holiday"
+      canonical: "DayOff"
+    - invented: "PublicHoliday"
+      canonical: "DayOff"
+    - invented: "FreeDay"
+      canonical: "DayOff"
+    - invented: "DzienWolny"
+      canonical: "DayOff"
+    - invented: "Session"
+      canonical: "ExamSession"
+    - invented: "ExaminationSession"
+      canonical: "ExamSession"
+    - invented: "Exam"
+      canonical: "ExamSession"
+    - invented: "Skill"
+      canonical: "Competency"
+    - invented: "Ability"
+      canonical: "Competency"
+    - invented: "CompetencyCriterionGroup"
+      canonical: "CompetencyCategory"
+    - invented: "CriterionGroup"
+      canonical: "CriterionCategory"
+    - invented: "CriterionItem"
+      canonical: "Criterion"
+    - invented: "Requirement"
+      canonical: "Criterion"
+    - invented: "Condition"
+      canonical: "Criterion"
+    - invented: "Recommendation"
+      canonical: "Guideline"
+    - invented: "Rule"
+      canonical: "Guideline"
+    - invented: "Regulation"
+      canonical: "Document"
+    - invented: "Policy"
+      canonical: "Document"
+    - invented: "Statute"
+      canonical: "Document"
+    - invented: "Research"
+      canonical: "Document"
+    - invented: "Publication"
+      canonical: "Document"
+    - invented: "Article"
+      canonical: "Document"
+
+  # Preferred relationship types. Unlike labels these are not rewritten, because a wrong
+  # relationship type is visible in the traversal while a wrong label silently hides the node.
+  relationship_types:
+    - "PART_OF"
+    - "BELONGS_TO"
+    - "OFFERED_BY"
+    - "RUNS"
+    - "MEMBER_OF"
+    - "CHAIRS"
+    - "SUPERVISES"
+    - "TEACHES"
+    - "EMPLOYED_BY"
+    - "PREREQUISITE_FOR"
+    - "INCLUDES_COURSE"
+    - "HAS_SPECIALIZATION"
+    - "HAS_LEARNING_OUTCOME"
+    - "LOCATED_IN"
+    - "HAS_ROOM"
+    - "TAKES_PLACE_IN"
+    - "HAS_SEMESTER"
+    - "STARTS_ON"
+    - "ENDS_ON"
+    - "OCCURS_ON"
+    - "HAS_DEADLINE"
+    - "HAS_EVENT"
+    - "HAS_DAY_OFF"
+    - "HAS_EXAM_SESSION"
+    - "HAS_CATEGORY"
+    - "HAS_SUBCOMPETENCY"
+    - "HAS_CRITERION"
+    - "REQUIRES"
+    - "RECOMMENDS"
+    - "CONSIDERS"
+    - "ASSESSES"
+    - "DEFINED_IN"
+
 database:
   name: "neo4j"
   uri: ${NEO4J_URI}
@@ -102,48 +275,98 @@ prompts:
 
   cypher_insert: |
     Extract knowledge from the provided context into Neo4j Cypher MERGE statements.
-    Invent node labels and relationship types that best represent the content.
-    Use the current graph schema to stay consistent with existing structure where appropriate.
     DO NOT include any additional text or explanations.
 
     CONTEXT: {context}
 
-    CURRENT GRAPH SCHEMA (use for consistency, extend freely):
+    CURRENT GRAPH SCHEMA (use for consistency; do not extend the label set):
     {schema_context}
 
-    STRICT RULES:
-    1. OUTPUT MUST:
+    ALLOWED NODE LABELS - use these and nothing else:
+    {node_labels}
+
+    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    {relationship_types}
+
+    1. COMPLETENESS - this is the most important rule:
+       - Extract EVERY discrete fact in the context. Do not summarise, condense, or sample.
+       - Every row of a list or table becomes its own node. A page with nine bullet points
+         produces nine nodes, not "the three important ones".
+       - Never judge whether an entry is significant enough to keep. An entry that carries only
+         a date and a generic description, such as "2 XI 2026 r. - dzien wolny od zajec", is
+         exactly as important as one with a proper name like "Swieto Niepodleglosci".
+       - Never merge several rows into one summarising node. Two dates are two nodes.
+       - Keep dates, numbers, room codes and identifiers verbatim in the title as the context
+         writes them.
+
+    2. LABELS AND CANONICAL NODES:
+       - Use ONLY labels from ALLOWED NODE LABELS above; never invent a new one. If nothing fits,
+         use Topic.
+       - One node per real entity. Before writing a node, check whether an earlier statement in
+         this same output already covers it and reuse that variable instead.
+       - Use the fullest form of the name as the title. Do not create a second node for an
+         abbreviation or a shortened variant of a name you already used: pick one title such as
+         "Cyberbezpieczenstwo (CBE)" and keep it for every mention.
+       - Put everything the context says about the entity into that one node's context property,
+         instead of emitting one node with dates and another without.
+
+    3. OUTPUT FORMAT:
        - Contain ONLY executable Cypher statements
        - Begin with "MERGE"
        - Separate multiple statements with PIPE character (|)
-       - Use UNIQUE variable names (node1, node2, etc. - never reused)
+       - Use UNIQUE variable names (node1, node2, etc. - never reused for a different entity)
        - LIMIT TOKENS TO 65536 TO AVOID ERRORS WITH DEEPSEEK API
 
-    2. FOR NODES:
+    4. FOR NODES:
        - MERGE each node with unique variable name
        - Include 'title' and 'context' properties
-       - Replace Polish characters (ą→a, ć→c, ę→e, ł→l, ń→n, ó→o, ś→s, ź→z, ż→z)
+       - Replace Polish characters (a->a, c->c, e->e, l->l, n->n, o->o, s->s, z->z)
        - Use ONLY ASCII characters
        - Escape single quotes in text with backslash (\')
 
-    3. FOR RELATIONSHIPS:
+    5. FOR RELATIONSHIPS:
        - MERGE between existing node variables
-       - Use descriptive relationship type names in UPPER_SNAKE_CASE
-       - Direction matters (A→B ≠ B→A)
-
-    4. VARIABLE NAMES:
-       - Must be UNIQUE across entire query
-       - Recommended pattern: (node1), (node2), (person1), (dept1), etc.
-       - NEVER reuse variables - this causes errors
+       - Use UPPER_SNAKE_CASE; prefer a type from PREFERRED RELATIONSHIP TYPES
+       - Direction matters (A->B is not B->A)
 
     EXAMPLE OUTPUT:
     MERGE (node1:Person {{title: 'John Smith',
     context: 'Professor at UW'}})|MERGE (node2:Department
     {{title: 'Computer Science', context: 'CS department'}})|MERGE
-    (node1)-[:WORKS_IN]->(node2)
+    (node1)-[:BELONGS_TO]->(node2)
 
     OUTPUT MUST BE EXACTLY IN THIS FORMAT:
     MERGE (...) [|MERGE (...)]* [|MERGE (...)-[:...]->(...)]*
+    NO OTHER TEXT OR CHARACTERS ALLOWED!
+
+  cypher_insert_missing_rows: |
+    An earlier extraction pass over this page missed the rows below. Extract them now, using the
+    same rules. DO NOT include any additional text or explanations.
+
+    ROWS THAT WERE MISSED:
+    {rows}
+
+    SURROUNDING CONTEXT (for wording and relationships only - do not re-extract it):
+    {context}
+
+    ALLOWED NODE LABELS - use these and nothing else:
+    {node_labels}
+
+    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    {relationship_types}
+
+    RULES:
+    - Produce one node per missed row. Every row above must appear in the output.
+    - A row that carries only a date and a generic description is still a row; extract it exactly
+      like one that carries a proper name.
+    - Include 'title' and 'context' properties; keep dates and numbers verbatim in the title.
+    - Replace Polish characters and use ONLY ASCII characters
+    - Escape single quotes in text with backslash (')
+    - Begin with "MERGE", separate statements with PIPE character (|), use UNIQUE variable names
+      that cannot clash with earlier ones: name them extra1, extra2, and so on.
+
+    OUTPUT MUST BE EXACTLY IN THIS FORMAT:
+    MERGE (...) [|MERGE (...)]*
     NO OTHER TEXT OR CHARACTERS ALLOWED!
 
   schema_reflection: |

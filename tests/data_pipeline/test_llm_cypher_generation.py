@@ -16,6 +16,9 @@ def test_generated_write_literals_are_diacritic_folded(monkeypatch) -> None:
 
     result = cypher_module.generate_cypher_queries.fn("source text")
 
-    assert result == (
-        "MERGE (n:Faculty {title: 'Wydzial Lacznosci', context: 'Znajduje sie we Wroclawiu'})"
-    )
+    # Since issue #53 the node also merges on a canonical key rather than on title + context.
+    assert result.startswith("MERGE (n:Faculty {key: 'wydzial lacznosci'})")
+    assert "n.title = 'Wydzial Lacznosci'" in result
+    assert "n.context = 'Znajduje sie we Wroclawiu'" in result
+    assert "ł" not in result
+    assert "ę" not in result

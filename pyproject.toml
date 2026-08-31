@@ -32,6 +32,7 @@ dependencies = [
 [project.scripts]
 dump-graph = "src.data_pipeline.cli:dump_graph_main"
 restore-graph = "src.data_pipeline.cli:restore_graph_main"
+dedup-graph = "src.data_pipeline.cli:dedup_graph_main"
 prefect_pipeline = "src.data_pipeline.pipeline:data_pipeline_flow"
 prefect-refresh = "src.data_pipeline.flows.source_refresh:serve_refresh"
 server = "src.mcp_server.server:main"
