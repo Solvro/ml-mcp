@@ -25,7 +25,11 @@ READ_ONLY_START_RE = re.compile(
 # Every procedure a query calls by name. A CALL is only permitted when the caller passes that
 # procedure in allowed_procedures, so generated Cypher - which passes none - still cannot call
 # anything at all.
-PROCEDURE_CALL_RE = re.compile(r"\bCALL\s+(?P<procedure>[A-Za-z_][\w.]*)\s*\(", re.IGNORECASE)
+#
+# The argument list is deliberately not part of the pattern: Cypher lets a no-argument procedure
+# be called without parentheses, so requiring them meant `CALL db.labels YIELD label` captured no
+# name, left the allowlist with nothing to vet, and passed.
+PROCEDURE_CALL_RE = re.compile(r"\bCALL\s+(?P<procedure>[A-Za-z_][\w.]*)", re.IGNORECASE)
 # A CALL subquery names no procedure, so the allowlist has nothing to vet.
 CALL_SUBQUERY_RE = re.compile(r"\bCALL\s*\{", re.IGNORECASE)
 STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
