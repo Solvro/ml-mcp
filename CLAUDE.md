@@ -84,6 +84,9 @@ DATA_PIPELINE_CLAIM_STALE_MINUTES=30
 
 DATA_PIPELINE_STAGING_DIR=data/staging
 
+# Cap on extra extraction passes for pages that dropped list/table rows (0 = unlimited)
+DATA_PIPELINE_MAX_MISSED_ROW_PASSES=0
+
 # Source acquisition / refresh (source_refresh.py)
 DATA_PIPELINE_SOURCE_URLS=          # comma-separated seed URLs (required for refresh)
 DATA_PIPELINE_CRAWL_DEPTH=1         # link hops from each seed (0 = seeds only)
@@ -163,11 +166,15 @@ ml-mcp/
 │   ├── data_pipeline/
 │   │   ├── pipeline.py          # Top-level Prefect @flow orchestrator
 │   │   ├── staging.py           # Staging dir, manifest, atomic writes, source_id mapping
+│   │   ├── completeness.py      # List/table row coverage check for extracted pages
+│   │   ├── label_vocabulary.py  # Closed node-label set and the rewrite that enforces it
+│   │   ├── canonical_nodes.py   # Canonical merge keys (one node per real entity)
 │   │   └── flows/
 │   │       ├── source_refresh.py        # Scheduled discovery + fetch of source docs (web connector)
 │   │       ├── data_acquisition.py      # Staging dir scan → document references
 │   │       ├── ocr_extraction.py        # PDF/TXT/DOCX → text (OCR fallback)
 │   │       ├── llm_cypher_generation.py # LLM → Cypher INSERT statements
+│   │       ├── graph_dedup.py           # Post-ingest relabel, key backfill, duplicate merge
 │   │       └── graph_populating.py      # Execute Cypher against Neo4j
 │   └── scripts/
 │       ├── api_smoke.py         # Manual smoke check against a live API (uv run api-smoke)
@@ -181,7 +188,8 @@ ml-mcp/
 │   ├── test_rag_retrieve_path.py               # retrieve(): blocks mutations, enforces LIMIT
 │   ├── test_rag_generation_guardrails_path.py  # generate_cypher / guardrails_system nodes
 │   ├── test_rag_graph_end_to_end.py            # Full graph run, both branches, sync + async
-│   └── data_pipeline/                          # Concurrency, acquisition, OCR extraction
+│   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
+│   └── data_pipeline/                          # Concurrency, acquisition, OCR, extraction quality
 ├── docker/
 │   ├── compose.stack.yml        # Full stack (neo4j, postgres, mcp, api, prefect)
 │   ├── compose.prefect.yml      # Data pipeline only
@@ -227,6 +235,7 @@ just prefect-up         # start Prefect stack
 just prefect-down       # stop Prefect stack
 just prefect-logs       # Prefect logs
 just pipeline           # run pipeline locally (uv run prefect_pipeline)
+uv run dedup-graph      # one-off full duplicate repair over an existing graph
 
 # Build
 just build              # uv build
@@ -332,6 +341,86 @@ enforced via prompt and string values are folded deterministically before execut
 - Polish characters normalized (ó→o, ę→e, etc.)
 - Token limit: 65536 to avoid DeepSeek API errors
 
+The pipe-separated shape is a hard contract: `graph_populating.populate_graph` splits on `|` and
+runs the parts as **one** query, because relationship clauses reference variables bound by
+earlier node clauses.
+
+### Ingestion Extraction Quality
+
+Three deterministic passes run over the model's output in `llm_cypher_generation`, in this
+order. Each exists because the prompt alone only gets it right most of the time, and "most of
+the time" is what silently corrupts a knowledge graph.
+
+**1. Completeness (`completeness.py`).** The prompt requires every list/table row to become its
+own node. Rows are also counted from the source page and checked against the generated values: a
+row counts as covered when most of its wording appears somewhere in the output, so rephrasing is
+fine but a row the model never read is caught. Missing rows go into one extra extraction pass
+(`prompts.cypher_insert_missing_rows`) whose statements are appended. The pass only runs when
+something is missing, and a failure there leaves the first pass output intact.
+
+That extra pass is a second model call for every page that lost rows.
+`DATA_PIPELINE_MAX_MISSED_ROW_PASSES` caps how many a run may spend (0, the default, means
+unlimited); past the cap the miss is still logged with the rows that stay absent. Every run
+reports `missed_row_passes` in its summary, so the cost is visible before anyone bounds it.
+
+This exists because the academic-calendar page kept the days off with a proper name and dropped
+`2 XI 2026 r. — dzień wolny od zajęć`. That page is the regression case in
+`tests/data_pipeline/test_completeness.py`.
+
+**2. Closed label set (`label_vocabulary.py`).** `graph_schema.node_labels` in
+`graph_config.yaml` is the only vocabulary; `graph_schema.label_aliases` maps known drift
+(`Program`→`StudyProgram`, `CriterionItem`→`Criterion`, `Holiday`→`DayOff`, …) and anything still
+unrecognised becomes `graph_schema.fallback_label`. Matching ignores case and diacritics. Only
+node labels are rewritten — relationship types and quoted values are left verbatim, since a
+wrong relationship type is visible in the traversal while a wrong label silently hides the node.
+
+**3. Canonical merge keys (`canonical_nodes.py`).** A node MERGE keys on `key`, a normalized form
+of the title (case folded, diacritics folded, punctuation dropped), never on `title + context`.
+
+A trailing bracket is dropped from the key **only when it abbreviates the title** — `(CBE)`,
+`(PWr)`, a faculty code like `(W4)`: one short alphanumeric token carrying capitals. Everything
+else is a qualifier that is the only thing telling two entities apart, and it stays:
+`Informatyka (studia I stopnia)` and `Informatyka (studia II stopnia)` are two nodes, as are
+`(stacjonarne)`/`(niestacjonarne)`, a Roman numeral, and a year. Fusing two entities into one is
+worse than splitting one into two — a split leaves both halves visible, a fusion loses an entity
+with nothing in the graph showing it happened. `looks_like_abbreviation` reads the title *before*
+case folding, since folding destroys the capitalisation the decision rests on. Properties are applied through
+`ON CREATE SET` / `ON MATCH SET`, so a second mention enriches the existing node: the fuller
+title wins and a new context is appended (capped at 2000 chars) rather than replacing what was
+there. Relationship MERGEs and combined patterns are left alone — only a lone node MERGE can take
+`ON CREATE` / `ON MATCH` without changing the pattern.
+
+`data_pipeline_flow` creates a `key` index per configured label before extracting, because MERGE
+on an unindexed property scans the whole label.
+
+### Post-Ingest Deduplication
+
+`graph_dedup.deduplicate_graph` repairs entities split across several nodes. It has two modes,
+sharing one query — a null key list means "everything" — so they cannot drift apart.
+
+**Per run (automatic).** `populate_graph` returns the canonical keys it wrote, the flow collects
+them across pages, and only those groups are examined. The cost tracks what changed rather than
+how large the graph has grown, and the `key` index carries the lookup. A run with no changed
+documents returns before the repair is reached, so it never touches the graph.
+
+**Full walk (explicit): `uv run dedup-graph`.** Run this once after upgrading an existing
+database. It additionally:
+
+1. moves nodes under an off-vocabulary label to their canonical label;
+2. backfills `key` on titled nodes that predate it — computed in Python, so a backfilled node
+   and a freshly extracted one can never disagree about the key for a title;
+3. merges every group sharing a label and a key across the whole graph.
+
+Steps 1 and 2 are deliberately absent from the per-run path: they repair nodes written before
+the rules existed, and no later run can reintroduce either, so paying for them every time buys
+nothing.
+
+Merging keeps the fullest title, every distinct context, and the relationships of the nodes it
+absorbs. `ProcessedDocument` and `PipelineRun` are excluded by label: relabelling
+`ProcessedDocument` would replay every page that has already been ingested. Merging needs APOC;
+without it the pass logs and changes nothing, because a half-finished merge is worse than a
+duplicate. The pass is idempotent — a second run is a no-op.
+
 ### Text2Cypher Search Normalization
 
 - The Cypher prompt receives both the original Polish question and a lowercase,
@@ -403,4 +492,4 @@ The system tries LLM providers in order: OpenAI → DeepSeek → Google Gemini. 
 
 9. **Prefect version mismatch** — `Dockerfile.prefect` pins `prefect==2.*` while `pyproject.toml` requires `prefect>=3.6.7`. Verify which version is actually running before modifying pipeline code. (Flagged as inconsistency.)
 
-10. **Graph schema** — 27 node types and 32 relation types defined in `graph_config.yaml`. The RAG pipeline fetches this schema dynamically from Neo4j and falls back to config if the DB is empty.
+10. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.

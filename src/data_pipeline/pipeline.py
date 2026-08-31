@@ -11,7 +11,11 @@ from src.data_pipeline.flows.graph_populating import (
     claim_document_for_processing,
     populate_graph,
 )
-from src.data_pipeline.flows.llm_cypher_generation import generate_cypher_queries
+from src.data_pipeline.flows.llm_cypher_generation import (
+    generate_cypher_queries,
+    missed_row_passes_used,
+    reset_missed_row_passes,
+)
 from src.data_pipeline.flows.ocr_extraction import ocr_extraction
 from src.data_pipeline.flows.schema_reflection import reflect_on_schema
 from src.data_pipeline.graph_dump import (
@@ -88,6 +92,7 @@ def data_pipeline_flow():
     load_dotenv()
     logger = get_run_logger()
     populator = GraphPopulator()
+    populator.ensure_entity_key_indexes()
 
     # A dump is a bootstrap for a fresh database only; once the graph has any
     # data, scheduled runs must keep extracting instead of restoring.
@@ -120,6 +125,8 @@ def data_pipeline_flow():
 
     pages = [text for _, text in work_items]
 
+    written_keys: set[str] = set()
+    reset_missed_row_passes()
     stats = {
         "total_pages": len(pages),
         "claimed_pages": 0,
@@ -130,6 +137,7 @@ def data_pipeline_flow():
         "claim_errors": 0,
         "schema_snapshot_chars": 0,
         "schema_final_chars": 0,
+        "missed_row_passes": 0,
     }
 
     max_concurrency = _get_max_concurrency()
@@ -196,7 +204,7 @@ def data_pipeline_flow():
 
         for page_index, page_hash, future in batch_futures:
             try:
-                future.result()
+                written_keys.update(future.result() or [])
                 stats["successful_pages"] += 1
             except Exception as exc:
                 stats["failed_pages"] += 1
@@ -208,6 +216,18 @@ def data_pipeline_flow():
                     exc,
                 )
 
+    stats["missed_row_passes"] = missed_row_passes_used()
+
+    # Repair before reflecting, so the summary describes the deduplicated graph. Only the keys
+    # this run wrote are examined, so the cost tracks what changed rather than the graph size;
+    # `uv run dedup-graph` runs the full repair for nodes written before these rules existed.
+    dedup_stats = populator.deduplicate_entities(sorted(written_keys))
+    logger.info(
+        "Deduplication over %d key(s) written this run: groups_merged=%d",
+        len(written_keys),
+        dedup_stats["groups_merged"],
+    )
+
     # Run one final reflection only after all futures have settled.
     final_schema = _safe_reflect_schema(phase="after_parallel_batches", logger=logger)
     stats["schema_final_chars"] = len(final_schema)
@@ -215,7 +235,7 @@ def data_pipeline_flow():
     logger.info(
         "Pipeline summary: total=%d claimed=%d submitted=%d success=%d "
         "skipped_duplicates=%d failed=%d claim_errors=%d "
-        "schema_snapshot_chars=%d schema_final_chars=%d",
+        "schema_snapshot_chars=%d schema_final_chars=%d missed_row_passes=%d",
         stats["total_pages"],
         stats["claimed_pages"],
         stats["submitted_pages"],
@@ -225,6 +245,7 @@ def data_pipeline_flow():
         stats["claim_errors"],
         stats["schema_snapshot_chars"],
         stats["schema_final_chars"],
+        stats["missed_row_passes"],
     )
 
     if stats["failed_pages"] > 0:
