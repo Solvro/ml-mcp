@@ -45,9 +45,16 @@ def acquire_data() -> list[dict[str, str]]:
         if not file_path.is_file():
             continue
 
+        if file_path.name == ".archive":
+            continue
+
         suffix = file_path.suffix.lower()
         if suffix not in SUPPORTED_EXTENSIONS:
             logger.debug("skipping unsupported extension: %s", file_path)
+            continue
+
+        relative_parts = file_path.relative_to(staging_dir).parts
+        if any(part.startswith(".") for part in relative_parts):
             continue
 
         documents.append(

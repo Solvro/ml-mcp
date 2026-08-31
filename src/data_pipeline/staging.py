@@ -21,6 +21,25 @@ _UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._/-]")
 # for the ".md"/".part" suffixes appended later.
 _MAX_SEGMENT_CHARS = 100
 
+ARCHIVE_DIRNAME = ".archive"
+
+
+def archive_path_for(staging_dir: Path, relative_path: str) -> Path:
+    """Target path in staging archive for a staging-relative file."""
+    return staging_dir / ARCHIVE_DIRNAME / Path(relative_path)
+
+
+def archive_staged_file(staging_dir: Path, relative_path: str) -> bool:
+    """Move staged file into .archive; return False when source is missing."""
+    source = staging_dir / Path(relative_path)
+    if not source.is_file():
+        return False
+
+    target = archive_path_for(staging_dir, relative_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(source, target)
+    return True
+
 
 def _shorten_segment(segment: str) -> str:
     """Truncate an overlong path segment, keeping determinism and extension."""

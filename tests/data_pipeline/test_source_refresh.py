@@ -1,4 +1,5 @@
 import time
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -27,6 +28,7 @@ HOME = "https://pwr.edu.pl/"
 SUBPAGE = "https://pwr.edu.pl/studenci"
 PDF = "https://pwr.edu.pl/files/regulamin.pdf"
 EXTERNAL = "https://inna-domena.pl/strona"
+REMOVED_PDF = "https://pwr.edu.pl/files/regulamin-2025.pdf"
 
 
 def test_discover_collects_seed_page_linked_pdf_and_subpage():
@@ -138,6 +140,42 @@ def routes_v1() -> dict[str, httpx.Response]:
         ),
         PDF: httpx.Response(200, content=b"%PDF-1.4 v1"),
     }
+
+
+@pytest.fixture
+def stale_document(staging_env):
+    """A staged document, pending retry, that discovery no longer returns.
+
+    Seeded as pending rather than processed so it lands in the retry set as
+    well as the deleted set — the case where the two collide. Tests reach it
+    through the returned handles, so the path mapping lives in one place.
+    """
+    relative = staging.url_to_relative_path(REMOVED_PDF, is_html=False)
+    staged = staging_env / relative
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b"%PDF-1.4 v2025")
+
+    source_id = staging.source_id_for(relative)
+    staging.save_manifest(
+        staging_env,
+        {
+            source_id: {
+                "origin": REMOVED_PDF,
+                "sha256": "abc",
+                "size": 10,
+                "status": staging.MANIFEST_STATUS_PENDING,
+                "attempt_count": 0,
+                "last_error": "",
+            }
+        },
+    )
+
+    return SimpleNamespace(
+        source_id=source_id,
+        relative=relative,
+        staged=staged,
+        archived=staging_env / staging.ARCHIVE_DIRNAME / relative,
+    )
 
 
 def test_refresh_stages_documents_and_writes_manifest(staging_env):
@@ -543,22 +581,7 @@ def test_refresh_triggers_downstream_for_pending(staging_env, monkeypatch):
     assert manifest[sid]["attempt_count"] >= 1
 
 
-def test_refresh_reports_deleted_when_document_disappears(staging_env, monkeypatch):
-    stale_sid = staging.source_id_for("pwr.edu.pl/files/stary.pdf")
-    staging.save_manifest(
-        staging_env,
-        {
-            stale_sid: {
-                "origin": "https://pwr.edu.pl/files/stary.pdf",
-                "sha256": "abc",
-                "size": 10,
-                "status": staging.MANIFEST_STATUS_PROCESSED,
-                "attempt_count": 0,
-                "last_error": "",
-            }
-        },
-    )
-
+def test_refresh_reports_deleted_when_document_disappears(staging_env, monkeypatch, stale_document):
     calls: list[dict[str, object]] = []
 
     def fake_pipeline(*, changed=None, deleted=None):
@@ -571,7 +594,7 @@ def test_refresh_reports_deleted_when_document_disappears(staging_env, monkeypat
     refresh_sources_flow(trigger_downstream=True, connector=connector)
 
     assert len(calls) == 1
-    assert calls[0]["deleted"] == ["pwr.edu.pl/files/stary.pdf"]
+    assert calls[0]["deleted"] == [stale_document.relative]
 
 
 def test_refresh_skips_deletion_when_discovery_is_empty(staging_env, monkeypatch):
@@ -605,3 +628,37 @@ def test_refresh_skips_deletion_when_discovery_is_empty(staging_env, monkeypatch
     refresh_sources_flow(trigger_downstream=True, connector=connector)
 
     assert calls == []
+
+
+def test_refresh_archives_and_forgets_confirmed_deletions(staging_env, monkeypatch, stale_document):
+    monkeypatch.setattr(
+        source_refresh,
+        "data_pipeline_flow",
+        lambda *, changed=None, deleted=None: PipelineOutcome(
+            processed=set(), deleted={stale_document.source_id}
+        ),
+    )
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    assert stale_document.source_id not in staging.load_manifest(staging_env)
+    assert not stale_document.staged.exists()
+    assert stale_document.archived.is_file()
+
+
+def test_refresh_keeps_deleted_entry_until_the_pipeline_confirms(
+    staging_env, monkeypatch, stale_document
+):
+    monkeypatch.setattr(
+        source_refresh,
+        "data_pipeline_flow",
+        lambda *, changed=None, deleted=None: PipelineOutcome(processed=set(), deleted=set()),
+    )
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    assert stale_document.source_id in staging.load_manifest(staging_env)
+    assert stale_document.staged.is_file()
+    assert not stale_document.archived.exists()

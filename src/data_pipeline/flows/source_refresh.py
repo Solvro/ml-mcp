@@ -19,6 +19,7 @@ from src.data_pipeline.pipeline import data_pipeline_flow
 from src.data_pipeline.staging import (
     MANIFEST_STATUS_PENDING,
     MANIFEST_STATUS_PROCESSED,
+    archive_staged_file,
     atomic_write_bytes,
     get_staging_dir,
     load_manifest,
@@ -504,8 +505,27 @@ def refresh_sources_flow(
         )
         outcome = data_pipeline_flow(changed=sorted(changed_paths), deleted=deleted_paths)
         processed_sources = outcome.processed if outcome else set()
+        confirmed_deleted_sources = outcome.deleted if outcome else set()
+        confirmed_deleted_paths = [
+            relative
+            for relative in (
+                relative_path_from_source_id(sid) for sid in sorted(confirmed_deleted_sources)
+            )
+            if relative
+        ]
+
+        for relative in confirmed_deleted_paths:
+            sid = source_id_for(relative)
+            moved = archive_staged_file(staging_dir, relative)
+            if moved:
+                logger.info("Archived deleted staged file: %s", relative)
+            else:
+                logger.info("Deleted source had no staged file to archive: %s", relative)
+            manifest.pop(sid, None)
 
         for sid in attempted_sids:
+            if sid in confirmed_deleted_sources:
+                continue
             current = normalize_manifest_entry(manifest.get(sid))
             if sid in processed_sources:
                 current["status"] = MANIFEST_STATUS_PROCESSED
@@ -517,7 +537,8 @@ def refresh_sources_flow(
                 current["last_error"] = "not confirmed by downstream pipeline"
             manifest[sid] = current
 
-        save_manifest(staging_dir, manifest)
+        if attempted_sids or confirmed_deleted_paths:
+            save_manifest(staging_dir, manifest)
 
     return stats
 
