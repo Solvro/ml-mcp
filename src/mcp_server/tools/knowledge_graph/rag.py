@@ -16,7 +16,11 @@ from langgraph.graph import END, START, StateGraph
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
 
 from ....config.config import get_config
-from ....config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
+from ....config.messages import (
+    GRAPH_PIPELINE_TIMEOUT_MESSAGE,
+    NO_GRAPH_DATA_MESSAGE,
+    OFF_TOPIC_MESSAGE,
+)
 from ....config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
 from ....text_normalization import (
     ensure_case_insensitive_fuzzy_matching,
@@ -31,6 +35,11 @@ from .cypher_guardrails import (
     validate_read_only,
 )
 from .graph_visualizer import GraphVisualizer
+from .question_analysis import (
+    build_lucene_query,
+    extract_search_phrases,
+    strip_question_literal_filters,
+)
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -49,6 +58,45 @@ GUARDRAIL_DECISION_ALIASES = {
     "end": "end",
 }
 
+# Label-agnostic rescue for a generated query that matched nothing. The graph carries many
+# overlapping labels for the same kind of thing, so an answer stored under a label the model did
+# not pick is still reachable by searching titles regardless of label.
+#
+# The search is Lucene-backed rather than a CONTAINS scan: an index-backed lookup does not walk
+# every node, and it returns a relevance score, which turns "is this row good enough" into a
+# number instead of a judgement call.
+FULLTEXT_INDEX_NAME = "entity_search"
+# The pipeline's own bookkeeping nodes carry no answer for a user question.
+FULLTEXT_EXCLUDED_LABELS = frozenset({"ProcessedDocument", "PipelineRun"})
+FULLTEXT_SEARCH_PROCEDURE = "db.index.fulltext.queryNodes"
+# The only procedure any retrieval query may call. Generated Cypher is validated with an
+# empty allowlist, so this never widens what the model is allowed to do.
+ALLOWED_RETRIEVAL_PROCEDURES = frozenset({FULLTEXT_SEARCH_PROCEDURE})
+
+# How many characters of each candidate row the grader is shown. Enough to judge relevance,
+# short enough that a wide fallback result stays one cheap call.
+GRADER_ROW_CHARS = 400
+
+FALLBACK_SEARCH_CYPHER = """CALL db.index.fulltext.queryNodes($index_name, $lucene_query)
+YIELD node, score
+WHERE score >= $min_score
+  AND node.title IS NOT NULL
+WITH node, score
+ORDER BY score DESC, node.title
+LIMIT {max_nodes}
+OPTIONAL MATCH (node)-[relation]->(neighbour)
+WHERE neighbour.title IS NOT NULL
+RETURN labels(node) AS labels,
+       node.title AS title,
+       node.context AS context,
+       score,
+       collect(DISTINCT type(relation) + ': ' + neighbour.title) AS related
+ORDER BY score DESC, title"""
+
+SHOW_FULLTEXT_INDEX_CYPHER = """SHOW INDEXES YIELD name, type, labelsOrTypes, properties
+WHERE name = $index_name
+RETURN labelsOrTypes AS labels, properties AS properties"""
+
 
 class LLMProvider(Enum):
     """Available LLM providers for the runtime fallback chain."""
@@ -56,6 +104,16 @@ class LLMProvider(Enum):
     OPENAI = "openai"
     DEEPSEEK = "deepseek"
     GOOGLE = "google"
+
+
+class RetrievalStrategy(Enum):
+    """Which attempt in the retrieval escalation produced the context."""
+
+    PRIMARY = "primary"
+    REPAIRED_LITERALS = "repaired_literals"
+    LABEL_AGNOSTIC_PHRASES = "label_agnostic_phrases"
+    GRADED_OUT = "graded_out"
+    EMPTY = "empty"
 
 
 class RAG:
@@ -97,6 +155,8 @@ class RAG:
         )
         self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
         self.max_results = max_results if max_results is not None else config.rag.max_results
+        self.enable_fallback_search = config.rag.enable_fallback_search
+        self.fallback_min_score = config.rag.fallback_min_score
 
         self.fast_llm = self._build_llm_with_fallback(use_accurate=False)
         self.cypher_llm = self._build_llm_with_fallback(use_accurate=True)
@@ -112,6 +172,9 @@ class RAG:
         )
 
         self._cached_schema = None
+
+        if self.enable_fallback_search:
+            self.ensure_fulltext_index()
 
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
@@ -289,6 +352,11 @@ class RAG:
             input_variables=["user_question"], template=config.prompts.guardrails
         )
 
+        self.context_grader_template = PromptTemplate(
+            input_variables=["user_question", "candidates"],
+            template=config.prompts.context_grader,
+        )
+
     def _parse_guardrail_output(self, raw_output: str) -> Dict[str, str]:
         """Parse guardrail JSON and normalize the decision with a safe fallback."""
         cleaned_output = strip_code_fences(raw_output)
@@ -311,6 +379,116 @@ class RAG:
 
         return {"decision": normalized_decision}
 
+    @staticmethod
+    def _render_grader_candidates(context: List[Dict[str, Any]]) -> str:
+        """Render retrieved rows as a numbered list the grader can refer to by index."""
+        lines = []
+        for position, row in enumerate(context, start=1):
+            rendered = json.dumps(row, ensure_ascii=False, default=str)
+            if len(rendered) > GRADER_ROW_CHARS:
+                rendered = f"{rendered[:GRADER_ROW_CHARS]}..."
+            lines.append(f"{position}. {rendered}")
+        return "\n".join(lines)
+
+    def _parse_grader_output(self, raw_output: str, row_count: int) -> List[int] | None:
+        """
+        Read the row numbers the grader kept.
+
+        Args:
+            raw_output: Raw grader reply
+            row_count: How many rows the grader was shown
+
+        Returns:
+            Zero-based indices of the rows to keep, or None when the reply is unusable
+        """
+        cleaned_output = strip_code_fences(raw_output)
+
+        try:
+            start = cleaned_output.index("{")
+            payload, _ = json.JSONDecoder().raw_decode(cleaned_output[start:])
+        except (ValueError, json.JSONDecodeError) as exc:
+            logger.warning("Context grader returned unusable JSON: %s", exc)
+            return None
+
+        relevant = payload.get("relevant")
+        if not isinstance(relevant, list):
+            logger.warning("Context grader reply had no 'relevant' list: %r", raw_output)
+            return None
+
+        kept: List[int] = []
+        for entry in relevant:
+            try:
+                position = int(entry)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= position <= row_count and position - 1 not in kept:
+                kept.append(position - 1)
+
+        return kept
+
+    def grade_context(self, state: State):
+        """
+        Drop retrieved rows that do not answer the question.
+
+        Whether to answer is decided here, on retrieval evidence, rather than left to the
+        answering model: rows recovered by a widened search are candidates, not an answer, and a
+        row that only shares a word with the question is what produces a confident wrong answer.
+
+        A query that ran as the model wrote it is trusted and skips grading. A grader that fails
+        or replies with nonsense leaves the rows untouched - a model outage must not be
+        indistinguishable from an empty graph.
+
+        Args:
+            state: Current pipeline state
+
+        Returns:
+            Updated state with the rows that survived grading
+        """
+        context = state.get("context") or []
+        strategy = state.get("retrieval_strategy")
+
+        if not context or strategy == RetrievalStrategy.PRIMARY.value:
+            return {"context_graded": False}
+
+        grader_chain = self.context_grader_template | self.fast_llm | StrOutputParser()
+
+        try:
+            grader_output = grader_chain.invoke(
+                {
+                    "user_question": state["user_question"],
+                    "candidates": self._render_grader_candidates(context),
+                },
+                config=self._get_invoke_config(
+                    trace_id=state.get("trace_id"),
+                    tags=["knowledge_graph", "context_grader"],
+                    run_name="Context Grader",
+                    handler=state.get("callback_handler"),
+                    session_id=state.get("session_id"),
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Context grading failed; keeping retrieved rows: %s", exc)
+            return {"context_graded": False}
+
+        kept = self._parse_grader_output(grader_output, len(context))
+        if kept is None:
+            return {"context_graded": False}
+
+        graded_context = [context[index] for index in kept]
+
+        if self.enable_debug:
+            print(f"[Context Grader] kept {len(graded_context)} of {len(context)} row(s)")
+
+        if not graded_context:
+            logger.info("Context grader rejected all %d retrieved row(s)", len(context))
+            return {
+                "context": [],
+                "context_graded": True,
+                "retrieval_strategy": RetrievalStrategy.GRADED_OUT.value,
+            }
+
+        return {"context": graded_context, "context_graded": True}
+
     def _build_processing_graph(self):
         """Construct the state machine graph for the RAG pipeline."""
         builder = StateGraph(State)
@@ -320,6 +498,7 @@ class RAG:
             ("guardrails_system", self.guardrails_system),
             ("generate_cypher", self.generate_cypher),
             ("retrieve", self.retrieve),
+            ("grade_context", self.grade_context),
             ("return_none", self.return_none),
         ]
 
@@ -349,8 +528,11 @@ class RAG:
         builder.add_edge("return_none", END)
         visualizer.add_edge("return_none", END)
 
-        builder.add_edge("retrieve", END)
-        visualizer.add_edge("retrieve", END)
+        builder.add_edge("retrieve", "grade_context")
+        visualizer.add_edge("retrieve", "grade_context")
+
+        builder.add_edge("grade_context", END)
+        visualizer.add_edge("grade_context", END)
 
         return builder.compile()
 
@@ -394,15 +576,19 @@ class RAG:
     def retrieve(self, state: State):
         """
         Execute CYPHER query against Neo4j database and retrieve results.
-        If query fails, return empty context and use general knowledge.
+
+        A query that executes but matches nothing is escalated rather than reported as missing
+        data, because the two most common Text2Cypher mistakes both surface as zero rows. See
+        _escalate_empty_retrieval.
 
         Args:
             state: Current pipeline state
 
         Returns:
-            Updated state with retrieved context
+            Updated state with retrieved context and the strategy that produced it
         """
         cypher_query = state.get("generated_cypher", "")
+        user_question = state.get("user_question") or ""
 
         try:
             cypher_query = strip_code_fences(cypher_query)
@@ -415,14 +601,24 @@ class RAG:
             cypher_query = ensure_limit(cypher_query, self.max_results)
 
             response = self.database.query(cypher_query)
+            if response:
+                return {
+                    "context": response,
+                    "generated_cypher": cypher_query,
+                    "retrieval_strategy": RetrievalStrategy.PRIMARY.value,
+                }
 
-            return {"context": response, "generated_cypher": cypher_query}
+            return self._escalate_empty_retrieval(cypher_query, user_question)
 
         except UnsafeCypherQueryError as e:
             error_msg = f"Blocked unsafe Cypher: {e}"
             if self.enable_debug:
                 print(f"[Cypher Blocked] {error_msg}")
-            return {"context": [], "generated_cypher": error_msg}
+            return {
+                "context": [],
+                "generated_cypher": error_msg,
+                "retrieval_strategy": RetrievalStrategy.EMPTY.value,
+            }
 
         except Exception as e:
             error_msg = str(e)
@@ -430,7 +626,173 @@ class RAG:
             if self.enable_debug:
                 print(f"[Query Error] {error_msg}")
 
-            return {"context": [], "generated_cypher": f"Query failed: {error_msg}"}
+            return {
+                "context": [],
+                "generated_cypher": f"Query failed: {error_msg}",
+                "retrieval_strategy": RetrievalStrategy.EMPTY.value,
+            }
+
+    def _escalate_empty_retrieval(self, executed_cypher: str, user_question: str) -> Dict[str, Any]:
+        """
+        Retry a query that executed successfully but matched no rows.
+
+        Escalation runs only after a successful execution, so a blocked or failing query is
+        still reported as such. Two retries are attempted in order:
+
+        1. drop fuzzy predicates whose literal is copied question text, keeping the traversal
+           the model wrote but without the filter that could never match;
+        2. search every label for the question's noun phrases, which recovers an answer stored
+           under a label the model did not pick.
+
+        Args:
+            executed_cypher: The query that ran and returned no rows
+            user_question: The question the query was generated from
+
+        Returns:
+            Updated state with whatever context the retries recovered
+        """
+        repaired, dropped_literals = strip_question_literal_filters(executed_cypher, user_question)
+        if dropped_literals:
+            if self.enable_debug:
+                print(f"[Retrieval Retry] dropped question literals: {dropped_literals}")
+            response = self._run_recovery_query(repaired, "question-literal repair")
+            if response:
+                return {
+                    "context": response,
+                    "generated_cypher": repaired,
+                    "retrieval_strategy": RetrievalStrategy.REPAIRED_LITERALS.value,
+                }
+
+        fallback = self._search_every_label(user_question)
+        if fallback is not None:
+            return fallback
+
+        return {
+            "context": [],
+            "generated_cypher": executed_cypher,
+            "retrieval_strategy": RetrievalStrategy.EMPTY.value,
+        }
+
+    def _run_recovery_query(
+        self, cypher_query: str, description: str, params: Dict[str, Any] | None = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Run a retry query, treating any failure as "recovered nothing".
+
+        A retry exists to improve on an empty result, so it must never turn one into an error.
+
+        Args:
+            cypher_query: Query to execute
+            description: Retry name used in the warning log
+            params: Optional Cypher parameters
+
+        Returns:
+            Retrieved rows, or an empty list when the retry was rejected or failed
+        """
+        try:
+            validate_read_only(cypher_query, allowed_procedures=ALLOWED_RETRIEVAL_PROCEDURES)
+            if params is None:
+                return self.database.query(cypher_query)
+            return self.database.query(cypher_query, params=params)
+        except Exception as exc:
+            logger.warning("Retrieval retry (%s) failed: %s", description, exc)
+            return []
+
+    def ensure_fulltext_index(self) -> bool:
+        """
+        Create or refresh the full-text index the label-agnostic search reads.
+
+        The index has to name its labels, so it is built from the labels the database actually
+        holds and rebuilt when that set changes. Ingestion can introduce a label between
+        restarts; the search re-checks the index when a lookup fails, so a new label is picked
+        up without waiting for a redeploy.
+
+        Returns:
+            True when the index exists and covers the current labels
+        """
+        try:
+            labels = sorted(
+                row["label"]
+                for row in self.database.query("CALL db.labels() YIELD label RETURN label")
+                if row["label"] not in FULLTEXT_EXCLUDED_LABELS
+            )
+        except Exception as exc:
+            logger.warning("Could not read graph labels for the full-text index: %s", exc)
+            return False
+
+        if not labels:
+            return False
+
+        try:
+            existing = self.database.query(
+                SHOW_FULLTEXT_INDEX_CYPHER, params={"index_name": FULLTEXT_INDEX_NAME}
+            )
+            if existing and sorted(existing[0].get("labels") or []) == labels:
+                return True
+
+            if existing:
+                logger.info("Graph labels changed; rebuilding the %s index", FULLTEXT_INDEX_NAME)
+                self.database.query(f"DROP INDEX {FULLTEXT_INDEX_NAME} IF EXISTS")
+
+            label_spec = "|".join(f"`{label}`" for label in labels)
+            self.database.query(
+                f"CREATE FULLTEXT INDEX {FULLTEXT_INDEX_NAME} IF NOT EXISTS "
+                f"FOR (n:{label_spec}) ON EACH [n.title, n.context]"
+            )
+            logger.info("Full-text index %s covers %d labels", FULLTEXT_INDEX_NAME, len(labels))
+            return True
+        except Exception as exc:
+            logger.warning("Could not create the %s full-text index: %s", FULLTEXT_INDEX_NAME, exc)
+            return False
+
+    def _search_every_label(self, user_question: str) -> Dict[str, Any] | None:
+        """
+        Search every label's titles for the question's noun phrases, ranked by relevance.
+
+        Rows scoring below the configured threshold are dropped here rather than being passed on
+        as weak candidates, so the decision to abstain is made on retrieval evidence.
+
+        Args:
+            user_question: User's natural language question
+
+        Returns:
+            Updated state with the recovered context, or None when the search is disabled,
+            has nothing to search for, or found nothing above the score threshold
+        """
+        if not self.enable_fallback_search:
+            return None
+
+        phrases = extract_search_phrases(user_question)
+        if not phrases:
+            return None
+
+        lucene_query = build_lucene_query(phrases)
+        if not lucene_query:
+            return None
+
+        cypher_query = FALLBACK_SEARCH_CYPHER.format(max_nodes=self.max_results)
+        params = {
+            "index_name": FULLTEXT_INDEX_NAME,
+            "lucene_query": lucene_query,
+            "min_score": self.fallback_min_score,
+        }
+        if self.enable_debug:
+            print(f"[Retrieval Retry] label-agnostic search: {lucene_query}")
+
+        response = self._run_recovery_query(cypher_query, "label-agnostic search", params=params)
+        if not response and self.ensure_fulltext_index():
+            # The index may be missing entirely, or stale after ingestion added a label.
+            response = self._run_recovery_query(
+                cypher_query, "label-agnostic search (reindexed)", params=params
+            )
+        if not response:
+            return None
+
+        return {
+            "context": response,
+            "generated_cypher": cypher_query,
+            "retrieval_strategy": RetrievalStrategy.LABEL_AGNOSTIC_PHRASES.value,
+        }
 
     def guardrails_system(self, state: State):
         """
@@ -466,19 +828,65 @@ class RAG:
 
     def return_none(self, state: State):
         """
-        Return 'W bazie danych nie ma informacji' when question is not
-        related to university studies.
+        Report that the question was routed away from graph retrieval.
 
         Args:
             state: Current pipeline state
 
         Returns:
-            Updated state with answer set to None
+            Updated state with the off-topic answer and no context
         """
         return {
-            "answer": "W bazie danych nie ma informacji",
+            "answer": OFF_TOPIC_MESSAGE,
             "context": [],
             "generated_cypher": None,
+            "retrieval_strategy": RetrievalStrategy.EMPTY.value,
+        }
+
+    @staticmethod
+    def _format_result(result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Turn terminal graph state into the tool response.
+
+        An empty retrieval is reported as an explicit "no data" sentence rather than an empty
+        JSON list, so the answering model has something unambiguous to abstain on instead of a
+        gap it can fill from its own knowledge.
+
+        Args:
+            result: Terminal state of the LangGraph run
+
+        Returns:
+            Dictionary with the answer and retrieval metadata
+        """
+        context_data = result.get("context") or []
+        strategy = result.get("retrieval_strategy")
+        metadata = {
+            "guardrail_decision": result.get("guardrail_decision"),
+            "cypher_query": result.get("generated_cypher"),
+            "retrieval_strategy": strategy,
+            "context_graded": result.get("context_graded"),
+            "context": context_data,
+        }
+
+        if result.get("answer") == OFF_TOPIC_MESSAGE:
+            return {
+                "answer": OFF_TOPIC_MESSAGE,
+                "metadata": {**metadata, "cypher_query": None, "context": []},
+            }
+
+        if not context_data:
+            return {"answer": NO_GRAPH_DATA_MESSAGE, "metadata": metadata}
+
+        # The strategy travels with the rows: how they were found is what says whether they are
+        # an answer or a candidate, and the answering model cannot tell the two apart otherwise.
+        payload = {
+            "retrieval_strategy": strategy,
+            "context_graded": bool(result.get("context_graded")),
+            "rows": context_data,
+        }
+        return {
+            "answer": json.dumps(payload, ensure_ascii=False, indent=2),
+            "metadata": metadata,
         }
 
     def invoke(self, message: str, session_id: str = "default") -> Dict[str, Any]:
@@ -490,31 +898,11 @@ class RAG:
             session_id: Session identifier for tracking
 
         Returns:
-            Dictionary with context from graph or "W bazie danych nie ma informacji"
+            Dictionary with graph context, or an explicit off-topic/no-data answer
         """
         result = self.graph.invoke({"user_question": message})
 
-        if result.get("answer") == "W bazie danych nie ma informacji":
-            return {
-                "answer": "W bazie danych nie ma informacji",
-                "metadata": {
-                    "guardrail_decision": result.get("guardrail_decision"),
-                    "cypher_query": None,
-                    "context": [],
-                },
-            }
-
-        context_data = result.get("context", [])
-        context_json = json.dumps(context_data, ensure_ascii=False, indent=2)
-
-        return {
-            "answer": context_json,
-            "metadata": {
-                "guardrail_decision": result.get("guardrail_decision"),
-                "cypher_query": result.get("generated_cypher"),
-                "context": context_data,
-            },
-        }
+        return self._format_result(result)
 
     async def ainvoke(
         self,
@@ -533,7 +921,7 @@ class RAG:
             callback_handler: Optional Langfuse CallbackHandler scoped to this request
 
         Returns:
-            Dictionary with context from graph or "W bazie danych nie ma informacji"
+            Dictionary with graph context, or an explicit off-topic/no-data answer
         """
         try:
             result = await asyncio.wait_for(
@@ -550,24 +938,4 @@ class RAG:
         except asyncio.TimeoutError as exc:
             raise TimeoutError(GRAPH_PIPELINE_TIMEOUT_MESSAGE) from exc
 
-        if result.get("answer") == "W bazie danych nie ma informacji":
-            return {
-                "answer": "W bazie danych nie ma informacji",
-                "metadata": {
-                    "guardrail_decision": result.get("guardrail_decision"),
-                    "cypher_query": None,
-                    "context": [],
-                },
-            }
-
-        context_data = result.get("context", [])
-        context_json = json.dumps(context_data, ensure_ascii=False, indent=2)
-
-        return {
-            "answer": context_json,
-            "metadata": {
-                "guardrail_decision": result.get("guardrail_decision"),
-                "cypher_query": result.get("generated_cypher"),
-                "context": context_data,
-            },
-        }
+        return self._format_result(result)

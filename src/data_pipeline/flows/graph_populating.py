@@ -8,6 +8,9 @@ from langchain_neo4j import Neo4jGraph
 from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 
+from src.config.config import get_config
+from src.data_pipeline.canonical_nodes import extract_entity_keys
+
 module_logger = logging.getLogger(__name__)
 
 
@@ -237,6 +240,44 @@ class GraphPopulator:
             },
         )
 
+    def ensure_entity_key_indexes(self) -> int:
+        """Index the canonical merge key on every configured label.
+
+        Extraction merges on ``key``; without an index each MERGE scans the whole label.
+        Creation is idempotent, so this is safe to call at the start of every run.
+
+        Returns:
+            Number of labels for which an index was requested
+        """
+        logger = _get_logger()
+        labels = get_config().graph_schema.node_labels
+
+        for label in labels:
+            index_name = f"entity_key_{label.lower()}"
+            try:
+                self.graph_db.query(
+                    f"CREATE INDEX {index_name} IF NOT EXISTS FOR (n:`{label}`) ON (n.key)"
+                )
+            except Exception as exc:
+                logger.warning("Could not create key index for label %s: %s", label, exc)
+
+        logger.info("Ensured canonical key indexes for %d labels", len(labels))
+        return len(labels)
+
+    def deduplicate_entities(self, keys: list[str] | None = None) -> dict[str, int]:
+        """Run the post-ingest repair for entities split across several nodes.
+
+        Args:
+            keys: Canonical keys this run wrote. Passing them keeps the work proportional to
+                what changed instead of to the size of the graph.
+
+        Returns:
+            Counts for each repair stage, for the pipeline summary log
+        """
+        from src.data_pipeline.flows.graph_dedup import deduplicate_graph
+
+        return deduplicate_graph(self.graph_db, keys)
+
     def execute_cypher(self, query: str, params: dict[str, str] | None = None) -> None:
         logger = _get_logger()
         if not query or not query.strip():
@@ -334,8 +375,18 @@ def claim_document_for_processing(doc_hash: str) -> bool:
 
 
 @task
-def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -> None:
-    """Execute pipe-separated cypher statements against the configured Neo4j instance."""
+def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -> list[str]:
+    """Execute pipe-separated cypher statements against the configured Neo4j instance.
+
+    Args:
+        cypher_query: Generated statements, separated by pipe
+        doc_hash: Page hash to mark processed or failed
+        source_id: Page source id recorded as provenance for the merged nodes
+
+    Returns:
+        The canonical keys this page wrote, so the post-ingest repair can look at only those
+    """
+
     logger = _get_logger()
     logger.info(
         "populate_graph task received query of length %d for source %s",
@@ -361,3 +412,5 @@ def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -
             pop.link_processed_document_to_source(doc_hash, source_id)
         except Exception as link_exc:
             logger.warning("Failed to link hash %s to source %s: %s", doc_hash, source_id, link_exc)
+
+    return extract_entity_keys("\n".join(statements))

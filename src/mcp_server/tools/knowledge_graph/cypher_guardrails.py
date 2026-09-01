@@ -19,9 +19,19 @@ WRITE_KEYWORDS = frozenset(
 )
 
 READ_ONLY_START_RE = re.compile(
-    r"^\s*(MATCH|OPTIONAL\s+MATCH|WITH|UNWIND)\b",
+    r"^\s*(MATCH|OPTIONAL\s+MATCH|WITH|UNWIND|CALL)\b",
     re.IGNORECASE,
 )
+# Every procedure a query calls by name. A CALL is only permitted when the caller passes that
+# procedure in allowed_procedures, so generated Cypher - which passes none - still cannot call
+# anything at all.
+#
+# The argument list is deliberately not part of the pattern: Cypher lets a no-argument procedure
+# be called without parentheses, so requiring them meant `CALL db.labels YIELD label` captured no
+# name, left the allowlist with nothing to vet, and passed.
+PROCEDURE_CALL_RE = re.compile(r"\bCALL\s+(?P<procedure>[A-Za-z_][\w.]*)", re.IGNORECASE)
+# A CALL subquery names no procedure, so the allowlist has nothing to vet.
+CALL_SUBQUERY_RE = re.compile(r"\bCALL\s*\{", re.IGNORECASE)
 STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
 COMMENT_RE = re.compile(r"//.*?$|/\*.*?\*/", re.MULTILINE | re.DOTALL)
 CODE_FENCE_RE = re.compile(r"^\s*```\w*\s*\n?|\n?\s*```\s*$", re.MULTILINE)
@@ -45,14 +55,32 @@ def _scrub_for_validation(cypher: str) -> str:
     return STRING_LITERAL_RE.sub(" ", without_comments)
 
 
-def validate_read_only(cypher: str) -> None:
-    """Reject Cypher that can mutate the graph or does not match the allowed read shape."""
+def validate_read_only(cypher: str, allowed_procedures: frozenset[str] = frozenset()) -> None:
+    """Reject Cypher that can mutate the graph or does not match the allowed read shape.
+
+    Args:
+        cypher: Query to validate
+        allowed_procedures: Procedure names this query may call. Callers passing generated
+            Cypher must leave this empty; it exists so an internally authored query can use one
+            specific reviewed procedure without opening CALL up to the model.
+
+    Raises:
+        UnsafeCypherQueryError: If the query can mutate the graph, calls a procedure that was
+            not allowlisted, or does not match the allowed read shape
+    """
     cleaned = strip_code_fences(cypher)
     scrubbed = _scrub_for_validation(cleaned).strip()
     if not scrubbed:
         raise UnsafeCypherQueryError("generated Cypher query is empty")
     if ";" in scrubbed.rstrip(";"):
         raise UnsafeCypherQueryError("multiple Cypher statements are not allowed")
+    if CALL_SUBQUERY_RE.search(scrubbed):
+        raise UnsafeCypherQueryError("CALL subqueries are not allowed")
+    permitted = {name.lower() for name in allowed_procedures}
+    called = {match.group("procedure").lower() for match in PROCEDURE_CALL_RE.finditer(scrubbed)}
+    forbidden = sorted(called - permitted)
+    if forbidden:
+        raise UnsafeCypherQueryError(f"blocked Cypher procedure call: {forbidden[0]}")
     if not READ_ONLY_START_RE.search(scrubbed):
         raise UnsafeCypherQueryError("Cypher must start with a read-only clause")
     normalized = scrubbed.upper()

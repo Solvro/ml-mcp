@@ -86,3 +86,5 @@ staging/
 # Prefect local runtime state (SQLite DB created by test runs)
 .prefect-test/
 .prefect/
+# Editor local-history plugin: snapshots files including .env
+.history/

@@ -42,6 +42,7 @@ def _build_rag_for_test(
     rag.database = fake_db
     rag.max_results = max_results
     rag.enable_debug = False
+    rag.enable_fallback_search = False
 
     return rag, fake_db
 

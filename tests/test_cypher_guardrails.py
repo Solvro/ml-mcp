@@ -80,16 +80,54 @@ def test_rejects_write_or_admin_operations(query):
         validate_read_only(query)
 
 
+def test_rejects_disallowed_start_clause():
+    with pytest.raises(UnsafeCypherQueryError, match="read-only clause"):
+        validate_read_only("SHOW DATABASES")
+
+
 @pytest.mark.parametrize(
     "query",
     [
         "CALL db.procedure() YIELD value RETURN value",
-        "SHOW DATABASES",
+        "CALL apoc.cypher.runWrite('CREATE (n)', {}) YIELD value RETURN value",
+        "MATCH (n) CALL db.index.fulltext.queryNodes('i', 'x') YIELD node RETURN node",
+        # Cypher allows a no-argument procedure to be called without parentheses. Requiring them
+        # in the detector meant no name was captured, so the allowlist vetted nothing and these
+        # passed. Both were reported in review on PR #57.
+        "CALL db.labels YIELD label RETURN label",
+        "CALL apoc.periodic.iterate YIELD x RETURN x",
+        "MATCH (n) CALL db.labels YIELD label RETURN label",
+        "CALL  dbms.components  YIELD name RETURN name",
     ],
 )
-def test_rejects_disallowed_start_clause(query):
-    with pytest.raises(UnsafeCypherQueryError, match="read-only clause"):
+def test_rejects_procedure_calls_without_an_allowlist(query):
+    """Generated Cypher is validated with an empty allowlist, so no CALL is reachable from it."""
+    with pytest.raises(UnsafeCypherQueryError, match="blocked Cypher procedure call"):
         validate_read_only(query)
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "CALL db.labels YIELD label RETURN label",
+        "CALL db.labels() YIELD label RETURN label",
+    ],
+)
+def test_an_allowlist_does_not_cover_a_procedure_it_does_not_name(query):
+    """Whether the call has parentheses must not change which procedures are permitted."""
+    with pytest.raises(UnsafeCypherQueryError, match="db.labels"):
+        validate_read_only(query, allowed_procedures=frozenset({"db.index.fulltext.queryNodes"}))
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "CALL db.labels YIELD label RETURN label",
+        "CALL db.labels() YIELD label RETURN label",
+    ],
+)
+def test_an_allowlisted_procedure_is_permitted_with_or_without_parentheses(query):
+    validate_read_only(query, allowed_procedures=frozenset({"db.labels"}))
 
 
 def test_rejects_multiple_statements():

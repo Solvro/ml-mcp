@@ -14,6 +14,14 @@ rag:
   enable_debug: false
   llm_timeout_seconds: 30
   graph_timeout_seconds: 90
+  enable_fallback_search: true
+  # Lucene relevance floor for the label-agnostic fallback. Scores are corpus-relative, so
+  # this is a junk filter, not a precision guarantee - the grader node is the precision gate.
+  #
+  # Do not raise this much. Since the inflection expansion (#59) a legitimate oblique-case hit
+  # scores around 1.4 where the nominative form of the same question scores 10, so a floor set
+  # from nominative scores would silently drop exactly the matches that expansion recovers.
+  fallback_min_score: 0.5
 
 data_pipeline:
   max_chunk_size: 30000
@@ -23,10 +31,10 @@ data_pipeline:
 llm:
   fast_model:
     name: "gpt-5.4-nano"
-    temperature: 0.1
+    temperature: 0.0
   accurate_model:
     name: "gpt-5.4-mini"
-    temperature: 0
+    temperature: 0.0
   provider_fallback_order:
     - "openai"
     - "deepseek"
@@ -47,6 +55,179 @@ observability:
     secret_key: ${LANGFUSE_SECRET_KEY}
     public_key: ${LANGFUSE_PUBLIC_KEY}
 
+graph_schema:
+  # Closed label set for ingestion. The extraction model may not invent labels: the same concept
+  # arriving as StudyProgram on one page and Program on the next splits one entity into two nodes
+  # that no single query can find. Anything outside this list is mapped through label_aliases, and
+  # whatever is still unknown becomes the fallback_label.
+  fallback_label: "Topic"
+  node_labels:
+    - "University"
+    - "Faculty"
+    - "Department"
+    - "Person"
+    - "Professor"
+    - "Committee"
+    - "StudentOrganization"
+    - "StudyProgram"
+    - "Specialization"
+    - "Course"
+    - "LearningOutcome"
+    - "Building"
+    - "Room"
+    - "AcademicYear"
+    - "Semester"
+    - "CalendarEvent"
+    - "DayOff"
+    - "Deadline"
+    - "ExamSession"
+    - "Competency"
+    - "CompetencyCategory"
+    - "Subcompetency"
+    - "Criterion"
+    - "CriterionCategory"
+    - "Guideline"
+    - "Document"
+    - "Topic"
+
+  # Labels seen in the graph (or likely to be invented) and the canonical label they belong to.
+  # Matching is case-insensitive and ignores diacritics, so "wydzial" also resolves to Faculty.
+  label_aliases:
+    - invented: "Program"
+      canonical: "StudyProgram"
+    - invented: "Programme"
+      canonical: "StudyProgram"
+    - invented: "StudyProgramme"
+      canonical: "StudyProgram"
+    - invented: "FieldOfStudy"
+      canonical: "StudyProgram"
+    - invented: "Kierunek"
+      canonical: "StudyProgram"
+    - invented: "Wydzial"
+      canonical: "Faculty"
+    - invented: "Lecturer"
+      canonical: "Professor"
+    - invented: "Teacher"
+      canonical: "Professor"
+    - invented: "Instructor"
+      canonical: "Professor"
+    - invented: "Employee"
+      canonical: "Person"
+    - invented: "Staff"
+      canonical: "Person"
+    - invented: "Student"
+      canonical: "Person"
+    - invented: "Candidate"
+      canonical: "Person"
+    - invented: "Author"
+      canonical: "Person"
+    - invented: "Commission"
+      canonical: "Committee"
+    - invented: "Organization"
+      canonical: "StudentOrganization"
+    - invented: "Association"
+      canonical: "StudentOrganization"
+    - invented: "Subject"
+      canonical: "Course"
+    - invented: "Class"
+      canonical: "Course"
+    - invented: "Module"
+      canonical: "Course"
+    - invented: "Place"
+      canonical: "Building"
+    - invented: "Location"
+      canonical: "Building"
+    - invented: "AcademicSemester"
+      canonical: "Semester"
+    - invented: "Year"
+      canonical: "AcademicYear"
+    - invented: "Event"
+      canonical: "CalendarEvent"
+    - invented: "Date"
+      canonical: "CalendarEvent"
+    - invented: "Break"
+      canonical: "CalendarEvent"
+    - invented: "Holiday"
+      canonical: "DayOff"
+    - invented: "PublicHoliday"
+      canonical: "DayOff"
+    - invented: "FreeDay"
+      canonical: "DayOff"
+    - invented: "DzienWolny"
+      canonical: "DayOff"
+    - invented: "Session"
+      canonical: "ExamSession"
+    - invented: "ExaminationSession"
+      canonical: "ExamSession"
+    - invented: "Exam"
+      canonical: "ExamSession"
+    - invented: "Skill"
+      canonical: "Competency"
+    - invented: "Ability"
+      canonical: "Competency"
+    - invented: "CompetencyCriterionGroup"
+      canonical: "CompetencyCategory"
+    - invented: "CriterionGroup"
+      canonical: "CriterionCategory"
+    - invented: "CriterionItem"
+      canonical: "Criterion"
+    - invented: "Requirement"
+      canonical: "Criterion"
+    - invented: "Condition"
+      canonical: "Criterion"
+    - invented: "Recommendation"
+      canonical: "Guideline"
+    - invented: "Rule"
+      canonical: "Guideline"
+    - invented: "Regulation"
+      canonical: "Document"
+    - invented: "Policy"
+      canonical: "Document"
+    - invented: "Statute"
+      canonical: "Document"
+    - invented: "Research"
+      canonical: "Document"
+    - invented: "Publication"
+      canonical: "Document"
+    - invented: "Article"
+      canonical: "Document"
+
+  # Preferred relationship types. Unlike labels these are not rewritten, because a wrong
+  # relationship type is visible in the traversal while a wrong label silently hides the node.
+  relationship_types:
+    - "PART_OF"
+    - "BELONGS_TO"
+    - "OFFERED_BY"
+    - "RUNS"
+    - "MEMBER_OF"
+    - "CHAIRS"
+    - "SUPERVISES"
+    - "TEACHES"
+    - "EMPLOYED_BY"
+    - "PREREQUISITE_FOR"
+    - "INCLUDES_COURSE"
+    - "HAS_SPECIALIZATION"
+    - "HAS_LEARNING_OUTCOME"
+    - "LOCATED_IN"
+    - "HAS_ROOM"
+    - "TAKES_PLACE_IN"
+    - "HAS_SEMESTER"
+    - "STARTS_ON"
+    - "ENDS_ON"
+    - "OCCURS_ON"
+    - "HAS_DEADLINE"
+    - "HAS_EVENT"
+    - "HAS_DAY_OFF"
+    - "HAS_EXAM_SESSION"
+    - "HAS_CATEGORY"
+    - "HAS_SUBCOMPETENCY"
+    - "HAS_CRITERION"
+    - "REQUIRES"
+    - "RECOMMENDS"
+    - "CONSIDERS"
+    - "ASSESSES"
+    - "DEFINED_IN"
+
 database:
   name: "neo4j"
   uri: ${NEO4J_URI}
@@ -55,8 +236,8 @@ database:
 
 prompts:
   final_answer: |
-    You receive information in JSON format from another LLM
-    containing data from the knowledge base.
+    You receive the result of a knowledge graph lookup: either a JSON object with the rows that
+    were retrieved and how they were found, or a note saying the lookup found nothing.
 
     Context: You are an assistant for Wrocław University of Science and Technology (Politechnika Wrocławska, PWr).
     Assume that any mention of professors, teachers, courses, classes, departments, or other academic entities
@@ -67,59 +248,129 @@ prompts:
 
     User question: {user_input}
 
-    Knowledge base data (JSON format):
+    Knowledge base lookup result:
     {data}
 
-    Your task is to answer the user's question based on this information.
-    Use the conversation history to resolve references like "he", "she", "that course", "who is that guy?", etc.
-    Use all data from the JSON to provide a complete answer.
+    How much to trust the rows depends on "retrieval_strategy":
+    - "primary": the query was written directly from the question, so its rows are the answer.
+    - "repaired_literals" or "label_agnostic_phrases": the first query matched nothing, so the
+      search was widened. These rows are CANDIDATES, already filtered by a relevance grader.
+      Answer only when a row actually names the entity or carries the fact that was asked for.
+      If they are merely on a similar topic, say you do not know.
+
+    Answer the user's question from the rows above, and from nothing else.
+    Use the conversation history only to resolve references like "he", "she", "that course",
+    "who is that guy?", etc. — never as a source of facts.
+
+    Before answering, check that the data actually answers THIS question. Rows about a
+    neighbouring entity, a different date, a different semester or a different document are
+    not an answer to the question that was asked.
+
+    Abstain instead of guessing:
+    - If the data is empty, states that there is no data, or does not answer the question,
+      say that you do not know and that the knowledge base has no information on it.
+      In Polish: "Nie wiem — w bazie wiedzy nie ma informacji na ten temat."
+    - Never invent or infer a date, name, number, room or place that is not in the data.
+    - Never present the nearest-looking row as the answer. Admitting ignorance is correct;
+      a confident wrong answer is not.
+
+    Otherwise use all relevant rows to give a complete answer.
     Always respond in the same language as the user's question, in a natural and concise way.
-    If you do not receive relevant information, answer from general knowledge about Politechnika Wrocławska.
 
   cypher_insert: |
     Extract knowledge from the provided context into Neo4j Cypher MERGE statements.
-    Invent node labels and relationship types that best represent the content.
-    Use the current graph schema to stay consistent with existing structure where appropriate.
     DO NOT include any additional text or explanations.
 
     CONTEXT: {context}
 
-    CURRENT GRAPH SCHEMA (use for consistency, extend freely):
+    CURRENT GRAPH SCHEMA (use for consistency; do not extend the label set):
     {schema_context}
 
-    STRICT RULES:
-    1. OUTPUT MUST:
+    ALLOWED NODE LABELS - use these and nothing else:
+    {node_labels}
+
+    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    {relationship_types}
+
+    1. COMPLETENESS - this is the most important rule:
+       - Extract EVERY discrete fact in the context. Do not summarise, condense, or sample.
+       - Every row of a list or table becomes its own node. A page with nine bullet points
+         produces nine nodes, not "the three important ones".
+       - Never judge whether an entry is significant enough to keep. An entry that carries only
+         a date and a generic description, such as "2 XI 2026 r. - dzien wolny od zajec", is
+         exactly as important as one with a proper name like "Swieto Niepodleglosci".
+       - Never merge several rows into one summarising node. Two dates are two nodes.
+       - Keep dates, numbers, room codes and identifiers verbatim in the title as the context
+         writes them.
+
+    2. LABELS AND CANONICAL NODES:
+       - Use ONLY labels from ALLOWED NODE LABELS above; never invent a new one. If nothing fits,
+         use Topic.
+       - One node per real entity. Before writing a node, check whether an earlier statement in
+         this same output already covers it and reuse that variable instead.
+       - Use the fullest form of the name as the title. Do not create a second node for an
+         abbreviation or a shortened variant of a name you already used: pick one title such as
+         "Cyberbezpieczenstwo (CBE)" and keep it for every mention.
+       - Put everything the context says about the entity into that one node's context property,
+         instead of emitting one node with dates and another without.
+
+    3. OUTPUT FORMAT:
        - Contain ONLY executable Cypher statements
        - Begin with "MERGE"
        - Separate multiple statements with PIPE character (|)
-       - Use UNIQUE variable names (node1, node2, etc. - never reused)
+       - Use UNIQUE variable names (node1, node2, etc. - never reused for a different entity)
        - LIMIT TOKENS TO 65536 TO AVOID ERRORS WITH DEEPSEEK API
 
-    2. FOR NODES:
+    4. FOR NODES:
        - MERGE each node with unique variable name
        - Include 'title' and 'context' properties
-       - Replace Polish characters (ą→a, ć→c, ę→e, ł→l, ń→n, ó→o, ś→s, ź→z, ż→z)
+       - Replace Polish characters (a->a, c->c, e->e, l->l, n->n, o->o, s->s, z->z)
        - Use ONLY ASCII characters
        - Escape single quotes in text with backslash (\')
 
-    3. FOR RELATIONSHIPS:
+    5. FOR RELATIONSHIPS:
        - MERGE between existing node variables
-       - Use descriptive relationship type names in UPPER_SNAKE_CASE
-       - Direction matters (A→B ≠ B→A)
-
-    4. VARIABLE NAMES:
-       - Must be UNIQUE across entire query
-       - Recommended pattern: (node1), (node2), (person1), (dept1), etc.
-       - NEVER reuse variables - this causes errors
+       - Use UPPER_SNAKE_CASE; prefer a type from PREFERRED RELATIONSHIP TYPES
+       - Direction matters (A->B is not B->A)
 
     EXAMPLE OUTPUT:
     MERGE (node1:Person {{title: 'John Smith',
     context: 'Professor at UW'}})|MERGE (node2:Department
     {{title: 'Computer Science', context: 'CS department'}})|MERGE
-    (node1)-[:WORKS_IN]->(node2)
+    (node1)-[:BELONGS_TO]->(node2)
 
     OUTPUT MUST BE EXACTLY IN THIS FORMAT:
     MERGE (...) [|MERGE (...)]* [|MERGE (...)-[:...]->(...)]*
+    NO OTHER TEXT OR CHARACTERS ALLOWED!
+
+  cypher_insert_missing_rows: |
+    An earlier extraction pass over this page missed the rows below. Extract them now, using the
+    same rules. DO NOT include any additional text or explanations.
+
+    ROWS THAT WERE MISSED:
+    {rows}
+
+    SURROUNDING CONTEXT (for wording and relationships only - do not re-extract it):
+    {context}
+
+    ALLOWED NODE LABELS - use these and nothing else:
+    {node_labels}
+
+    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    {relationship_types}
+
+    RULES:
+    - Produce one node per missed row. Every row above must appear in the output.
+    - A row that carries only a date and a generic description is still a row; extract it exactly
+      like one that carries a proper name.
+    - Include 'title' and 'context' properties; keep dates and numbers verbatim in the title.
+    - Replace Polish characters and use ONLY ASCII characters
+    - Escape single quotes in text with backslash (')
+    - Begin with "MERGE", separate statements with PIPE character (|), use UNIQUE variable names
+      that cannot clash with earlier ones: name them extra1, extra2, and so on.
+
+    OUTPUT MUST BE EXACTLY IN THIS FORMAT:
+    MERGE (...) [|MERGE (...)]*
     NO OTHER TEXT OR CHARACTERS ALLOWED!
 
   schema_reflection: |
@@ -141,30 +392,100 @@ prompts:
     {schema}
 
     Original question (use this to understand intent): {user_question}
-    Normalized search form (use this for string values): {normalized_question}
+    Normalized search form (use this wording for string values): {normalized_question}
 
-    Rules:
+    Query shape:
     - Use MATCH, not MERGE or CREATE
     - Copy node labels, relationship types, and property keys exactly from the schema,
-      including their case; never invent schema identifiers
-    - Never alter or normalize labels, relationship types, or property keys
-    - Human-readable string comparison literals must come from the normalized search form and
-      use lowercase ASCII text without Polish diacritics
-    - Preserve the exact spelling and case of stable IDs; do not treat IDs as human-readable text
-    - For string properties use case-insensitive matching on both sides, for example:
-      toLower(n.title) CONTAINS toLower('wydzial informatyki')
-    - Prefer CONTAINS for human-readable entity names; use exact equality only for stable IDs or
-      non-string values
+      including their case; never invent, alter or normalize schema identifiers
+    - Return the relationship neighbourhood that answers the question, not just the anchor node
     - Always RETURN named properties, not full nodes (e.g. RETURN p.title, c.title)
     - Always add LIMIT 10
 
+    Choosing labels:
+    - The schema holds many overlapping labels for similar things (categories, groups, items,
+      criteria, competencies). Pick the label whose sample property values are in the same
+      language and wording as the question.
+    - When more than one label could hold the answer, do not commit to one: filter on the
+      property instead, or cover the alternatives with a label disjunction, for example
+      MATCH (n) WHERE (n:CompetencyCategory OR n:CriterionCategory) AND ...
+
+    String literals (this is where generated queries most often go wrong):
+    - A literal may only be a concrete entity name: a proper name or a short noun phrase of at
+      most 4 words, taken from the normalized search form
+    - NEVER put the whole question, a question word
+      (jaki / jakie / kto / co / czy / czym / gdzie / kiedy / ile / jak), or a verb phrase
+      inside a string literal
+    - If the question names no concrete entity, write the query with NO string filter at all and
+      traverse the relationships that hold the answer instead
+    - Keep every word of the entity name you matched on; never truncate it
+    - Human-readable literals use lowercase ASCII text without Polish diacritics
+    - For string properties compare case-insensitively on both sides, for example:
+      toLower(n.title) CONTAINS toLower('wydzial informatyki')
+    - Prefer CONTAINS for human-readable entity names; use exact equality only for stable IDs or
+      non-string values, and preserve the exact spelling and case of stable IDs
+
+    Worked examples:
+    - "Kto wykłada analizę matematyczną?" names the entity "analiza matematyczna",
+      so filter on it: toLower(c.title) CONTAINS toLower('analiza matematyczna')
+    - "Jakie są kryteria doboru kandydatki lub kandydata?" names no entity, so use no string
+      filter and traverse the criteria relationships.
+      WRONG, matches nothing:
+      WHERE toLower(g.title) CONTAINS toLower('jakie sa kryteria doboru kandydatki lub kandydata')
+
     Cypher:
 
+  context_grader: |
+    You are a retrieval grader for a Wrocław University of Science and Technology (Politechnika
+    Wrocławska) assistant. Rows below were recovered by a fallback search, so some of them are
+    only loosely related to the question. Your job is to say which ones actually answer it.
+
+    Question: {user_question}
+
+    Candidate rows:
+    {candidates}
+
+    Keep a row when it contains the fact the question asks for, or names the entity the question
+    is about. Drop a row when it merely mentions a similar word, describes a neighbouring entity,
+    or carries a different date, semester or document than the one asked for.
+
+    Being strict is the point: an empty list is a correct answer and leads to "no data", which is
+    better than an answer built on a row that does not address the question.
+
+    Answer ONLY with valid JSON listing the numbers of the rows to keep, for example:
+    {{"relevant": [1, 3]}}
+    or, when no row answers the question:
+    {{"relevant": []}}
+
+    Answer:
+
   guardrails: |
-    You are a classifier for a Wrocław University of Science and Technology (Politechnika Wrocławska) assistant.
-    Assume that any question mentioning professors, teachers, courses, classes, departments, buildings,
-    research, or other academic topics refers to Politechnika Wrocławska.
-    Decide whether to continue graph retrieval ("generate") or stop ("end").
+    You route questions for a Wrocław University of Science and Technology (Politechnika
+    Wrocławska, PWr) assistant backed by a knowledge graph built from university documents.
+    Assume that any question mentioning professors, teachers, courses, classes, departments,
+    buildings, research, or other academic topics refers to Politechnika Wrocławska.
+
+    Answer "generate" whenever the question could plausibly be answered from a university
+    document. That includes, and is not limited to:
+    - people, courses, classes, departments, faculties, buildings, research, student organisations
+    - regulations, procedures, requirements, criteria, guidelines, committees, competitions,
+      scholarships, recruitment
+    - competencies, skills and qualifications, and questions asking what one of them means,
+      e.g. "Co obejmuje udział w konferencjach?", "Na czym polega praca zespołowa?",
+      "Czym jest umiejętność pozyskiwania funduszy?", "Co to jest transfer wiedzy i mobilność?"
+    - the academic calendar: semesters, sessions, breaks, days off, deadlines and dates,
+      e.g. "Kiedy zaczyna się semestr zimowy w roku akademickim 2026/2027?"
+    - any term that reads like it comes from university paperwork, even when the question does
+      not mention the university by name
+
+    Answer "end" ONLY when the question is clearly unrelated to a university or its documents —
+    for example weather, cooking, sports results, celebrity gossip, a request to write code —
+    or when it asks for something harmful.
+
+    Do not judge whether the graph actually holds the answer; that is checked later, and an empty
+    result is handled downstream. A wrongly rejected question costs the user an answer, so when
+    in doubt answer "generate".
+
     Answer ONLY with valid JSON in this exact shape:
     {{"decision": "generate"}}
     or

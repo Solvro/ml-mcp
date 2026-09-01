@@ -19,6 +19,14 @@ def _pipeline_flow_no_external_services(monkeypatch):
     )
     monkeypatch.setattr(pipeline_module.GraphPopulator, "record_pipeline_run", lambda *a, **k: None)
     monkeypatch.setattr(pipeline_module.GraphPopulator, "record_restore_run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator, "ensure_entity_key_indexes", lambda *a, **k: 0
+    )
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "deduplicate_entities",
+        lambda *a, **k: {"relabelled_labels": 0, "keys_backfilled": 0, "groups_merged": 0},
+    )
 
     # 2. FILESYSTEM AND EXPORT MOCKING
     monkeypatch.setattr(pipeline_module, "host_dump_path", lambda *a, **k: NONEXISTENT_PATH)
