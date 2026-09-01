@@ -121,6 +121,20 @@ SEARCH_TOKEN_RE = re.compile(r"[0-9a-z]+")
 # Phrases reaching the full-text index must carry no Lucene metacharacter.
 LUCENE_SAFE_PHRASE_RE = re.compile(r"[0-9a-z]+(?: [0-9a-z]+)*")
 
+# Polish inflects heavily and the index has no Polish analyzer, so a question in an oblique case
+# ("semestrze zimowym") never reaches the nominative title it is asking about ("Semestr zimowy").
+# Long tokens are therefore also searched by prefix and by edit distance, at a boost below the
+# exact clauses so a true nominative hit still wins. The wider recall is safe because the score
+# floor and the relevance grader both sit downstream of this.
+LUCENE_EXPANDABLE_TOKEN_LENGTH = 5
+# Polish inflectional endings are mostly one to three characters; trimming two and matching by
+# prefix covers the common cases without cutting into the stem.
+LUCENE_PREFIX_TRIM = 2
+LUCENE_MIN_PREFIX_LENGTH = 4
+LUCENE_PREFIX_BOOST = "0.5"
+LUCENE_FUZZY_BOOST = "0.3"
+LUCENE_FUZZY_EDITS = 1
+
 # A literal with no interrogative in it still counts as copied question text when it repeats a
 # long contiguous run of the question verbatim.
 COPIED_SPAN_MIN_TOKENS = 5
@@ -251,15 +265,43 @@ def extract_search_phrases(
     return phrases[:max_phrases]
 
 
+def expand_inflected_token(token: str) -> list[str]:
+    """
+    Build the prefix and fuzzy clauses that let an inflected token reach its base form.
+
+    Args:
+        token: A single lowercase ASCII search token
+
+    Returns:
+        Lucene clauses for the token, or an empty list when it is too short to expand safely
+    """
+    if len(token) < LUCENE_EXPANDABLE_TOKEN_LENGTH:
+        return []
+
+    clauses = []
+
+    prefix = token[: max(len(token) - LUCENE_PREFIX_TRIM, LUCENE_MIN_PREFIX_LENGTH)]
+    if len(prefix) < len(token):
+        clauses.append(f"{prefix}*^{LUCENE_PREFIX_BOOST}")
+
+    # Catches endings a fixed prefix trim misses, and typos in the question.
+    clauses.append(f"{token}~{LUCENE_FUZZY_EDITS}^{LUCENE_FUZZY_BOOST}")
+
+    return clauses
+
+
 def build_lucene_query(phrases: list[str]) -> str:
     """
     Turn search phrases into a Lucene query for the graph's full-text index.
 
     Longer phrases are boosted, so a node matching the whole noun phrase outranks one that only
-    shares a word. The phrases come from `extract_search_phrases`, which emits nothing but
-    lowercase ASCII words and single spaces, so no Lucene metacharacter can appear; any phrase
-    that somehow carries one is dropped rather than escaped, because a malformed query would
-    fail the whole lookup.
+    shares a word. Long single tokens are additionally searched by prefix and by edit distance at
+    a boost below 1, so an inflected question still reaches a nominative title while an exact
+    match keeps ranking above it.
+
+    The phrases come from `extract_search_phrases`, which emits nothing but lowercase ASCII words
+    and single spaces, so no Lucene metacharacter can appear; any phrase that somehow carries one
+    is dropped rather than escaped, because a malformed query would fail the whole lookup.
 
     Args:
         phrases: Search phrases, most specific first
@@ -268,11 +310,23 @@ def build_lucene_query(phrases: list[str]) -> str:
         A Lucene query string, or an empty string when no phrase is usable
     """
     clauses: list[str] = []
+    seen: set[str] = set()
+    expandable_tokens: list[str] = []
 
     for phrase in phrases:
         if not phrase or not LUCENE_SAFE_PHRASE_RE.fullmatch(phrase):
             continue
-        boost = len(phrase.split())
+
+        words = phrase.split()
+        boost = len(words)
         clauses.append(f'"{phrase}"^{boost}' if boost > 1 else f'"{phrase}"')
+
+        for word in words:
+            if word not in seen:
+                seen.add(word)
+                expandable_tokens.append(word)
+
+    for token in expandable_tokens:
+        clauses.extend(expand_inflected_token(token))
 
     return " OR ".join(clauses)
