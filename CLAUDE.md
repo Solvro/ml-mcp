@@ -202,8 +202,7 @@ ml-mcp/
 │   ├── compose.prefect.yml      # Data pipeline only
 │   ├── Dockerfile.mcp           # MCP server image
 │   ├── Dockerfile.api           # FastAPI image
-│   ├── Dockerfile.prefect       # Data pipeline image
-│   └── prefect-entrypoint.sh   # Starts Prefect server then runs pipeline
+│   └── Dockerfile.prefect       # Data pipeline image
 ├── graph_config.yaml            # Master config: LLM settings, graph schema, prompts
 ├── pyproject.toml               # Dependencies, ruff config, entry points
 ├── justfile                     # All dev commands
@@ -587,6 +586,6 @@ The system tries LLM providers in order: OpenAI → DeepSeek → Google Gemini. 
 
 8. **Docker multi-stage builds** — MCP and API Dockerfiles use `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
 
-9. **Prefect version mismatch** — `Dockerfile.prefect` pins `prefect==2.*` while `pyproject.toml` requires `prefect>=3.6.7`. Verify which version is actually running before modifying pipeline code. (Flagged as inconsistency.)
+9. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
 
 10. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.
