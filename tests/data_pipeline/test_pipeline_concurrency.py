@@ -501,3 +501,55 @@ def test_full_scan_after_incremental_does_not_reclaim_untouched_documents(monkey
     pipeline_module.data_pipeline_flow()
 
     assert claim_stub.calls == []
+
+
+def test_incremental_merge_drops_stale_hash_for_attempted_but_missing_extraction(monkeypatch):
+    acquired = [
+        {"source_id": "file://docs/a.pdf", "path": "/tmp/docs/a.pdf"},
+        {"source_id": "file://docs/b.pdf", "path": "/tmp/docs/b.pdf"},
+    ]
+
+    old_a = pipeline_module._compute_page_hash("a-old")
+    old_b = pipeline_module._compute_page_hash("b-old")
+    recorded: dict[str, str] = {}
+
+    def fake_record(self, hashes, mode="full"):
+        recorded.clear()
+        recorded.update(hashes)
+
+    monkeypatch.setattr(pipeline_module, "acquire_data", lambda: list(acquired))
+    monkeypatch.setattr(
+        pipeline_module,
+        "ocr_extraction",
+        lambda _items: [("file://docs/b.pdf#page=1", "b-new")],
+    )
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "get_latest_pipeline_source_hashes",
+        lambda self: {
+            "file://docs/a.pdf#page=1": old_a,
+            "file://docs/b.pdf#page=1": old_b,
+        },
+    )
+    monkeypatch.setattr(pipeline_module.GraphPopulator, "record_pipeline_run", fake_record)
+    monkeypatch.setattr(pipeline_module, "reflect_on_schema", lambda: "schema-summary")
+    monkeypatch.setattr(
+        pipeline_module,
+        "claim_document_for_processing",
+        SubmitStub(lambda _doc_hash: ImmediateFuture(True)),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "generate_cypher_queries",
+        SubmitStub(lambda _page, _schema: ImmediateFuture("MERGE (n:Entity {x: 1})")),
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "populate_graph",
+        SubmitStub(lambda _cypher, _hash, _source_id: ImmediateFuture(None)),
+    )
+
+    pipeline_module.data_pipeline_flow(changed=["docs/a.pdf", "docs/b.pdf"])
+
+    assert "file://docs/a.pdf#page=1" not in recorded
+    assert recorded["file://docs/b.pdf#page=1"] == pipeline_module._compute_page_hash("b-new")

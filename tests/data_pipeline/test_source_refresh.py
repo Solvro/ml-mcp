@@ -662,3 +662,104 @@ def test_refresh_keeps_deleted_entry_until_the_pipeline_confirms(
     assert stale_document.source_id in staging.load_manifest(staging_env)
     assert stale_document.staged.is_file()
     assert not stale_document.archived.exists()
+
+
+def test_refresh_marks_pending_as_failed_after_retry_limit(staging_env, monkeypatch):
+    monkeypatch.setenv("DATA_PIPELINE_MANIFEST_MAX_ATTEMPTS", "2")
+
+    calls = 0
+
+    def fake_pipeline(*, changed=None, deleted=None):
+        nonlocal calls
+        calls += 1
+        return PipelineOutcome(processed=set(), deleted=set())
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=False, connector=connector)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    manifest = staging.load_manifest(staging_env)
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_FAILED
+    assert manifest[sid]["attempt_count"] == 2
+    assert calls == 2
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+    assert calls == 2
+
+
+def test_refresh_byte_change_rearms_failed_entry(staging_env, monkeypatch):
+    monkeypatch.setenv("DATA_PIPELINE_MANIFEST_MAX_ATTEMPTS", "2")
+
+    relative = "pwr.edu.pl/files/regulamin.pdf"
+    sid = staging.source_id_for(relative)
+    staged = staging_env / relative
+    staged.parent.mkdir(parents=True, exist_ok=True)
+    staged.write_bytes(b"%PDF-1.4 old")
+
+    staging.save_manifest(
+        staging_env,
+        {
+            sid: {
+                "origin": PDF,
+                "sha256": "old-hash",
+                "size": len(b"%PDF-1.4 old"),
+                "status": staging.MANIFEST_STATUS_FAILED,
+                "attempt_count": 2,
+                "last_error": "retry limit reached",
+            }
+        },
+    )
+
+    def fake_pipeline(*, changed=None, deleted=None):
+        confirmed = {staging.source_id_for(path) for path in (changed or [])}
+        return PipelineOutcome(processed=confirmed, deleted=set())
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
+
+    routes = {
+        HOME: httpx.Response(200, text=f'<html><body><a href="{PDF}">pdf</a></body></html>'),
+        PDF: httpx.Response(200, content=b"%PDF-1.4 NEW-CONTENT"),
+    }
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    manifest = staging.load_manifest(staging_env)
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PROCESSED
+    assert manifest[sid]["attempt_count"] == 0
+    assert manifest[sid]["last_error"] == ""
+
+
+def test_refresh_does_not_report_failed_entry_as_deleted(staging_env, monkeypatch, stale_document):
+    manifest = staging.load_manifest(staging_env)
+    manifest[stale_document.source_id]["status"] = staging.MANIFEST_STATUS_FAILED
+    manifest[stale_document.source_id]["attempt_count"] = 3
+    manifest[stale_document.source_id]["last_error"] = "retry limit reached"
+    staging.save_manifest(staging_env, manifest)
+
+    calls: list[dict[str, object]] = []
+
+    def fake_pipeline(*, changed=None, deleted=None):
+        calls.append({"changed": changed, "deleted": deleted})
+        confirmed = {staging.source_id_for(path) for path in (changed or [])}
+        return PipelineOutcome(processed=confirmed, deleted=set())
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    assert len(calls) == 1
+    assert stale_document.relative not in (calls[0]["deleted"] or [])
+
+    refreshed = staging.load_manifest(staging_env)
+    assert stale_document.source_id in refreshed
+    assert refreshed[stale_document.source_id]["status"] == staging.MANIFEST_STATUS_FAILED

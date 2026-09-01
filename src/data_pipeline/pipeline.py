@@ -185,11 +185,7 @@ def data_pipeline_flow(
 
     requested_deleted_source_ids = _normalize_deleted_source_ids(deleted)
     confirmed_deleted_source_ids: set[str] = set()
-
-    if requested_deleted_source_ids:
-        confirmed_deleted_source_ids = populator.delete_sources_for_documents(
-            sorted(requested_deleted_source_ids)
-        )
+    restored_from_dump = False
 
     # A dump is a bootstrap for a fresh database only; once the graph has any
     # data, scheduled runs must keep extracting instead of restoring.
@@ -197,10 +193,20 @@ def data_pipeline_flow(
         try:
             import_graph_from_cypher_dump()
             populator.record_restore_run()
-            logger.info("Loaded graph from dump; skipped LLM extraction.")
-            return PipelineOutcome(processed=set(), deleted=set())
+            restored_from_dump = True
+            logger.info(
+                "Loaded graph from dump; applying requested deletions before finishing run."
+            )
         except Exception as exc:
             logger.warning("Dump restore failed (%s); continuing with extraction", exc)
+
+    if requested_deleted_source_ids:
+        confirmed_deleted_source_ids = populator.delete_sources_for_documents(
+            sorted(requested_deleted_source_ids)
+        )
+
+    if restored_from_dump:
+        return PipelineOutcome(processed=set(), deleted=confirmed_deleted_source_ids)
 
     acquired = acquire_data()
 
@@ -229,6 +235,12 @@ def data_pipeline_flow(
             len(acquired),
         )
         acquired = filtered_acquired
+
+    attempted_documents = {
+        _document_id(str(item["source_id"]))
+        for item in acquired
+        if isinstance(item, dict) and item.get("source_id")
+    }
     extracted = ocr_extraction(acquired)
     source_pages = _normalize_source_pages(extracted)
     if not source_pages:
@@ -379,7 +391,7 @@ def data_pipeline_flow(
         merged_source_hashes = {
             sid: page_hash
             for sid, page_hash in pruned_last_source_hashes.items()
-            if _document_id(sid) not in all_documents
+            if _document_id(sid) not in attempted_documents
         }
         merged_source_hashes.update(full_source_hashes)
         populator.record_pipeline_run(merged_source_hashes, mode=mode)
