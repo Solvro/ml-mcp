@@ -77,18 +77,24 @@ def _rag_stub(
     return rag, database
 
 
+def _exact_clauses(query: str) -> list[str]:
+    """The quoted phrase clauses, without the inflection expansions added for issue #59."""
+    return [clause for clause in query.split(" OR ") if clause.startswith('"')]
+
+
 def test_lucene_query_boosts_longer_phrases() -> None:
     """A node matching the whole noun phrase must outrank one sharing a single word."""
     query = build_lucene_query(["udzial w konferencjach", "konferencjach"])
 
-    assert query == '"udzial w konferencjach"^3 OR "konferencjach"'
+    assert _exact_clauses(query) == ['"udzial w konferencjach"^3', '"konferencjach"']
 
 
 def test_lucene_query_drops_phrases_carrying_metacharacters() -> None:
     """A malformed query fails the whole lookup, so an odd phrase is dropped, not escaped."""
     query = build_lucene_query(["udzial w konferencjach", 'title:"x" OR *'])
 
-    assert query == '"udzial w konferencjach"^3'
+    assert _exact_clauses(query) == ['"udzial w konferencjach"^3']
+    assert "title" not in query
 
 
 def test_lucene_query_is_empty_when_no_phrase_is_usable() -> None:

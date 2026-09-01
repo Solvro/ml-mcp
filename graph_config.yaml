@@ -17,6 +17,10 @@ rag:
   enable_fallback_search: true
   # Lucene relevance floor for the label-agnostic fallback. Scores are corpus-relative, so
   # this is a junk filter, not a precision guarantee - the grader node is the precision gate.
+  #
+  # Do not raise this much. Since the inflection expansion (#59) a legitimate oblique-case hit
+  # scores around 1.4 where the nominative form of the same question scores 10, so a floor set
+  # from nominative scores would silently drop exactly the matches that expansion recovers.
   fallback_min_score: 0.5
 
 data_pipeline:

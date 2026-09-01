@@ -484,10 +484,16 @@ one (`ALLOWED_RETRIEVAL_PROCEDURES`), and generated Cypher is still validated wi
 so the model cannot call anything. `CALL` subqueries are rejected outright — they name no
 procedure to vet.
 
-**Known limitation:** the index uses Lucene's standard analyzer; no Polish analyzer ships with
-this Neo4j build, so inflected forms do not match (`"semestrze zimowym"` does not find
-`"Semestr zimowy"`). The CONTAINS scan this replaced had the same gap, so it is not a
-regression, but it caps fallback recall on inflected questions.
+**Inflected Polish.** The index uses Lucene's standard analyzer and no Polish analyzer ships
+with this Neo4j build, so nothing stems: a question in an oblique case would never reach a
+nominative title. `build_lucene_query` closes that query-side. Tokens of 5 characters or more
+also get a prefix clause (`semestrze` → `semestr*`) and an edit-distance clause
+(`semestrze~1`), both boosted below 1 so an exact phrase still outranks them. Short tokens stay
+exact — a 3-character prefix matches half the graph.
+
+This widens recall deliberately; the score floor and the grader are what keep precision, which
+is the point of having both. If a Polish analyzer ever ships in the deployed build, configuring
+it at index creation is the better fix and this expansion can go.
 
 ### Abstention Is a Retrieval Decision
 
@@ -495,7 +501,9 @@ Whether to answer is settled before an answer is written, not by the answering m
 
 1. **Score threshold.** Fallback hits below `rag.fallback_min_score` are filtered in the
    database. Lucene scores are corpus-relative, so this is a junk floor, not a precision
-   guarantee.
+   guarantee. Keep it low: an inflected hit legitimately scores around 1.4 where the nominative
+   form of the same question scores 10, so a floor chosen from nominative scores would drop the
+   matches the inflection expansion exists to recover.
 2. **`grade_context` node** (between `retrieve` and the end of the graph). One cheap fast-model
    call is shown the question and the retrieved rows and returns which of them actually answer
    it. Rejecting all of them sets `retrieval_strategy = graded_out` and empties the context, so

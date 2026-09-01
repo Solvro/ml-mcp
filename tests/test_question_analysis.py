@@ -3,6 +3,8 @@
 import pytest
 
 from src.mcp_server.tools.knowledge_graph.question_analysis import (
+    build_lucene_query,
+    expand_inflected_token,
     extract_search_phrases,
     is_question_like_literal,
     strip_question_literal_filters,
@@ -191,3 +193,83 @@ def test_literal_longer_than_the_question_cannot_be_a_copied_span() -> None:
         )
         is False
     )
+
+
+# Issue #59: the index has no Polish analyzer, so an oblique-case question never reaches the
+# nominative title. Long tokens are expanded by prefix and edit distance to close that gap.
+INFLECTED_QUESTION = "Co się dzieje w semestrze zimowym?"
+
+
+@pytest.mark.parametrize(
+    ("token", "expected_prefix"),
+    [
+        ("semestrze", "semestr*"),
+        ("zimowym", "zimow*"),
+        ("konferencjach", "konferencja*"),
+        ("kandydatki", "kandydat*"),
+    ],
+)
+def test_a_long_token_is_searched_by_prefix(token, expected_prefix) -> None:
+    clauses = expand_inflected_token(token)
+
+    assert any(clause.startswith(expected_prefix) for clause in clauses)
+
+
+@pytest.mark.parametrize("token", ["semestrze", "zimowym", "konferencjach"])
+def test_a_long_token_is_also_searched_by_edit_distance(token) -> None:
+    clauses = expand_inflected_token(token)
+
+    assert any(clause.startswith(f"{token}~1") for clause in clauses)
+
+
+@pytest.mark.parametrize("token", ["w", "we", "rok", "roku"])
+def test_a_short_token_is_never_expanded(token) -> None:
+    """Short tokens match half the graph by prefix, so they stay exact."""
+    assert expand_inflected_token(token) == []
+
+
+def test_the_prefix_never_shrinks_below_the_floor() -> None:
+    clauses = expand_inflected_token("kurso")
+
+    assert all(not clause.startswith("kur*") for clause in clauses)
+
+
+def test_expansion_clauses_are_boosted_below_one() -> None:
+    """A true nominative hit has to keep ranking above an inflected or fuzzy one."""
+    for clause in expand_inflected_token("semestrze"):
+        boost = float(clause.rsplit("^", 1)[1])
+        assert boost < 1
+
+
+def test_the_inflected_question_reaches_the_nominative_title() -> None:
+    query = build_lucene_query(extract_search_phrases(INFLECTED_QUESTION))
+
+    assert "semestr*" in query
+    assert "zimow*" in query
+
+
+def test_the_exact_phrase_still_outranks_every_expansion() -> None:
+    query = build_lucene_query(["semestr zimowy"])
+
+    assert query.startswith('"semestr zimowy"^2')
+    exact_boost = 2.0
+    for clause in query.split(" OR ")[1:]:
+        assert float(clause.rsplit("^", 1)[1]) < exact_boost
+
+
+def test_a_token_repeated_across_phrases_is_expanded_once() -> None:
+    query = build_lucene_query(["semestr zimowy", "semestr", "zimowy"])
+
+    assert query.count("semes*") == 1
+    assert query.count("semestr~1") == 1
+
+
+def test_expansion_still_drops_phrases_with_metacharacters() -> None:
+    query = build_lucene_query(['title:"x" OR *', "semestrze"])
+
+    assert "title" not in query
+    assert "semestr*" in query
+
+
+def test_no_phrases_still_produces_no_query() -> None:
+    assert build_lucene_query([]) == ""
