@@ -40,6 +40,11 @@ services:
       - "8005:8005"
     env_file:
       - ../.env
+    environment:
+      # .env holds bolt://localhost:7687 for host-side development, where localhost is right.
+      # Inside the network localhost is this container, so the service name has to win here,
+      # the same way topwr-api overrides MCP_HOST.
+      - NEO4J_URI=bolt://neo4j:7687
     depends_on:
       neo4j:
         condition: service_healthy
@@ -49,7 +54,10 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 15s
+      # Measured at 6s on a warm machine, but a first start on freshly built layers has been
+      # seen taking minutes. A success ends the start period immediately, so headroom here only
+      # delays reporting a container that never comes up, never a healthy one.
+      start_period: 180s
 
   topwr-api:
     build:
