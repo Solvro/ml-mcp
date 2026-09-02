@@ -118,8 +118,8 @@ def test_delete_sources_for_documents_confirms_every_completed_id():
             # b.pdf contributed nothing unique, so it leaves no orphans behind —
             # that is a completed deletion, not a failed one.
             if params["doc_source_id"] == "file://docs/a.pdf":
-                return [{"orphans_removed": 3}]
-            return [{"orphans_removed": 0}]
+                return [{"sources_deleted": 2, "orphans_removed": 3}]
+            return [{"sources_deleted": 1, "orphans_removed": 0}]
 
     pop = graph_populating.GraphPopulator.__new__(graph_populating.GraphPopulator)
     pop.graph_db = FakeGraphDb()
@@ -141,7 +141,7 @@ def test_delete_sources_for_documents_skips_ids_whose_query_failed():
         def query(self, query, params=None):
             if params["doc_source_id"] == "file://docs/b.pdf":
                 raise RuntimeError("neo4j down")
-            return [{"orphans_removed": 1}]
+            return [{"sources_deleted": 1, "orphans_removed": 1}]
 
     pop = graph_populating.GraphPopulator.__new__(graph_populating.GraphPopulator)
     pop.graph_db = FailingGraphDb()
@@ -149,3 +149,20 @@ def test_delete_sources_for_documents_skips_ids_whose_query_failed():
     deleted = pop.delete_sources_for_documents(["file://docs/a.pdf", "file://docs/b.pdf"])
 
     assert deleted == {"file://docs/a.pdf"}
+
+
+def test_delete_sources_for_documents_warns_when_source_nodes_are_missing(caplog):
+    class EmptyMatchGraphDb:
+        def query(self, query, params=None):
+            return [{"sources_deleted": 0, "orphans_removed": 0}]
+
+    pop = graph_populating.GraphPopulator.__new__(graph_populating.GraphPopulator)
+    pop.graph_db = EmptyMatchGraphDb()
+
+    deleted = pop.delete_sources_for_documents(["file://docs/a.pdf"])
+
+    assert deleted == {"file://docs/a.pdf"}
+    assert any(
+        "matched no Source nodes" in rec.message and rec.levelname == "WARNING"
+        for rec in caplog.records
+    )

@@ -24,13 +24,15 @@ from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 
 from src.config.config import get_config
+from src.config.system_labels import SYSTEM_LABELS
 from src.data_pipeline.canonical_nodes import CONTEXT_SEPARATOR, canonical_entity_key
 from src.data_pipeline.label_vocabulary import LabelVocabulary
 
 module_logger = logging.getLogger(__name__)
 
-# Bookkeeping nodes the pipeline owns. They carry no title and must never be merged by key.
-INTERNAL_LABELS = frozenset({"ProcessedDocument", "PipelineRun"})
+# Bookkeeping/provenance nodes the pipeline owns. They carry no answer payload and must never be
+# relabelled or merged by key.
+INTERNAL_LABELS = SYSTEM_LABELS
 
 KEY_BACKFILL_BATCH_SIZE = 500
 MAX_CONTEXT_LENGTH = 2000

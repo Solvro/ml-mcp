@@ -182,12 +182,13 @@ class GraphPopulator:
                     OPTIONAL MATCH (n)-[:FROM_SOURCE]->(s)
                     WITH collect(DISTINCT s) AS sources, collect(DISTINCT n) AS touched
                     FOREACH (s IN sources | DETACH DELETE s)
-                    WITH touched
-                    UNWIND touched AS n
-                    WITH DISTINCT n
-                    WHERE NOT EXISTS { MATCH (n)-[:FROM_SOURCE]->(:Source) }
-                    DETACH DELETE n
-                    RETURN count(n) AS orphans_removed
+                    WITH size(sources) AS sources_deleted,
+                         [n IN touched
+                          WHERE n IS NOT NULL
+                            AND NOT EXISTS { MATCH (n)-[:FROM_SOURCE]->(:Source) }]
+                         AS orphans
+                    FOREACH (n IN orphans | DETACH DELETE n)
+                    RETURN sources_deleted, size(orphans) AS orphans_removed
                     """,
                     params={
                         "doc_source_id": document_source_id,
@@ -198,8 +199,23 @@ class GraphPopulator:
                 logger.error("Deletion failed for %s: %s", document_source_id, exc)
                 continue
 
-            orphans = rows[0].get("orphans_removed", 0) if rows else 0
-            logger.info("Deleted %s; removed %s orphaned nodes", document_source_id, orphans)
+            row = rows[0] if rows else {}
+            sources_deleted = row.get("sources_deleted", 0)
+            orphans_removed = row.get("orphans_removed", 0)
+
+            if sources_deleted:
+                logger.info(
+                    "Deleted %s: %s sources, %s orphaned nodes",
+                    document_source_id,
+                    sources_deleted,
+                    orphans_removed,
+                )
+            else:
+                logger.warning(
+                    "Deleted %s but matched no Source nodes; provenance is missing, "
+                    "relabelled, or was never written",
+                    document_source_id,
+                )
             deleted.add(document_source_id)
 
         return deleted

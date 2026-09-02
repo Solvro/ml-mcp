@@ -21,6 +21,7 @@ from ....config.messages import (
     NO_GRAPH_DATA_MESSAGE,
     OFF_TOPIC_MESSAGE,
 )
+from ....config.system_labels import SYSTEM_LABELS
 from ....config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
 from ....text_normalization import (
     ensure_case_insensitive_fuzzy_matching,
@@ -67,7 +68,7 @@ GUARDRAIL_DECISION_ALIASES = {
 # number instead of a judgement call.
 FULLTEXT_INDEX_NAME = "entity_search"
 # The pipeline's own bookkeeping nodes carry no answer for a user question.
-FULLTEXT_EXCLUDED_LABELS = frozenset({"ProcessedDocument", "PipelineRun"})
+FULLTEXT_EXCLUDED_LABELS = SYSTEM_LABELS
 FULLTEXT_SEARCH_PROCEDURE = "db.index.fulltext.queryNodes"
 # The only procedure any retrieval query may call. Generated Cypher is validated with an
 # empty allowlist, so this never widens what the model is allowed to do.
