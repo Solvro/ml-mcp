@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 from prefect import flow, get_run_logger
 from prefect.exceptions import MissingContextError
 
+from src.config.logging_config import configure_logging
 from src.data_pipeline.pipeline import data_pipeline_flow
 from src.data_pipeline.staging import (
     atomic_write_bytes,
@@ -441,6 +442,7 @@ def serve_refresh() -> None:
     Blocks forever; intended as a container/console entry point.
     """
     load_dotenv()
+    configure_logging()
     cron = os.getenv("DATA_PIPELINE_REFRESH_CRON", "0 3 * * *").strip() or "0 3 * * *"
     refresh_sources_flow.serve(name="source-refresh", cron=cron)
 

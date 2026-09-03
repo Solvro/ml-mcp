@@ -15,17 +15,15 @@ from langfuse.langchain import CallbackHandler
 from openai import APITimeoutError
 
 from ..config.config import get_config
+from ..config.logging_config import configure_logging
 from ..config.messages import LLM_CALL_TIMEOUT_MESSAGE
 from ..config.timeouts import get_llm_timeout_seconds
 from .models import ChatRequest, ChatResponse, MessageRole
 from .session_manager import SessionManager
 
 load_dotenv()
+configure_logging()
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
 logger = logging.getLogger(__name__)
 
 # Configuration

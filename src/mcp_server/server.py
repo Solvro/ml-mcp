@@ -1,4 +1,5 @@
 import atexit
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -6,11 +7,15 @@ from fastmcp import FastMCP
 from langfuse.langchain import CallbackHandler
 
 from ..config.config import get_config
+from ..config.logging_config import configure_logging
 from ..config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
 from ..config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
 from .tools.knowledge_graph.rag import RAG
 
 load_dotenv()
+configure_logging()
+
+logger = logging.getLogger(__name__)
 
 mcp = FastMCP("SOLVRO MCP")
 
@@ -33,9 +38,9 @@ if _langfuse_secret and _langfuse_public:
         )
         atexit.register(langfuse.flush)
     except Exception as e:
-        print(f"Warning: Failed to initialize Langfuse: {e}")
+        logger.warning("Failed to initialize Langfuse: %s", e)
 else:
-    print("Langfuse credentials not configured. Tracing disabled.")
+    logger.info("Langfuse credentials not configured. Tracing disabled.")
 
 
 def initialize_rag():
@@ -100,10 +105,10 @@ async def knowledge_graph_tool(
         return f"Error: {GRAPH_PIPELINE_TIMEOUT_MESSAGE}"
 
     metadata = result.get("metadata", {})
-    print(f"[Guardrail decision] {metadata.get('guardrail_decision')}")
-    print(f"[Retrieval strategy] {metadata.get('retrieval_strategy')}")
-    print(f"[Generated Cypher]\n{metadata.get('cypher_query')}")
-    print(f"[Graph context]\n{metadata.get('context')}")
+    logger.info("Guardrail decision: %s", metadata.get("guardrail_decision"))
+    logger.info("Retrieval strategy: %s", metadata.get("retrieval_strategy"))
+    logger.debug("Generated Cypher:\n%s", metadata.get("cypher_query"))
+    logger.debug("Graph context:\n%s", metadata.get("context"))
 
     # Return the answer directly (already a JSON string from rag.py)
     return result["answer"]

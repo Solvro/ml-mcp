@@ -41,7 +41,6 @@ def _rag_stub(
     taking {schema} or {user_question} breaks these tests too.
     """
     rag = object.__new__(RAG)
-    rag.enable_debug = False
     rag._cached_schema = None
     rag.database = FakeSchemaDatabase(schema)
     rag._initialize_prompt_templates()

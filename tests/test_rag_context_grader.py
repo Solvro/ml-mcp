@@ -43,7 +43,6 @@ class RecordingLLM:
 def _grader_stub(reply: str | Exception) -> tuple[RAG, RecordingLLM]:
     """Build a RAG with the real grader prompt from graph_config.yaml and a stubbed model."""
     rag = object.__new__(RAG)
-    rag.enable_debug = False
     rag.context_grader_template = PromptTemplate(
         input_variables=["user_question", "candidates"],
         template=get_config().prompts.context_grader,

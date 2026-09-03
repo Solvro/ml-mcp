@@ -2,6 +2,7 @@ import logging
 
 from dotenv import load_dotenv
 
+from src.config.logging_config import configure_logging
 from src.data_pipeline.flows.graph_dedup import deduplicate_graph
 from src.data_pipeline.graph_dump import (
     ensure_host_dump_dir,
@@ -10,25 +11,27 @@ from src.data_pipeline.graph_dump import (
     import_graph_from_cypher_dump,
 )
 
+logger = logging.getLogger(__name__)
+
 
 def dump_graph_main() -> None:
     """Export Neo4j graph to the configured dump path."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_logging()
     load_dotenv()
     ensure_host_dump_dir()
     export_graph_to_cypher()
-    print("OK:", host_dump_path().resolve())
+    logger.info("Graph exported to %s", host_dump_path().resolve())
 
 
 def restore_graph_main() -> None:
     """Import graph dump into Neo4j (APOC)."""
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_logging()
     load_dotenv()
     path = host_dump_path()
     if not path.is_file():
         raise SystemExit(f"missing dump: {path.resolve()}")
     import_graph_from_cypher_dump()
-    print("OK:", path.resolve())
+    logger.info("Graph imported from %s", path.resolve())
 
 
 def dedup_graph_main() -> None:
@@ -38,10 +41,12 @@ def dedup_graph_main() -> None:
     written before labels were a closed set and before merges keyed on `key`, so it is the one
     to run after upgrading an existing database. It is idempotent.
     """
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+    configure_logging()
     load_dotenv()
     stats = deduplicate_graph.fn()
-    print(
-        "OK: relabelled={relabelled_labels} backfilled={keys_backfilled} "
-        "merged={groups_merged}".format(**stats)
+    logger.info(
+        "Deduplication finished: relabelled=%s backfilled=%s merged=%s",
+        stats["relabelled_labels"],
+        stats["keys_backfilled"],
+        stats["groups_merged"],
     )

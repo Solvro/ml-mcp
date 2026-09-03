@@ -6,7 +6,6 @@ from src.mcp_server.tools.knowledge_graph.rag import RAG
 def _retrieval_stub() -> RAG:
     rag = object.__new__(RAG)
     rag.max_results = 5
-    rag.enable_debug = False
     rag.enable_fallback_search = False
     rag.database = MagicMock()
     return rag

@@ -70,7 +70,6 @@ def _rag_stub(
     rag = object.__new__(RAG)
     rag.database = database
     rag.max_results = 5
-    rag.enable_debug = False
     rag.enable_fallback_search = True
     rag.fallback_min_score = min_score
 

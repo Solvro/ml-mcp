@@ -102,6 +102,12 @@ OCR_LANG=pol+eng
 TESSERACT_CMD=/opt/homebrew/bin/tesseract
 ```
 
+**Logging:**
+```
+LOG_LEVEL=INFO      # DEBUG | INFO | WARNING | ERROR | CRITICAL
+# LOG_FORMAT=%(asctime)s - %(name)s - %(levelname)s - %(message)s
+```
+
 **Service ports (have defaults):**
 ```
 MCP_BIND_HOST=0.0.0.0
@@ -150,6 +156,7 @@ ml-mcp/
 ├── src/
 │   ├── config/
 │   │   ├── config.py            # Singleton config loader (loads graph_config.yaml)
+│   │   ├── logging_config.py    # configure_logging(): LOG_LEVEL/LOG_FORMAT from the env
 │   │   └── config_models.py     # AUTO-GENERATED Pydantic models — do not edit manually
 │   ├── mcp_server/
 │   │   ├── server.py            # FastMCP app, tool registration, startup
@@ -196,6 +203,7 @@ ml-mcp/
 │   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
+│   ├── test_logging_config.py                  # LOG_LEVEL resolution and root-logger setup
 │   └── data_pipeline/                          # Concurrency, acquisition, OCR, extraction quality
 ├── docker/
 │   ├── compose.stack.yml        # Full stack (neo4j, postgres, mcp, api, prefect)
@@ -560,6 +568,27 @@ failed fetch so good staged content is never overwritten.
 - Optionally set `TESSERACT_CMD` when the binary is outside `PATH`.
 - `.docx` files are parsed with `python-docx` (paragraphs and tables), not OCR.
 
+### Logging
+
+Nothing in `src/` prints. Every module holds `logging.getLogger(__name__)`, and each entry
+point (`mcp_server/server.py`, `topwr_api/server.py`, `mcp_client/client.py`, the
+`data_pipeline` and `scripts` CLIs) calls `configure_logging()` from
+`src/config/logging_config.py` once, right after `load_dotenv()`.
+
+`LOG_LEVEL` in `.env` is the one switch — an unset or unrecognised value falls back to `INFO`
+with a warning, never to silence. `LOG_FORMAT` overrides the line format. `configure_logging()`
+is idempotent and does **not** replace an existing handler, so uvicorn and Prefect keep their
+own formatting and only the level is applied on top.
+
+Level conventions in the RAG pipeline: `info` for what a request decided (guardrail decision,
+retrieval strategy), `debug` for the bulky evidence behind it (the schema sent to the model, the
+generated Cypher, the retrieved rows), `warning` for a blocked or failed query. The one
+remaining `print` is in `mcp_client/client.py` — `just kg "<question>"` writes its answer to
+stdout, which is the command's output, not a log line, and must survive `LOG_LEVEL=WARNING`.
+
+`rag.enable_debug` in `graph_config.yaml` forces the RAG logger to `DEBUG` regardless of
+`LOG_LEVEL`; it no longer gates anything else.
+
 ### Session Management
 `SessionManager` is thread-safe in-memory storage (dict + `threading.Lock`). Not persisted across restarts. Suitable for single-instance deployments only.
 
@@ -576,16 +605,19 @@ The system tries LLM providers in order: OpenAI → DeepSeek → Google Gemini. 
 
 3. **Session storage is in-memory** — restarting the API loses all sessions. No database persistence layer for sessions.
 
-4. **Cypher LIMIT enforcement** — the RAG pipeline strips and re-adds `LIMIT` to all generated Cypher queries. Do not rely on LLM to add it.
+4. **No `print` in `src/`** — use `logging.getLogger(__name__)`; the level comes from
+   `LOG_LEVEL` in `.env`. The `kg` CLI answer is the single deliberate exception.
 
-5. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
+5. **Cypher LIMIT enforcement** — the RAG pipeline strips and re-adds `LIMIT` to all generated Cypher queries. Do not rely on LLM to add it.
 
-6. **Polish language** — prompts are in Polish; guardrails check if a query is university-related in Polish context; CLARIN model is used as alternative for Polish-specific tasks.
+6. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
 
-7. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
+7. **Polish language** — prompts are in Polish; guardrails check if a query is university-related in Polish context; CLARIN model is used as alternative for Polish-specific tasks.
 
-8. **Docker multi-stage builds** — MCP and API Dockerfiles use `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
+8. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
 
-9. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
+9. **Docker multi-stage builds** — MCP and API Dockerfiles use `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
 
-10. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.
+10. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
+
+11. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.

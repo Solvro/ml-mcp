@@ -61,7 +61,6 @@ def _build_rag_graph_stub(
 ) -> GraphStub:
     """Create a runnable RAG graph without running RAG.__init__."""
     rag = object.__new__(RAG)
-    rag.enable_debug = False
     rag.max_results = max_results
     rag.enable_fallback_search = False
     rag.graph_timeout_sec = graph_timeout_sec

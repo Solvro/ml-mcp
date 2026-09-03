@@ -63,7 +63,6 @@ class DataPipe:
             chunk_overlap=self.chunk_overlap,
             length_function=len,
         )
-        logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
     def _load_data(self, file_path: str) -> None:
         """Load data from a file and append it to the docs_data list."""

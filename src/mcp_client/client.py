@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import sys
 import uuid
@@ -12,10 +13,15 @@ from openai import APITimeoutError
 from pydantic import SecretStr
 
 from ..config.config import get_config
+from ..config.logging_config import configure_logging
 from ..config.messages import LLM_CALL_TIMEOUT_MESSAGE
 from ..config.timeouts import get_llm_timeout_seconds
 
 load_dotenv()
+configure_logging()
+
+logger = logging.getLogger(__name__)
+
 llm_timeout_sec = get_llm_timeout_seconds()
 
 config = get_config()
@@ -80,9 +86,9 @@ if _langfuse_secret and _langfuse_public:
         handler = CallbackHandler()
         observe = langfuse_observe
     except Exception as e:
-        print(f"Warning: Failed to initialize Langfuse: {e}")
+        logger.warning("Failed to initialize Langfuse: %s", e)
 else:
-    print("Langfuse credentials not configured. Tracing disabled.")
+    logger.info("Langfuse credentials not configured. Tracing disabled.")
 
 
 def optional_observe(name: str):
