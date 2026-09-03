@@ -15,6 +15,7 @@ one instance.
 import asyncio
 
 import pytest
+from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
@@ -170,3 +171,66 @@ def test_tool_returns_the_answer_when_the_pipeline_works(restore_rag) -> None:
     answer = asyncio.run(server.knowledge_graph_tool.fn("Kto wyklada analize?"))
 
     assert answer == "Brak danych w grafie wiedzy dla tego pytania."
+
+
+# --- through a real MCP client -------------------------------------------------------------
+#
+# The tests above call the tool function directly, which proves it raises but not that a caller
+# sees a failure. The issue is about what the backend receives, so these go through the protocol
+# with an in-memory client: `isError` is the flag topwr_api's client raises on.
+
+
+def call_over_mcp(rag, *, raise_on_error: bool = True):
+    """Call the tool the way the backend does, in-process."""
+    server.rag = rag
+
+    async def run():
+        async with Client(server.mcp) as client:
+            return await client.call_tool(
+                "knowledge_graph_tool",
+                {"user_input": "Kto wyklada analize?"},
+                raise_on_error=raise_on_error,
+            )
+
+    return asyncio.run(run())
+
+
+class AnsweringRag:
+    def __init__(self, answer: str):
+        self.answer = answer
+
+    async def ainvoke(self, **kwargs):
+        return {"answer": self.answer, "metadata": {}}
+
+
+class TimingOutRag:
+    async def ainvoke(self, **kwargs):
+        raise TimeoutError
+
+
+def test_missing_rag_reaches_the_caller_as_a_failed_call(restore_rag) -> None:
+    result = call_over_mcp(None, raise_on_error=False)
+
+    assert result.is_error, "a caller reading content would have taken the error text as an answer"
+
+
+def test_the_failure_reason_survives_to_the_caller(restore_rag) -> None:
+    """ToolError detail is passed through even when other exceptions are masked."""
+    with pytest.raises(ToolError, match="no initialized RAG"):
+        call_over_mcp(None)
+
+
+def test_pipeline_timeout_reaches_the_caller_as_a_failed_call(restore_rag) -> None:
+    result = call_over_mcp(TimingOutRag(), raise_on_error=False)
+
+    assert result.is_error
+
+
+def test_no_data_in_the_graph_is_content_not_a_failure(restore_rag) -> None:
+    """Retrieval ran and found nothing. That is an answer, and the caller must get it as one."""
+    result = call_over_mcp(AnsweringRag("Brak danych w grafie wiedzy dla tego pytania."))
+
+    assert not result.is_error
+    assert [block.text for block in result.content] == [
+        "Brak danych w grafie wiedzy dla tego pytania."
+    ]

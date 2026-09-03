@@ -197,6 +197,7 @@ ml-mcp/
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
 │   ├── test_mcp_health_signal.py               # /health, ToolError on failure, driver shutdown
+│   ├── test_kg_cli_failure_reporting.py        # kg reports a failed call instead of a traceback
 │   ├── test_rag_graph_connection_lifecycle.py  # ping_database / close on the graph driver
 │   └── data_pipeline/                          # Concurrency, acquisition, OCR, extraction quality
 ├── docker/
@@ -585,6 +586,11 @@ consulted at all — no RAG, or the pipeline timed out. `fastmcp.Client.call_too
 `source="error"` rather than feeding "Error: RAG not initialized" to the answering model as if
 it were graph data. `OFF_TOPIC_MESSAGE` and `NO_GRAPH_DATA_MESSAGE` are *answers* — retrieval
 ran and found nothing — and keep coming back as ordinary results.
+
+Both consumers of the tool had to learn the difference. `topwr_api` already caught the
+exception. The `kg` CLI did not, and a raised `ToolError` would have surfaced as a traceback, so
+it now prints the failure to **stderr** and exits non-zero — the answer owns stdout, and anything
+piping `kg` must not read an error as one.
 
 **The driver is closed on shutdown.** RAG opens `Neo4jGraph` in its constructor and holds it for
 the process lifetime; `RAG.close()` releases it and the FastMCP `lifespan` calls it, so a restart

@@ -5,6 +5,7 @@ import uuid
 
 from dotenv import load_dotenv
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import BaseChatOpenAI
@@ -156,7 +157,14 @@ def call_knowledge_graph_tool():
         sys.exit(1)
 
     user_input = " ".join(sys.argv[1:])
-    asyncio.run(query_knowledge_graph(user_input))
+    try:
+        asyncio.run(query_knowledge_graph(user_input))
+    except (ToolError, TimeoutError) as exc:
+        # A graph the server could not consult arrives as a failed tool call. Report it as a
+        # failure: on stderr, with a non-zero exit, so anything piping stdout for the answer
+        # never reads an error as one.
+        print(f"kg: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
