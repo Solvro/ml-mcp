@@ -106,14 +106,24 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     pages = ["same", "same", "unique"]
     extracted_pages = _to_extracted_pages(pages)
     linked_calls: list[tuple[str, str]] = []
+    mirrored_calls: list[tuple[str, str]] = []
 
     def link_stub(self, doc_hash: str, source_id: str):
         linked_calls.append((doc_hash, source_id))
+
+    def mirror_stub(self, doc_hash: str, source_id: str):
+        mirrored_calls.append((doc_hash, source_id))
+        return 7
 
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "link_processed_document_to_source",
         link_stub,
+    )
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "mirror_entity_provenance_for_duplicate_hash",
+        mirror_stub,
     )
 
     monkeypatch.setenv("DATA_PIPELINE_MAX_CONCURRENCY", "4")
@@ -159,6 +169,7 @@ def test_pipeline_skips_duplicate_hashes(monkeypatch):
     assert outcome.processed == {"file://docs/a.pdf"}
     assert outcome.deleted == set()
     assert linked_calls == [(second_hash, "file://docs/a.pdf#page=2")]
+    assert mirrored_calls == [(second_hash, "file://docs/a.pdf#page=2")]
 
 
 def test_pipeline_continues_after_page_failure(monkeypatch):

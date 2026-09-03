@@ -166,3 +166,37 @@ def test_delete_sources_for_documents_warns_when_source_nodes_are_missing(caplog
         "matched no Source nodes" in rec.message and rec.levelname == "WARNING"
         for rec in caplog.records
     )
+
+
+def test_mirror_entity_provenance_for_duplicate_hash_links_existing_entities():
+    class FakeGraphDb:
+        def __init__(self):
+            self.calls = []
+
+        def query(self, query, params=None):
+            self.calls.append((query, params))
+            return [{"entities_linked": 4}]
+
+    pop = graph_populating.GraphPopulator.__new__(graph_populating.GraphPopulator)
+    pop.graph_db = FakeGraphDb()
+
+    linked = pop.mirror_entity_provenance_for_duplicate_hash("hash-a", "file://docs/b.pdf#page=1")
+
+    assert linked == 4
+    assert len(pop.graph_db.calls) == 1
+    _, params = pop.graph_db.calls[0]
+    assert params["doc_hash"] == "hash-a"
+    assert params["source_id"] == "file://docs/b.pdf#page=1"
+    assert params["system_labels"] == ["PipelineRun", "ProcessedDocument", "Source"]
+
+
+def test_mirror_entity_provenance_for_duplicate_hash_skips_empty_inputs():
+    class NeverCalledGraphDb:
+        def query(self, query, params=None):
+            raise AssertionError("query should not be called")
+
+    pop = graph_populating.GraphPopulator.__new__(graph_populating.GraphPopulator)
+    pop.graph_db = NeverCalledGraphDb()
+
+    assert pop.mirror_entity_provenance_for_duplicate_hash("", "file://docs/b.pdf#page=1") == 0
+    assert pop.mirror_entity_provenance_for_duplicate_hash("hash-a", "") == 0

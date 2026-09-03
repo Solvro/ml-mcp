@@ -9,6 +9,7 @@ from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 
 from src.config.config import get_config
+from src.config.system_labels import SYSTEM_LABELS
 from src.data_pipeline.canonical_nodes import extract_entity_keys
 
 module_logger = logging.getLogger(__name__)
@@ -375,6 +376,34 @@ class GraphPopulator:
             """,
             params={"doc_hash": doc_hash, "source_id": source_id},
         )
+
+    def mirror_entity_provenance_for_duplicate_hash(self, doc_hash: str, source_id: str) -> int:
+        """Copy existing entity provenance for a duplicate-content page source."""
+        if not doc_hash or not source_id:
+            return 0
+
+        rows = self.graph_db.query(
+            """
+            MATCH (doc:ProcessedDocument {hash: $doc_hash})
+            MERGE (target:Source {source_id: $source_id})
+            MERGE (doc)-[:FROM_SOURCE]->(target)
+            WITH doc, target
+            OPTIONAL MATCH (doc)-[:FROM_SOURCE]->(existing:Source)<-[:FROM_SOURCE]-(node)
+            WHERE existing <> target
+              AND NOT any(label IN labels(node) WHERE label IN $system_labels)
+            WITH target, collect(DISTINCT node) AS nodes
+            FOREACH (node IN nodes | MERGE (node)-[:FROM_SOURCE]->(target))
+            RETURN size(nodes) AS entities_linked
+            """,
+            params={
+                "doc_hash": doc_hash,
+                "source_id": source_id,
+                "system_labels": sorted(SYSTEM_LABELS),
+            },
+        )
+        if not rows:
+            return 0
+        return int(rows[0].get("entities_linked", 0))
 
 
 @task

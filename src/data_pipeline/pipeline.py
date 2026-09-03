@@ -339,9 +339,18 @@ def data_pipeline_flow(
                 )
                 try:
                     populator.link_processed_document_to_source(page_hash, source_id)
+                    mirrored_entities = populator.mirror_entity_provenance_for_duplicate_hash(
+                        page_hash, source_id
+                    )
+                    if mirrored_entities:
+                        logger.info(
+                            "Mirrored provenance for %d entity nodes to duplicate source %s",
+                            mirrored_entities,
+                            source_id,
+                        )
                 except Exception as exc:
                     logger.warning(
-                        "Failed to link skipped hash %s to source %s: %s",
+                        "Failed to link or mirror skipped hash %s to source %s: %s",
                         page_hash,
                         source_id,
                         exc,
