@@ -6,13 +6,30 @@ to go somewhere else and exit non-zero - otherwise anything piping `kg` reads an
 answer, which is the same confusion the issue is about, one process further out.
 """
 
+import importlib
+import os
 import sys
 from unittest.mock import patch
 
 import pytest
 from fastmcp.exceptions import ToolError
 
-from src.mcp_client.client import call_knowledge_graph_tool
+
+@pytest.fixture
+def cli():
+    """Import the CLI module with a throwaway key in the environment.
+
+    `client.py` builds its LLM client at import time and raises without a key, so the module
+    cannot be imported at collection on a machine that has none - CI, for one. The key is
+    confined to the import and the module is dropped afterwards, so nothing leaks into tests
+    that reason about which providers are configured.
+    """
+    module_name = "src.mcp_client.client"
+    with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+        sys.modules.pop(module_name, None)
+        module = importlib.import_module(module_name)
+    yield module
+    sys.modules.pop(module_name, None)
 
 
 @pytest.mark.parametrize(
@@ -23,11 +40,11 @@ from src.mcp_client.client import call_knowledge_graph_tool
     ],
     ids=["tool-error", "timeout"],
 )
-def test_failure_is_reported_on_stderr_with_a_nonzero_exit(capsys, error) -> None:
+def test_failure_is_reported_on_stderr_with_a_nonzero_exit(cli, capsys, error) -> None:
     with patch.object(sys, "argv", ["kg", "Kto wyklada analize?"]):
-        with patch("src.mcp_client.client.query_knowledge_graph", side_effect=error):
+        with patch.object(cli, "query_knowledge_graph", side_effect=error):
             with pytest.raises(SystemExit) as exit_info:
-                call_knowledge_graph_tool()
+                cli.call_knowledge_graph_tool()
 
     captured = capsys.readouterr()
 
@@ -36,10 +53,19 @@ def test_failure_is_reported_on_stderr_with_a_nonzero_exit(capsys, error) -> Non
     assert captured.out == "", "stdout carries the answer; an error there would be read as one"
 
 
-def test_a_working_call_prints_nothing_extra(capsys) -> None:
+def test_a_working_call_prints_nothing_extra(cli, capsys) -> None:
     with patch.object(sys, "argv", ["kg", "Kto wyklada analize?"]):
-        with patch("src.mcp_client.client.query_knowledge_graph", return_value=None) as queried:
-            call_knowledge_graph_tool()
+        with patch.object(cli, "query_knowledge_graph", return_value=None) as queried:
+            cli.call_knowledge_graph_tool()
 
     assert queried.called
     assert capsys.readouterr().err == ""
+
+
+def test_usage_is_shown_without_a_question(cli, capsys) -> None:
+    with patch.object(sys, "argv", ["kg"]):
+        with pytest.raises(SystemExit) as exit_info:
+            cli.call_knowledge_graph_tool()
+
+    assert exit_info.value.code == 1
+    assert "Usage: kg" in capsys.readouterr().out
