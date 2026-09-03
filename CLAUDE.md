@@ -204,6 +204,7 @@ ml-mcp/
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
 │   ├── test_logging_config.py                  # LOG_LEVEL resolution and root-logger setup
+│   ├── test_no_print_in_src.py                 # src/ logs instead of printing (AST walk)
 │   └── data_pipeline/                          # Concurrency, acquisition, OCR, extraction quality
 ├── docker/
 │   ├── compose.stack.yml        # Full stack (neo4j, postgres, mcp, api, prefect)
@@ -588,6 +589,19 @@ stdout, which is the command's output, not a log line, and must survive `LOG_LEV
 
 `rag.enable_debug` in `graph_config.yaml` forces the RAG logger to `DEBUG` regardless of
 `LOG_LEVEL`; it no longer gates anything else.
+
+Two things `LOG_LEVEL` does not reach:
+
+- **Prefect flow logs.** Tasks log through `get_run_logger()`, and Prefect owns those levels via
+  `PREFECT_LOGGING_LEVEL`. `configure_logging()` runs in `serve_refresh` and the pipeline CLIs,
+  so it governs the module-level fallback loggers, not a flow run's own output.
+- **Third-party chatter.** The level lands on the root logger, so `LOG_LEVEL=DEBUG` also turns on
+  `mcp`, `httpx`, `neo4j` and `asyncio` debug. That is a lot of lines around each of ours; it is
+  the price of one switch, and `LOG_FORMAT` or a per-logger `setLevel` is the way out if it ever
+  gets in the way.
+
+`tests/test_no_print_in_src.py` walks the package with `ast` and fails on a new `print`, so the
+switch cannot quietly stop covering a module.
 
 ### Session Management
 `SessionManager` is thread-safe in-memory storage (dict + `threading.Lock`). Not persisted across restarts. Suitable for single-instance deployments only.
