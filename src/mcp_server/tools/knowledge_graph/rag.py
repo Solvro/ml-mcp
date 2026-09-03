@@ -179,6 +179,31 @@ class RAG:
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
 
+    def ping_database(self) -> None:
+        """
+        Prove the graph connection can still serve a query.
+
+        Blocking, like every other call through ``Neo4jGraph``. Raises the driver's own error
+        rather than returning a bool, so a caller can report why the graph is unreachable and
+        not merely that it is.
+
+        Raises:
+            Exception: Whatever the Neo4j driver raises when the query cannot run
+        """
+        self.database.query("RETURN 1 AS ok")
+
+    def close(self) -> None:
+        """
+        Release the Neo4j driver opened in the constructor.
+
+        Idempotent: `Neo4jGraph.close` drops its driver reference, so a second call does
+        nothing. A RAG built without a database (tests) closes cleanly too.
+        """
+        database = getattr(self, "database", None)
+        if database is None:
+            return
+        database.close()
+
     def _get_invoke_config(
         self,
         trace_id: str,
