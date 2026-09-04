@@ -50,9 +50,14 @@ services:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: [ "CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.connect(('localhost',8005)); s.close()\"" ]
+      # /health runs a query against Neo4j. The socket check this replaced went green the moment
+      # the port bound, so anything depending on service_healthy could be handed a server that
+      # cannot answer. See #64.
+      test: [ "CMD-SHELL", "curl -f http://localhost:8005/health || exit 1" ]
       interval: 10s
-      timeout: 5s
+      # Above HEALTH_PING_TIMEOUT_SECONDS in src/mcp_server/server.py, so a stalled graph comes
+      # back as a 503 naming the reason instead of a probe killed mid-query.
+      timeout: 10s
       retries: 5
       # Measured at 6s on a warm machine, but a first start on freshly built layers has been
       # seen taking minutes. A success ends the start period immediately, so headroom here only

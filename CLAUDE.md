@@ -159,7 +159,7 @@ ml-mcp/
 │   │   ├── logging_config.py    # configure_logging(): LOG_LEVEL/LOG_FORMAT from the env
 │   │   └── config_models.py     # AUTO-GENERATED Pydantic models — do not edit manually
 │   ├── mcp_server/
-│   │   ├── server.py            # FastMCP app, tool registration, startup
+│   │   ├── server.py            # FastMCP app, /health route, tool registration, lifespan
 │   │   └── tools/knowledge_graph/
 │   │       ├── rag.py           # LangGraph state machine (guardrails → cypher → retrieve → grade)
 │   │       ├── state.py         # GraphState TypedDict definition
@@ -205,6 +205,9 @@ ml-mcp/
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
 │   ├── test_logging_config.py                  # LOG_LEVEL resolution and root-logger setup
 │   ├── test_no_print_in_src.py                 # src/ logs instead of printing (AST walk)
+│   ├── test_mcp_health_signal.py               # /health, ToolError on failure, driver shutdown
+│   ├── test_kg_cli_failure_reporting.py        # kg reports a failed call instead of a traceback
+│   ├── test_rag_graph_connection_lifecycle.py  # ping_database / close on the graph driver
 │   └── data_pipeline/                          # Concurrency, acquisition, OCR, extraction quality
 ├── docker/
 │   ├── compose.stack.yml        # Full stack (neo4j, postgres, mcp, api, prefect)
@@ -603,6 +606,40 @@ Two things `LOG_LEVEL` does not reach:
 `tests/test_no_print_in_src.py` walks the package with `ast` and fails on a new `print`, so the
 switch cannot quietly stop covering a module.
 
+### The Health Signal Means "I Can Serve"
+
+`GET /health` on the MCP server (a `@mcp.custom_route`, so it sits next to `/mcp` on port 8005)
+runs a trivial query against Neo4j and answers `200 {"status": "healthy"}` or `503` with a
+`reason`: `rag_not_initialized`, `neo4j_unreachable` (carrying the driver's own message), or
+`neo4j_timeout`. `docker/compose.stack.yml` curls it.
+
+It replaced a socket probe that went green the moment uvicorn bound the port, which meant
+`depends_on: service_healthy` could hand a caller a server whose graph was gone. A bound socket
+is not an interface anyone can depend on.
+
+The ping runs in a worker thread under `HEALTH_PING_TIMEOUT_SECONDS` (5s) so a stalled graph
+returns a 503 naming the reason instead of hanging until docker kills the probe; the compose
+`timeout` is deliberately larger (10s) so ours is the one that fires. A hung Neo4j leaves the
+worker thread behind until the driver's own timeout trips it, which is why the ping is a bare
+`RETURN 1` and not something that can queue.
+
+**Failure is not content.** `knowledge_graph_tool` raises `ToolError` when the graph cannot be
+consulted at all — no RAG, or the pipeline timed out. `fastmcp.Client.call_tool` raises on
+`isError` by default, so `topwr_api` lands in its `except` branch and tags the turn
+`source="error"` rather than feeding "Error: RAG not initialized" to the answering model as if
+it were graph data. `OFF_TOPIC_MESSAGE` and `NO_GRAPH_DATA_MESSAGE` are *answers* — retrieval
+ran and found nothing — and keep coming back as ordinary results.
+
+Both consumers of the tool had to learn the difference. `topwr_api` already caught the
+exception. The `kg` CLI did not, and a raised `ToolError` would have surfaced as a traceback, so
+it now prints the failure to **stderr** and exits non-zero — the answer owns stdout, and anything
+piping `kg` must not read an error as one.
+
+**The driver is closed on shutdown.** RAG opens `Neo4jGraph` in its constructor and holds it for
+the process lifetime; `RAG.close()` releases it and the FastMCP `lifespan` calls it, so a restart
+loop no longer leaks one per cycle. `close_rag()` is idempotent and swallows a failing close,
+because a shutdown derailed by its own cleanup is worse than a leaked socket.
+
 ### Session Management
 `SessionManager` is thread-safe in-memory storage (dict + `threading.Lock`). Not persisted across restarts. Suitable for single-instance deployments only.
 
@@ -622,16 +659,21 @@ The system tries LLM providers in order: OpenAI → DeepSeek → Google Gemini. 
 4. **No `print` in `src/`** — use `logging.getLogger(__name__)`; the level comes from
    `LOG_LEVEL` in `.env`. The `kg` CLI answer is the single deliberate exception.
 
-5. **Cypher LIMIT enforcement** — the RAG pipeline strips and re-adds `LIMIT` to all generated Cypher queries. Do not rely on LLM to add it.
+5. **`topwr_api`'s `/health` is still shallow** — it reports the session store and never checks
+   that the MCP server is reachable, so it can read healthy while the graph behind it is not.
+   The MCP side was fixed in #64; this half was left alone deliberately, since failing the API's
+   probe on a dependency hiccup would restart a container that is itself fine.
 
-6. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
+6. **Cypher LIMIT enforcement** — the RAG pipeline strips and re-adds `LIMIT` to all generated Cypher queries. Do not rely on LLM to add it.
 
-7. **Polish language** — prompts are in Polish; guardrails check if a query is university-related in Polish context; CLARIN model is used as alternative for Polish-specific tasks.
+7. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
 
-8. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
+8. **Polish language** — prompts are in Polish; guardrails check if a query is university-related in Polish context; CLARIN model is used as alternative for Polish-specific tasks.
 
-9. **Docker multi-stage builds** — MCP and API Dockerfiles use `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
+9. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
 
-10. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
+10. **Docker multi-stage builds** — MCP and API Dockerfiles use `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
 
-11. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.
+11. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
+
+12. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.

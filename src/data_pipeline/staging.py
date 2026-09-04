@@ -6,12 +6,39 @@ from pathlib import Path
 from urllib.parse import unquote, urlparse
 
 MANIFEST_FILENAME = "manifest.json"
+MANIFEST_STATUS_PENDING = "pending"
+MANIFEST_STATUS_PROCESSED = "processed"
+MANIFEST_STATUS_FAILED = "failed"
+_MANIFEST_STATUSES = {
+    MANIFEST_STATUS_PENDING,
+    MANIFEST_STATUS_PROCESSED,
+    MANIFEST_STATUS_FAILED,
+}
 
 _UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._/-]")
 
 # Filesystems cap file names at 255 bytes; stay well below to leave room
 # for the ".md"/".part" suffixes appended later.
 _MAX_SEGMENT_CHARS = 100
+
+ARCHIVE_DIRNAME = ".archive"
+
+
+def archive_path_for(staging_dir: Path, relative_path: str) -> Path:
+    """Target path in staging archive for a staging-relative file."""
+    return staging_dir / ARCHIVE_DIRNAME / Path(relative_path)
+
+
+def archive_staged_file(staging_dir: Path, relative_path: str) -> bool:
+    """Move staged file into .archive; return False when source is missing."""
+    source = staging_dir / Path(relative_path)
+    if not source.is_file():
+        return False
+
+    target = archive_path_for(staging_dir, relative_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(source, target)
+    return True
 
 
 def _shorten_segment(segment: str) -> str:
@@ -71,6 +98,15 @@ def source_id_for(relative_path: str) -> str:
     return f"file://{relative_path}"
 
 
+def relative_path_from_source_id(source_id: str) -> str | None:
+    """Inverse of :func:`source_id_for`; ``None`` when the id is not a staged file."""
+    prefix = "file://"
+    if not source_id.startswith(prefix):
+        return None
+    relative = source_id[len(prefix) :].strip()
+    return relative or None
+
+
 def atomic_write_bytes(target: Path, data: bytes) -> None:
     """Write bytes atomically: write ``<name>.part`` first, then rename over target."""
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -89,6 +125,32 @@ def load_manifest(staging_dir: Path) -> dict[str, dict]:
     except (json.JSONDecodeError, OSError):
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def normalize_manifest_entry(entry: dict | None) -> dict[str, object]:
+    """Return manifest entry with guaranteed processing fields.
+
+    Legacy entries without processing metadata default to "processed"
+    to preserve pre-existing behavior.
+    """
+    normalized: dict[str, object] = dict(entry or {})
+
+    status_raw = str(normalized.get("status", MANIFEST_STATUS_PROCESSED)).strip().lower()
+    status = status_raw if status_raw in _MANIFEST_STATUSES else MANIFEST_STATUS_PROCESSED
+
+    try:
+        attempt_count = int(normalized.get("attempt_count", 0))
+    except (TypeError, ValueError):
+        attempt_count = 0
+
+    last_error = normalized.get("last_error")
+    if not isinstance(last_error, str):
+        last_error = ""
+
+    normalized["status"] = status
+    normalized["attempt_count"] = max(0, attempt_count)
+    normalized["last_error"] = last_error
+    return normalized
 
 
 def save_manifest(staging_dir: Path, manifest: dict[str, dict]) -> None:

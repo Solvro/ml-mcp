@@ -18,9 +18,15 @@ from prefect.exceptions import MissingContextError
 from src.config.logging_config import configure_logging
 from src.data_pipeline.pipeline import data_pipeline_flow
 from src.data_pipeline.staging import (
+    MANIFEST_STATUS_FAILED,
+    MANIFEST_STATUS_PENDING,
+    MANIFEST_STATUS_PROCESSED,
+    archive_staged_file,
     atomic_write_bytes,
     get_staging_dir,
     load_manifest,
+    normalize_manifest_entry,
+    relative_path_from_source_id,
     save_manifest,
     source_id_for,
     url_to_relative_path,
@@ -39,6 +45,16 @@ _USER_AGENT = (
 # collapsing to a fraction of its known size is treated as a failed fetch
 # instead of overwriting good staged content.
 _SUSPICIOUS_SHRINK_RATIO = 0.3
+
+# An incomplete crawl must not look like a mass deletion: cap how much of the
+# known manifest one run may report as removed. The absolute floor keeps small
+# manifests workable, where any ratio would round down to zero.
+_MAX_DELETED_RATIO = 0.2
+_MIN_DELETED_ABSOLUTE = 5
+_DEFAULT_MANIFEST_MAX_ATTEMPTS = 3
+_PERMANENT_FAILURE_LOG = (
+    "Skipping permanently failed document %s (attempts=%d/%d); waiting for source change"
+)
 
 # Sitemap indexes point at further sitemaps; bound how deep that nesting is followed.
 _MAX_SITEMAP_DEPTH = 2
@@ -323,6 +339,19 @@ def build_connector() -> WebConnector:
     )
 
 
+def _get_manifest_max_attempts() -> int:
+    """Max retries for a manifest entry before it becomes permanently failed."""
+    raw = os.getenv(
+        "DATA_PIPELINE_MANIFEST_MAX_ATTEMPTS",
+        str(_DEFAULT_MANIFEST_MAX_ATTEMPTS),
+    ).strip()
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_MANIFEST_MAX_ATTEMPTS
+    return max(1, value)
+
+
 @flow(log_prints=True)
 def refresh_sources_flow(
     trigger_downstream: bool = True,
@@ -332,8 +361,9 @@ def refresh_sources_flow(
 
     Successfully fetched documents are written atomically into the staging
     directory and recorded in ``manifest.json``. Failed fetches are skipped
-    (retried on the next scheduled run). When at least one document changed,
-    the downstream ``data_pipeline_flow`` runs as a subflow.
+    (retried on the next scheduled run). When documents changed, are pending
+    retry, or were deleted upstream, the downstream ``data_pipeline_flow``
+    runs as a subflow.
 
     Args:
         trigger_downstream: When True, run the extraction pipeline on changes.
@@ -344,6 +374,7 @@ def refresh_sources_flow(
 
     Raises:
         RuntimeError: when documents were discovered but none could be fetched.
+
     """
     load_dotenv()
     logger = _get_logger()
@@ -351,17 +382,65 @@ def refresh_sources_flow(
 
     staging_dir = get_staging_dir()
     staging_dir.mkdir(parents=True, exist_ok=True)
-    manifest = load_manifest(staging_dir)
+    raw_manifest = load_manifest(staging_dir)
+    manifest = {sid: normalize_manifest_entry(entry) for sid, entry in raw_manifest.items()}
+    known_sids_before = set(manifest.keys())
+    max_manifest_attempts = _get_manifest_max_attempts()
 
     documents = connector.discover()
     stats = {"discovered": len(documents), "fetched": 0, "unchanged": 0, "failed": 0}
     logger.info("Discovered %d documents", len(documents))
 
-    changed_any = False
+    staged_sids: list[str] = []
+    changed_paths: set[str] = set()
+    retry_sids: set[str] = set()
+
+    for sid, entry in manifest.items():
+        status = str(entry.get("status", MANIFEST_STATUS_PROCESSED)).strip().lower()
+        if status == MANIFEST_STATUS_PROCESSED:
+            continue
+
+        relative = relative_path_from_source_id(sid)
+        if not relative:
+            continue
+
+        staged_path = staging_dir / relative
+        if not staged_path.is_file():
+            logger.warning("Manifest has non-processed %s but staged file is missing", sid)
+            continue
+
+        attempts = int(entry.get("attempt_count", 0))
+
+        if status == MANIFEST_STATUS_FAILED:
+            logger.error(_PERMANENT_FAILURE_LOG, sid, attempts, max_manifest_attempts)
+            continue
+
+        if attempts >= max_manifest_attempts:
+            entry["status"] = MANIFEST_STATUS_FAILED
+            entry["attempt_count"] = max_manifest_attempts
+            if not entry.get("last_error"):
+                entry["last_error"] = (
+                    f"not confirmed by downstream pipeline; retry limit reached "
+                    f"({max_manifest_attempts})"
+                )
+            manifest[sid] = entry
+            logger.error(
+                "Marking %s as failed (attempts=%d/%d); waiting for source change",
+                sid,
+                max_manifest_attempts,
+                max_manifest_attempts,
+            )
+            continue
+
+        retry_sids.add(sid)
+        changed_paths.add(relative)
+
+    discovered_sids: set[str] = set()
     for doc in documents:
         relative_path = url_to_relative_path(doc.origin_url, is_html=doc.kind == "html")
         sid = source_id_for(relative_path)
-        entry = manifest.get(sid, {})
+        discovered_sids.add(sid)
+        entry = normalize_manifest_entry(manifest.get(sid))
         result = connector.fetch(
             doc, etag=entry.get("etag"), last_modified=entry.get("last_modified")
         )
@@ -370,8 +449,17 @@ def refresh_sources_flow(
             stats["failed"] += 1
             logger.warning("Skipping %s (fetch failed); will retry next run", doc.origin_url)
             continue
+
         if result.status == "unchanged":
             stats["unchanged"] += 1
+            status = str(entry.get("status", MANIFEST_STATUS_PROCESSED)).strip().lower()
+            attempts = int(entry.get("attempt_count", 0))
+
+            if status == MANIFEST_STATUS_PENDING and attempts < max_manifest_attempts:
+                retry_sids.add(sid)
+                changed_paths.add(relative_path)
+            elif status == MANIFEST_STATUS_FAILED:
+                logger.error(_PERMANENT_FAILURE_LOG, sid, attempts, max_manifest_attempts)
             continue
 
         content = result.content or b""
@@ -412,9 +500,13 @@ def refresh_sources_flow(
             "sha256": content_hash,
             "size": len(content),
             "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "status": MANIFEST_STATUS_PENDING,
+            "attempt_count": 0,
+            "last_error": "",
         }
+        staged_sids.append(sid)
+        changed_paths.add(relative_path)
         stats["fetched"] += 1
-        changed_any = True
 
     save_manifest(staging_dir, manifest)
     logger.info(
@@ -425,12 +517,97 @@ def refresh_sources_flow(
         stats["failed"],
     )
 
+    deleted_paths: list[str] = []
+    if known_sids_before:
+        candidates: list[str] = []
+        for sid in sorted(known_sids_before - discovered_sids):
+            entry = normalize_manifest_entry(manifest.get(sid))
+            if entry.get("status") == MANIFEST_STATUS_FAILED:
+                logger.warning("Skipping deletion for permanently failed source: %s", sid)
+                continue
+
+            relative = relative_path_from_source_id(sid)
+            if relative:
+                candidates.append(relative)
+        allowed = max(_MIN_DELETED_ABSOLUTE, len(known_sids_before) * _MAX_DELETED_RATIO)
+        if not documents:
+            logger.warning(
+                "Discovery returned no documents; skipping deletion of %d known sources",
+                len(candidates),
+            )
+        elif len(candidates) > allowed:
+            logger.error(
+                "Refusing to delete %d of %d known sources (limit %.0f); "
+                "discovery is likely incomplete",
+                len(candidates),
+                len(known_sids_before),
+                allowed,
+            )
+        else:
+            deleted_paths = candidates
+
     if documents and stats["fetched"] == 0 and stats["unchanged"] == 0:
         raise RuntimeError(f"Source refresh failed for all {len(documents)} documents")
 
-    if changed_any and trigger_downstream:
-        logger.info("Changes staged; triggering downstream data pipeline")
-        data_pipeline_flow()
+    attempted_sids = set(staged_sids) | retry_sids
+
+    if trigger_downstream and (attempted_sids or deleted_paths):
+        logger.info(
+            "Changes/pending docs staged; triggering downstream data pipeline "
+            "(changed=%d deleted=%d)",
+            len(changed_paths),
+            len(deleted_paths),
+        )
+        outcome = data_pipeline_flow(changed=sorted(changed_paths), deleted=deleted_paths)
+        processed_sources = outcome.processed if outcome else set()
+        confirmed_deleted_sources = outcome.deleted if outcome else set()
+        confirmed_deleted_paths = [
+            relative
+            for relative in (
+                relative_path_from_source_id(sid) for sid in sorted(confirmed_deleted_sources)
+            )
+            if relative
+        ]
+
+        for relative in confirmed_deleted_paths:
+            sid = source_id_for(relative)
+            moved = archive_staged_file(staging_dir, relative)
+            if moved:
+                logger.info("Archived deleted staged file: %s", relative)
+            else:
+                logger.info("Deleted source had no staged file to archive: %s", relative)
+            manifest.pop(sid, None)
+
+        for sid in attempted_sids:
+            if sid in confirmed_deleted_sources:
+                continue
+            current = normalize_manifest_entry(manifest.get(sid))
+            if sid in processed_sources:
+                current["status"] = MANIFEST_STATUS_PROCESSED
+                current["attempt_count"] = 0
+                current["last_error"] = ""
+            else:
+                next_attempt = int(current["attempt_count"]) + 1
+                if next_attempt >= max_manifest_attempts:
+                    current["status"] = MANIFEST_STATUS_FAILED
+                    current["attempt_count"] = max_manifest_attempts
+                    current["last_error"] = (
+                        f"not confirmed by downstream pipeline; retry limit reached "
+                        f"({max_manifest_attempts})"
+                    )
+                    logger.error(
+                        "Marked %s as failed after %d unsuccessful downstream confirmations",
+                        sid,
+                        max_manifest_attempts,
+                    )
+                else:
+                    current["status"] = MANIFEST_STATUS_PENDING
+                    current["attempt_count"] = next_attempt
+                    current["last_error"] = "not confirmed by downstream pipeline"
+            manifest[sid] = current
+
+        if attempted_sids or confirmed_deleted_paths:
+            save_manifest(staging_dir, manifest)
 
     return stats
 

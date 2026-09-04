@@ -66,7 +66,7 @@ def test_configured_labels_are_left_alone(vocabulary) -> None:
 
 def test_bookkeeping_labels_are_never_relabelled(vocabulary) -> None:
     """ProcessedDocument drives idempotency; renaming it would replay every page."""
-    graph = FakeGraph(labels=["ProcessedDocument", "PipelineRun"])
+    graph = FakeGraph(labels=["ProcessedDocument", "PipelineRun", "Source"])
 
     assert graph_dedup.relabel_off_vocabulary_nodes(graph, vocabulary) == {}
 
@@ -122,7 +122,7 @@ def test_duplicate_merge_excludes_bookkeeping_nodes() -> None:
     graph_dedup.merge_duplicate_nodes(graph)
 
     merge_call = next(call for call in graph.calls if "apoc.refactor.mergeNodes" in call[0])
-    assert merge_call[1]["internal_labels"] == ["PipelineRun", "ProcessedDocument"]
+    assert merge_call[1]["internal_labels"] == ["PipelineRun", "ProcessedDocument", "Source"]
 
 
 def test_missing_apoc_leaves_the_graph_untouched() -> None:

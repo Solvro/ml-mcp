@@ -1,5 +1,6 @@
 import os
 from hashlib import sha256
+from typing import NamedTuple
 
 from dotenv import load_dotenv
 from prefect import flow, get_run_logger
@@ -24,6 +25,20 @@ from src.data_pipeline.graph_dump import (
     host_dump_path,
     import_graph_from_cypher_dump,
 )
+from src.data_pipeline.staging import relative_path_from_source_id, source_id_for
+
+
+class PipelineOutcome(NamedTuple):
+    """What one pipeline run confirmed.
+
+    Attributes:
+        processed: Document-level source ids confirmed to be in the graph.
+        deleted: Document-level source ids whose Source nodes were detached and
+            whose orphaned entities were removed.
+    """
+
+    processed: set[str]
+    deleted: set[str]
 
 
 def _get_max_concurrency() -> int:
@@ -40,6 +55,38 @@ def _compute_page_hash(page_content: str) -> str:
     """Create a stable idempotency hash for one page of content."""
     normalized_content = page_content.strip().encode("utf-8")
     return sha256(normalized_content).hexdigest()
+
+
+def _document_id(source_id: str) -> str:
+    """Strip the page fragment so a page id maps back to its document."""
+    return source_id.split("#", 1)[0]
+
+
+def _filter_acquired_by_changed(
+    acquired: list[dict[str, str]],
+    changed: list[str],
+) -> tuple[list[dict[str, str]], set[str]]:
+    """Keep only acquired docs whose relative path is present in ``changed``."""
+    changed_set = {str(path).strip().replace("\\", "/") for path in changed if str(path).strip()}
+
+    if not changed_set:
+        return [], set()
+
+    selected: list[dict[str, str]] = []
+    matched: set[str] = set()
+
+    for item in acquired:
+        if not isinstance(item, dict):
+            continue
+        source_id = str(item.get("source_id", "")).strip()
+        relative = relative_path_from_source_id(source_id)
+        if not relative:
+            continue
+        if relative in changed_set:
+            selected.append(item)
+            matched.add(relative)
+
+    return selected, changed_set - matched
 
 
 def _normalize_source_pages(extracted: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -78,8 +125,35 @@ def _safe_reflect_schema(phase: str, logger) -> str:
     return schema_summary
 
 
+def _normalize_deleted_source_ids(deleted: list[str] | None) -> set[str]:
+    if not deleted:
+        return set()
+    out: set[str] = set()
+    for path in deleted:
+        rel = str(path).strip().replace("\\", "/")
+        if rel:
+            out.add(source_id_for(rel))
+    return out
+
+
+def _prune_source_hashes_for_deleted(
+    source_hashes: dict[str, str],
+    deleted_document_source_ids: set[str],
+) -> dict[str, str]:
+    if not deleted_document_source_ids:
+        return dict(source_hashes)
+    return {
+        sid: h
+        for sid, h in source_hashes.items()
+        if _document_id(sid) not in deleted_document_source_ids
+    }
+
+
 @flow(log_prints=True)
-def data_pipeline_flow():
+def data_pipeline_flow(
+    changed: list[str] | None = None,
+    deleted: list[str] | None = None,
+) -> PipelineOutcome:
     """Agentic graph extraction loop with batched parallel processing.
 
     Each page is processed through the same generate -> populate chain.
@@ -88,11 +162,35 @@ def data_pipeline_flow():
 
     Once all batches finish, schema reflection runs once to summarize the final
     graph state for observability.
+
+    Args:
+        changed: List of staging-relative POSIX paths for new/changed documents.
+            None means full scan (legacy/manual behavior).
+        deleted: List of staging-relative POSIX paths removed upstream.
+
+    Returns:
+        Outcome of this run. ``processed`` holds document-level source ids
+        (``file://relative/path``, no page fragment) confirmed to be in the
+        graph; a document whose extraction produced nothing, or any of whose
+        pages failed, is omitted so the caller retries it. ``deleted`` holds
+        ids whose removal completed; an id missing from it keeps its manifest
+        entry, so the deletion is reported again on the next run.
     """
     load_dotenv()
     logger = get_run_logger()
+    changed_summary = "full_scan" if changed is None else f"{len(changed)} paths"
+    deleted_count = 0 if deleted is None else len(deleted)
+    logger.info(
+        "Pipeline trigger payload: changed=%s deleted=%d",
+        changed_summary,
+        deleted_count,
+    )
     populator = GraphPopulator()
     populator.ensure_entity_key_indexes()
+
+    requested_deleted_source_ids = _normalize_deleted_source_ids(deleted)
+    confirmed_deleted_source_ids: set[str] = set()
+    restored_from_dump = False
 
     # A dump is a bootstrap for a fresh database only; once the graph has any
     # data, scheduled runs must keep extracting instead of restoring.
@@ -100,35 +198,79 @@ def data_pipeline_flow():
         try:
             import_graph_from_cypher_dump()
             populator.record_restore_run()
-            logger.info("Loaded graph from dump; skipped LLM extraction.")
-            return
+            restored_from_dump = True
+            logger.info(
+                "Loaded graph from dump; applying requested deletions before finishing run."
+            )
         except Exception as exc:
             logger.warning("Dump restore failed (%s); continuing with extraction", exc)
 
+    if requested_deleted_source_ids:
+        confirmed_deleted_source_ids = populator.delete_sources_for_documents(
+            sorted(requested_deleted_source_ids)
+        )
+
+    if restored_from_dump:
+        return PipelineOutcome(processed=set(), deleted=confirmed_deleted_source_ids)
+
     acquired = acquire_data()
+
+    last_source_hashes = populator.get_latest_pipeline_source_hashes()
+    pruned_last_source_hashes = _prune_source_hashes_for_deleted(
+        last_source_hashes,
+        requested_deleted_source_ids,
+    )
+    if changed is not None:
+        filtered_acquired, missing_paths = _filter_acquired_by_changed(acquired, changed)
+
+        for path in sorted(missing_paths):
+            logger.info("Changed path not present in staging scan, skipping: %s", path)
+
+        if not filtered_acquired:
+            logger.info("Trigger reported no matching changed documents; skipping extraction")
+            if requested_deleted_source_ids:
+                populator.record_pipeline_run(pruned_last_source_hashes, mode="incremental")
+                ensure_host_dump_dir()
+                export_graph_to_cypher()
+            return PipelineOutcome(processed=set(), deleted=confirmed_deleted_source_ids)
+
+        logger.info(
+            "Changed-path filter selected %d/%d acquired documents",
+            len(filtered_acquired),
+            len(acquired),
+        )
+        acquired = filtered_acquired
+
+    attempted_documents = {
+        _document_id(str(item["source_id"]))
+        for item in acquired
+        if isinstance(item, dict) and item.get("source_id")
+    }
     extracted = ocr_extraction(acquired)
     source_pages = _normalize_source_pages(extracted)
     if not source_pages:
         logger.warning("No non-empty pages found; stopping pipeline early")
-        return
+        return PipelineOutcome(processed=set(), deleted=confirmed_deleted_source_ids)
 
-    last_source_hashes = populator.get_latest_pipeline_source_hashes()
+    all_documents = {_document_id(sid) for sid, _ in source_pages}
     full_source_hashes = {sid: _compute_page_hash(text) for sid, text in source_pages}
     work_items: list[tuple[str, str]] = [
         (sid, text)
         for sid, text in source_pages
-        if last_source_hashes.get(sid) != full_source_hashes[sid]
+        if pruned_last_source_hashes.get(sid) != full_source_hashes[sid]
     ]
     if not work_items:
         logger.info("No new or changed source files since last pipeline run")
-        return
-
-    pages = [text for _, text in work_items]
+        if requested_deleted_source_ids:
+            populator.record_pipeline_run(pruned_last_source_hashes, mode="incremental")
+            ensure_host_dump_dir()
+            export_graph_to_cypher()
+        return PipelineOutcome(processed=all_documents, deleted=confirmed_deleted_source_ids)
 
     written_keys: set[str] = set()
     reset_missed_row_passes()
     stats = {
-        "total_pages": len(pages),
+        "total_pages": len(work_items),
         "claimed_pages": 0,
         "submitted_pages": 0,
         "skipped_duplicates": 0,
@@ -140,10 +282,11 @@ def data_pipeline_flow():
         "missed_row_passes": 0,
     }
 
+    failed_documents: set[str] = set()
     max_concurrency = _get_max_concurrency()
     logger.info(
         "Submitting %d pages (incremental from %d sources) with max concurrency %d",
-        len(pages),
+        len(work_items),
         len(source_pages),
         max_concurrency,
     )
@@ -152,25 +295,25 @@ def data_pipeline_flow():
     schema_context = _safe_reflect_schema(phase="before_parallel_batches", logger=logger)
     stats["schema_snapshot_chars"] = len(schema_context)
 
-    for batch_start in range(0, len(pages), max_concurrency):
-        batch_end = min(batch_start + max_concurrency, len(pages))
+    for batch_start in range(0, len(work_items), max_concurrency):
+        batch_end = min(batch_start + max_concurrency, len(work_items))
         logger.info("Processing batch pages %d-%d", batch_start + 1, batch_end)
 
         claim_futures = []
         claim_lookup = {}
         batch_futures = []
 
-        for page_index, page_content in enumerate(
-            pages[batch_start:batch_end],
+        for page_index, (source_id, page_content) in enumerate(
+            work_items[batch_start:batch_end],
             start=batch_start + 1,
         ):
             page_hash = _compute_page_hash(page_content)
             claim_future = claim_document_for_processing.submit(page_hash)
             claim_futures.append(claim_future)
-            claim_lookup[id(claim_future)] = (page_index, page_content, page_hash)
+            claim_lookup[id(claim_future)] = (page_index, source_id, page_content, page_hash)
 
         for claim_future in as_completed(claim_futures):
-            page_index, page_content, page_hash = claim_lookup[id(claim_future)]
+            page_index, source_id, page_content, page_hash = claim_lookup[id(claim_future)]
             try:
                 is_claimed = claim_future.result()
             except Exception as exc:
@@ -179,10 +322,11 @@ def data_pipeline_flow():
                 logger.error(
                     "Claim failed for page %d / %d (hash=%s): %s",
                     page_index,
-                    len(pages),
+                    len(work_items),
                     page_hash,
                     exc,
                 )
+                failed_documents.add(_document_id(source_id))
                 continue
 
             if not is_claimed:
@@ -190,19 +334,37 @@ def data_pipeline_flow():
                 logger.info(
                     "Skipping page %d / %d (already processed hash=%s)",
                     page_index,
-                    len(pages),
+                    len(work_items),
                     page_hash,
                 )
+                try:
+                    populator.link_processed_document_to_source(page_hash, source_id)
+                    mirrored_entities = populator.mirror_entity_provenance_for_duplicate_hash(
+                        page_hash, source_id
+                    )
+                    if mirrored_entities:
+                        logger.info(
+                            "Mirrored provenance for %d entity nodes to duplicate source %s",
+                            mirrored_entities,
+                            source_id,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to link or mirror skipped hash %s to source %s: %s",
+                        page_hash,
+                        source_id,
+                        exc,
+                    )
                 continue
 
             stats["claimed_pages"] += 1
-            logger.info("Submitting page %d / %d", page_index, len(pages))
+            logger.info("Submitting page %d / %d", page_index, len(work_items))
             cypher_future = generate_cypher_queries.submit(page_content, schema_context)
-            populate_future = populate_graph.submit(cypher_future, page_hash)
+            populate_future = populate_graph.submit(cypher_future, page_hash, source_id)
             stats["submitted_pages"] += 1
-            batch_futures.append((page_index, page_hash, populate_future))
+            batch_futures.append((page_index, source_id, page_hash, populate_future))
 
-        for page_index, page_hash, future in batch_futures:
+        for page_index, source_id, page_hash, future in batch_futures:
             try:
                 written_keys.update(future.result() or [])
                 stats["successful_pages"] += 1
@@ -211,10 +373,11 @@ def data_pipeline_flow():
                 logger.error(
                     "Processing failed for page %d / %d (hash=%s): %s",
                     page_index,
-                    len(pages),
+                    len(work_items),
                     page_hash,
                     exc,
                 )
+                failed_documents.add(_document_id(source_id))
 
     stats["missed_row_passes"] = missed_row_passes_used()
 
@@ -252,14 +415,29 @@ def data_pipeline_flow():
         logger.warning("Pipeline finished with %d failed pages", stats["failed_pages"])
 
     if stats["failed_pages"] == 0 and stats["claim_errors"] == 0:
-        mode = "incremental" if len(work_items) < len(source_pages) else "full"
-        populator.record_pipeline_run(full_source_hashes, mode=mode)
+        if changed is not None:
+            mode = "incremental"
+        else:
+            mode = "incremental" if len(work_items) < len(source_pages) else "full"
+        merged_source_hashes = {
+            sid: page_hash
+            for sid, page_hash in pruned_last_source_hashes.items()
+            if _document_id(sid) not in attempted_documents
+        }
+        merged_source_hashes.update(full_source_hashes)
+        populator.record_pipeline_run(merged_source_hashes, mode=mode)
 
     # Export even on partial failure so the host dump reflects the latest good graph.
     ensure_host_dump_dir()
     export_graph_to_cypher()
 
-    logger.info("Pipeline complete. Graph is ready for querying.")
+    processed_documents = all_documents - failed_documents
+    logger.info(
+        "Pipeline complete. Graph is ready for querying. Confirmed %d / %d documents",
+        len(processed_documents),
+        len(all_documents),
+    )
+    return PipelineOutcome(processed=processed_documents, deleted=confirmed_deleted_source_ids)
 
 
 if __name__ == "__main__":
