@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import uuid
 
 from langchain_neo4j import Neo4jGraph
@@ -8,6 +9,7 @@ from prefect import get_run_logger, task
 from prefect.exceptions import MissingContextError
 
 from src.config.config import get_config
+from src.config.system_labels import SYSTEM_LABELS
 from src.data_pipeline.canonical_nodes import extract_entity_keys
 
 module_logger = logging.getLogger(__name__)
@@ -29,6 +31,67 @@ def _get_claim_stale_minutes() -> int:
     except ValueError:
         return 30
     return max(1, parsed)
+
+
+_NODE_MERGE_VAR_RE = re.compile(
+    r"^\s*MERGE\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[A-Za-z_][A-Za-z0-9_]*"
+)
+
+
+def _extract_merged_node_vars(statements: list[str]) -> list[str]:
+    """Extract unique node variables from MERGE (var:Label ...) clauses.
+
+    Only the ``MERGE (var:Label ...)`` form the prompt mandates is recognised,
+    and only the first variable of a clause. A clause that merges node and
+    relationship at once (``MERGE (a:A)-[:R]->(b:B)``) therefore contributes
+    ``a`` but not ``b``.
+    """
+    variables: list[str] = []
+    seen: set[str] = set()
+
+    for statement in statements:
+        match = _NODE_MERGE_VAR_RE.match(statement)
+        if not match:
+            continue
+        var_name = match.group(1)
+        if var_name in seen:
+            continue
+        seen.add(var_name)
+        variables.append(var_name)
+
+    return variables
+
+
+def _build_query_with_provenance(
+    statements: list[str],
+    source_id: str,
+    logger: logging.Logger,
+) -> tuple[str, dict[str, str]]:
+    """Append FROM_SOURCE wiring when MERGE node variables are recoverable."""
+    combined = "\n".join(statements)
+    if not combined or not source_id:
+        return combined, {}
+
+    node_vars = _extract_merged_node_vars(statements)
+    if not node_vars:
+        logger.warning(
+            "No MERGE node variables recovered for source_id=%s; "
+            "executing query without provenance",
+            source_id,
+        )
+        return combined, {}
+
+    source_var = "prov_source"
+    while source_var in node_vars:
+        source_var += "_"
+
+    with_clause = ", ".join(node_vars)
+    provenance_lines = [
+        f"WITH {with_clause}",
+        f"MERGE ({source_var}:Source {{source_id: $source_id}})",
+        *[f"MERGE ({var})-[:FROM_SOURCE]->({source_var})" for var in node_vars],
+    ]
+    return f"{combined}\n" + "\n".join(provenance_lines), {"source_id": source_id}
 
 
 class GraphPopulator:
@@ -105,6 +168,59 @@ class GraphPopulator:
 
         return bool(result[0].get("claimed"))
 
+    def delete_sources_for_documents(self, document_source_ids: list[str]) -> set[str]:
+        """Delete Source nodes for given document ids and clean now-orphaned nodes."""
+        logger = _get_logger()
+        deleted: set[str] = set()
+
+        for document_source_id in sorted({sid for sid in document_source_ids if sid}):
+            try:
+                rows = self.graph_db.query(
+                    """
+                    MATCH (s:Source)
+                    WHERE s.source_id = $doc_source_id
+                       OR s.source_id STARTS WITH $doc_prefix
+                    OPTIONAL MATCH (n)-[:FROM_SOURCE]->(s)
+                    WITH collect(DISTINCT s) AS sources, collect(DISTINCT n) AS touched
+                    FOREACH (s IN sources | DETACH DELETE s)
+                    WITH size(sources) AS sources_deleted,
+                         [n IN touched
+                          WHERE n IS NOT NULL
+                            AND NOT EXISTS { MATCH (n)-[:FROM_SOURCE]->(:Source) }]
+                         AS orphans
+                    FOREACH (n IN orphans | DETACH DELETE n)
+                    RETURN sources_deleted, size(orphans) AS orphans_removed
+                    """,
+                    params={
+                        "doc_source_id": document_source_id,
+                        "doc_prefix": f"{document_source_id}#",
+                    },
+                )
+            except Exception as exc:
+                logger.error("Deletion failed for %s: %s", document_source_id, exc)
+                continue
+
+            row = rows[0] if rows else {}
+            sources_deleted = row.get("sources_deleted", 0)
+            orphans_removed = row.get("orphans_removed", 0)
+
+            if sources_deleted:
+                logger.info(
+                    "Deleted %s: %s sources, %s orphaned nodes",
+                    document_source_id,
+                    sources_deleted,
+                    orphans_removed,
+                )
+            else:
+                logger.warning(
+                    "Deleted %s but matched no Source nodes; provenance is missing, "
+                    "relabelled, or was never written",
+                    document_source_id,
+                )
+            deleted.add(document_source_id)
+
+        return deleted
+
     def mark_document_processed(self, doc_hash: str) -> None:
         """Mark a previously claimed document hash as processed."""
         if not doc_hash:
@@ -179,14 +295,14 @@ class GraphPopulator:
 
         return deduplicate_graph(self.graph_db, keys)
 
-    def execute_cypher(self, query: str):
+    def execute_cypher(self, query: str, params: dict[str, str] | None = None) -> None:
         logger = _get_logger()
         if not query or not query.strip():
             logger.error("Empty Cypher query")
             return
         try:
             logger.info("Executing Cypher query: %s", query)
-            self.graph_db.query(query)
+            self.graph_db.query(query, params=params or {})
             logger.info("Cypher executed successfully")
         except Exception as e:
             logger.error("Failed to execute cypher: %s", e)
@@ -248,6 +364,47 @@ class GraphPopulator:
             params={"run_id": str(uuid.uuid4())},
         )
 
+    def link_processed_document_to_source(self, doc_hash: str, source_id: str) -> None:
+        """Attach processed-document hash bookkeeping to a source id."""
+        if not doc_hash or not source_id:
+            return
+        self.graph_db.query(
+            """
+            MATCH (doc:ProcessedDocument {hash: $doc_hash})
+            MERGE (source:Source {source_id: $source_id})
+            MERGE (doc)-[:FROM_SOURCE]->(source)
+            """,
+            params={"doc_hash": doc_hash, "source_id": source_id},
+        )
+
+    def mirror_entity_provenance_for_duplicate_hash(self, doc_hash: str, source_id: str) -> int:
+        """Copy existing entity provenance for a duplicate-content page source."""
+        if not doc_hash or not source_id:
+            return 0
+
+        rows = self.graph_db.query(
+            """
+            MATCH (doc:ProcessedDocument {hash: $doc_hash})
+            MERGE (target:Source {source_id: $source_id})
+            MERGE (doc)-[:FROM_SOURCE]->(target)
+            WITH doc, target
+            OPTIONAL MATCH (doc)-[:FROM_SOURCE]->(existing:Source)<-[:FROM_SOURCE]-(node)
+            WHERE existing <> target
+              AND NOT any(label IN labels(node) WHERE label IN $system_labels)
+            WITH target, collect(DISTINCT node) AS nodes
+            FOREACH (node IN nodes | MERGE (node)-[:FROM_SOURCE]->(target))
+            RETURN size(nodes) AS entities_linked
+            """,
+            params={
+                "doc_hash": doc_hash,
+                "source_id": source_id,
+                "system_labels": sorted(SYSTEM_LABELS),
+            },
+        )
+        if not rows:
+            return 0
+        return int(rows[0].get("entities_linked", 0))
+
 
 @task
 def claim_document_for_processing(doc_hash: str) -> bool:
@@ -263,31 +420,42 @@ def claim_document_for_processing(doc_hash: str) -> bool:
 
 
 @task
-def populate_graph(cypher_query: str, doc_hash: str = "") -> list[str]:
+def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -> list[str]:
     """Execute pipe-separated cypher statements against the configured Neo4j instance.
 
     Args:
         cypher_query: Generated statements, separated by pipe
         doc_hash: Page hash to mark processed or failed
+        source_id: Page source id recorded as provenance for the merged nodes
 
     Returns:
         The canonical keys this page wrote, so the post-ingest repair can look at only those
     """
+
     logger = _get_logger()
-    logger.info("populate_graph task received query of length %d", len(cypher_query or ""))
-    # The LLM step joins MERGE clauses with "|" (see generate_cypher_queries).
-    # They must run as ONE query: relationship clauses reference node variables
-    # bound by earlier clauses, so executing them separately would create
-    # unlabeled placeholder nodes instead of connecting the merged ones.
+    logger.info(
+        "populate_graph task received query of length %d for source %s",
+        len(cypher_query or ""),
+        source_id or "<unknown>",
+    )
     statements = [part.strip() for part in (cypher_query or "").split("|") if part.strip()]
-    combined = "\n".join(statements)
+    query_to_execute, query_params = _build_query_with_provenance(
+        statements,
+        source_id,
+        logger,
+    )
     pop = GraphPopulator()
     try:
-        if combined:
-            pop.execute_cypher(combined)
+        if query_to_execute:
+            pop.execute_cypher(query_to_execute, params=query_params)
         pop.mark_document_processed(doc_hash)
     except Exception as exc:
         pop.mark_document_failed(doc_hash, str(exc))
         raise
+    finally:
+        try:
+            pop.link_processed_document_to_source(doc_hash, source_id)
+        except Exception as link_exc:
+            logger.warning("Failed to link hash %s to source %s: %s", doc_hash, source_id, link_exc)
 
-    return extract_entity_keys(combined)
+    return extract_entity_keys("\n".join(statements))

@@ -156,13 +156,16 @@ def test_a_stale_index_is_rebuilt_when_labels_changed() -> None:
 
 
 def test_bookkeeping_labels_are_left_out_of_the_index() -> None:
-    rag, database = _rag_stub([[], []], labels=["Course", "ProcessedDocument", "PipelineRun"])
+    rag, database = _rag_stub(
+        [[], []], labels=["Course", "ProcessedDocument", "PipelineRun", "Source"]
+    )
 
     rag.ensure_fulltext_index()
 
     created = [call[0] for call in database.calls if call[0].startswith("CREATE FULLTEXT")]
     assert "ProcessedDocument" not in created[0]
     assert "PipelineRun" not in created[0]
+    assert "Source" not in created[0]
     assert "`Course`" in created[0]
 
 

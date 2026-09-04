@@ -13,7 +13,7 @@ def _stub_extraction(monkeypatch, populate_calls):
     generate_stub = SubmitStub(lambda _c, _s: ImmediateFuture("MERGE (n:X)"))
     monkeypatch.setattr(pipeline_module, "generate_cypher_queries", generate_stub)
 
-    def populate_submit(_cypher_future, doc_hash):
+    def populate_submit(_cypher_future, doc_hash, _source_id=""):
         populate_calls.append(doc_hash)
         return ImmediateFuture(None)
 
@@ -73,3 +73,35 @@ def test_dump_restore_failure_falls_back_to_extraction(monkeypatch, tmp_path):
 
     pipeline_module.data_pipeline_flow()
     assert len(populate_calls) == 1
+
+
+def test_dump_restore_applies_requested_deletions(monkeypatch, tmp_path):
+    _dump_file(monkeypatch, tmp_path)
+    monkeypatch.setattr(pipeline_module.GraphPopulator, "graph_has_data", lambda self: False)
+
+    restore_calls: list[int] = []
+    monkeypatch.setattr(
+        pipeline_module, "import_graph_from_cypher_dump", lambda: restore_calls.append(1)
+    )
+
+    deleted_calls: list[list[str]] = []
+
+    def delete_stub(self, document_source_ids):
+        deleted_calls.append(list(document_source_ids))
+        return set(document_source_ids)
+
+    monkeypatch.setattr(
+        pipeline_module.GraphPopulator,
+        "delete_sources_for_documents",
+        delete_stub,
+    )
+
+    populate_calls: list[str] = []
+    _stub_extraction(monkeypatch, populate_calls)
+
+    outcome = pipeline_module.data_pipeline_flow(deleted=["docs/removed.pdf"])
+
+    assert restore_calls == [1]
+    assert deleted_calls == [["file://docs/removed.pdf"]]
+    assert populate_calls == []
+    assert outcome.deleted == {"file://docs/removed.pdf"}
