@@ -7,13 +7,18 @@ Requires NEO4J_URI, NEO4J_USER (or NEO4J_USERNAME), and NEO4J_PASSWORD
 environment variables (loaded from .env automatically).
 """
 
+import logging
 import os
 import sys
 
 from dotenv import load_dotenv
 from langchain_neo4j import Neo4jGraph
 
+from src.config.logging_config import configure_logging
+
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Synthetic Cypher statements — each is a self-contained MERGE block
@@ -306,27 +311,29 @@ def populate(graph: Neo4jGraph) -> None:
             continue
         try:
             graph.query(stmt)
-            print(f"  [OK] block {i}/{len(STATEMENTS)}")
+            logger.info("Executed block %d/%d", i, len(STATEMENTS))
         except Exception as exc:
-            print(f"  [ERROR] block {i}/{len(STATEMENTS)}: {exc}", file=sys.stderr)
+            logger.error("Block %d/%d failed: %s", i, len(STATEMENTS), exc)
 
 
 def main() -> None:
+    configure_logging()
+
     uri = os.getenv("NEO4J_URI")
     username = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME")
     password = os.getenv("NEO4J_PASSWORD")
 
     if not all([uri, username, password]):
-        print("ERROR: set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD in your .env", file=sys.stderr)
+        logger.error("Set NEO4J_URI, NEO4J_USER, and NEO4J_PASSWORD in your .env")
         sys.exit(1)
 
-    print(f"Connecting to Neo4j at {uri} as {username} ...")
+    logger.info("Connecting to Neo4j at %s as %s", uri, username)
     graph = Neo4jGraph(url=uri, username=username, password=password)
 
-    print(f"Populating graph with {len(STATEMENTS)} statement blocks ...")
+    logger.info("Populating graph with %d statement blocks", len(STATEMENTS))
     populate(graph)
 
-    print("Done.")
+    logger.info("Done")
 
 
 if __name__ == "__main__":

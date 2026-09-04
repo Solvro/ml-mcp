@@ -6,8 +6,11 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dotenv import load_dotenv
 
 from config.config import get_config
+from src.config.logging_config import configure_logging
 
 from .data_pipe import DataPipe
+
+logger = logging.getLogger(__name__)
 
 
 def process_chunk(chunk: str, pipe: DataPipe) -> str:
@@ -24,8 +27,10 @@ def process_chunk(chunk: str, pipe: DataPipe) -> str:
 
 
 def main():
+    configure_logging()
+
     if len(sys.argv) < 3:
-        print("Usage: python main.py <input_dir> <num_threads> [--clear-db]")
+        logger.error("Usage: python main.py <input_dir> <num_threads> [--clear-db]")
         sys.exit(1)
 
     input_dir = sys.argv[1]
@@ -34,7 +39,7 @@ def main():
         if num_threads < 1:
             raise ValueError("Number of threads must be positive")
     except ValueError as e:
-        print(f"Invalid number of threads: {e}")
+        logger.error("Invalid number of threads: %s", e)
         sys.exit(1)
 
     clear_db = "--clear-db" in sys.argv
@@ -97,5 +102,4 @@ def main():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
     main()

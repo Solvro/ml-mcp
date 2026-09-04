@@ -139,7 +139,7 @@ class RAG:
             neo4j_url: Neo4j database connection URL
             neo4j_username: Neo4j username
             neo4j_password: Neo4j password
-            enable_debug: Enable debug output (default: False)
+            enable_debug: Force DEBUG logging for this pipeline, whatever LOG_LEVEL says
             max_results: Maximum number of results from Neo4j (default: 5)
             llm_timeout_sec: Per-call HTTP timeout for each LLM client
             graph_timeout_sec: Wall-clock budget for the whole RAG run
@@ -155,6 +155,8 @@ class RAG:
             graph_timeout_sec if graph_timeout_sec is not None else get_graph_timeout_seconds()
         )
         self.enable_debug = enable_debug if enable_debug is not None else config.rag.enable_debug
+        if self.enable_debug:
+            logger.setLevel(logging.DEBUG)
         self.max_results = max_results if max_results is not None else config.rag.max_results
         self.enable_fallback_search = config.rag.enable_fallback_search
         self.fallback_min_score = config.rag.fallback_min_score
@@ -355,9 +357,9 @@ class RAG:
 
             if not is_empty:
                 self._cached_schema = db_schema
-                print(f"[Schema] fetched {len(db_schema)} chars from Neo4j")
+                logger.info("Fetched %d chars of schema from Neo4j", len(db_schema))
             else:
-                print("[Schema] database is empty — schema will be re-fetched on next call")
+                logger.warning("Graph is empty; schema will be re-fetched on the next call")
 
         return self._cached_schema or ""
 
@@ -391,16 +393,14 @@ class RAG:
             start = cleaned_output.index("{")
             payload, _ = json.JSONDecoder().raw_decode(cleaned_output[start:])
         except (ValueError, json.JSONDecodeError) as exc:
-            if self.enable_debug:
-                print(f"[Guardrails Parse Error] invalid JSON: {exc}; raw={raw_output}")
+            logger.debug("Guardrail output was not valid JSON: %s; raw=%s", exc, raw_output)
             return {"decision": "end"}
 
         decision = str(payload.get("decision", "")).strip().lower()
         normalized_decision = GUARDRAIL_DECISION_ALIASES.get(decision)
 
         if normalized_decision is None:
-            if self.enable_debug:
-                print(f"[Guardrails Parse Error] invalid decision={decision!r}; raw={raw_output}")
+            logger.debug("Guardrail decision %r is unknown; raw=%s", decision, raw_output)
             return {"decision": "end"}
 
         return {"decision": normalized_decision}
@@ -502,8 +502,7 @@ class RAG:
 
         graded_context = [context[index] for index in kept]
 
-        if self.enable_debug:
-            print(f"[Context Grader] kept {len(graded_context)} of {len(context)} row(s)")
+        logger.debug("Context grader kept %d of %d row(s)", len(graded_context), len(context))
 
         if not graded_context:
             logger.info("Context grader rejected all %d retrieved row(s)", len(context))
@@ -527,9 +526,6 @@ class RAG:
             ("grade_context", self.grade_context),
             ("return_none", self.return_none),
         ]
-
-        if self.enable_debug:
-            nodes.append(("debug_print", self.debug_print))
 
         for node_name, node_func in nodes:
             builder.add_node(node_name, node_func)
@@ -583,7 +579,9 @@ class RAG:
             Updated state with generated CYPHER query
         """
         schema = self.schema
-        print(f"[Schema used for Cypher generation] ({len(schema)} chars):\n{schema or '(empty)'}")
+        logger.debug(
+            "Schema used for Cypher generation (%d chars):\n%s", len(schema), schema or "(empty)"
+        )
 
         chain = self.generate_cypher_template | self.cypher_llm | StrOutputParser()
         generated_cypher = chain.invoke(
@@ -638,8 +636,7 @@ class RAG:
 
         except UnsafeCypherQueryError as e:
             error_msg = f"Blocked unsafe Cypher: {e}"
-            if self.enable_debug:
-                print(f"[Cypher Blocked] {error_msg}")
+            logger.warning("Cypher blocked: %s", e)
             return {
                 "context": [],
                 "generated_cypher": error_msg,
@@ -649,8 +646,7 @@ class RAG:
         except Exception as e:
             error_msg = str(e)
 
-            if self.enable_debug:
-                print(f"[Query Error] {error_msg}")
+            logger.warning("Cypher execution failed: %s", error_msg)
 
             return {
                 "context": [],
@@ -679,8 +675,7 @@ class RAG:
         """
         repaired, dropped_literals = strip_question_literal_filters(executed_cypher, user_question)
         if dropped_literals:
-            if self.enable_debug:
-                print(f"[Retrieval Retry] dropped question literals: {dropped_literals}")
+            logger.debug("Retrieval retry dropped question literals: %s", dropped_literals)
             response = self._run_recovery_query(repaired, "question-literal repair")
             if response:
                 return {
@@ -802,8 +797,7 @@ class RAG:
             "lucene_query": lucene_query,
             "min_score": self.fallback_min_score,
         }
-        if self.enable_debug:
-            print(f"[Retrieval Retry] label-agnostic search: {lucene_query}")
+        logger.debug("Retrieval retry with label-agnostic search: %s", lucene_query)
 
         response = self._run_recovery_query(cypher_query, "label-agnostic search", params=params)
         if not response and self.ensure_fulltext_index():

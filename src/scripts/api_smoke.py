@@ -1,8 +1,13 @@
 """Manual smoke script for the ToPWR API."""
 
 import asyncio
+import logging
 
 import httpx
+
+from src.config.logging_config import configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 async def run_api_smoke() -> None:
@@ -10,81 +15,71 @@ async def run_api_smoke() -> None:
     base_url = "http://localhost:8000"
 
     async with httpx.AsyncClient() as client:
-        print("Testing ToPWR API...\n")
+        logger.info("Testing ToPWR API at %s", base_url)
 
-        print("1) Health endpoint")
+        logger.info("1) Health endpoint")
         response = await client.get(f"{base_url}/health")
-        print(f"   Status: {response.status_code}")
-        print(f"   Response: {response.json()}\n")
+        logger.info("   Status: %s", response.status_code)
+        logger.info("   Response: %s", response.json())
 
-        print("2) Create conversation")
+        logger.info("2) Create conversation")
         chat_request = {
             "user_id": "test_user_123",
             "message": "Czym jest nagroda dziekana?",
             "metadata": {"source": "smoke"},
         }
         response = await client.post(f"{base_url}/api/chat", json=chat_request)
-        print(f"   Status: {response.status_code}")
+        logger.info("   Status: %s", response.status_code)
         chat_response = response.json()
-        print(f"   Session ID: {chat_response['session_id']}")
-        print(f"   Response: {chat_response['message'][:100]}...\n")
+        logger.info("   Session ID: %s", chat_response["session_id"])
+        logger.info("   Response: %s...", chat_response["message"][:100])
 
         session_id = chat_response["session_id"]
 
-        print("3) Continue conversation")
+        logger.info("3) Continue conversation")
         continue_request = {
             "user_id": "test_user_123",
             "session_id": session_id,
             "message": "A jakie są wymagania?",
         }
         response = await client.post(f"{base_url}/api/chat", json=continue_request)
-        print(f"   Status: {response.status_code}")
+        logger.info("   Status: %s", response.status_code)
         chat_response = response.json()
-        print(f"   Message count: {chat_response['metadata']['message_count']}\n")
+        logger.info("   Message count: %s", chat_response["metadata"]["message_count"])
 
-        print("4) Conversation history")
+        logger.info("4) Conversation history")
         response = await client.get(f"{base_url}/api/sessions/{session_id}/history")
-        print(f"   Status: {response.status_code}")
+        logger.info("   Status: %s", response.status_code)
         history = response.json()
-        print(f"   Total messages: {history['total_messages']}")
+        logger.info("   Total messages: %s", history["total_messages"])
         for idx, msg in enumerate(history["messages"], start=1):
-            print(f"   [{idx}] {msg['role']}: {msg['content'][:50]}...")
-        print()
+            logger.info("   [%d] %s: %s...", idx, msg["role"], msg["content"][:50])
 
-        print("5) User sessions")
+        logger.info("5) User sessions")
         response = await client.get(f"{base_url}/api/users/test_user_123/sessions")
-        print(f"   Status: {response.status_code}")
+        logger.info("   Status: %s", response.status_code)
         user_sessions = response.json()
-        print(f"   Session count: {user_sessions['session_count']}\n")
+        logger.info("   Session count: %s", user_sessions["session_count"])
 
-        print("6) System stats")
+        logger.info("6) System stats")
         response = await client.get(f"{base_url}/api/stats")
-        print(f"   Status: {response.status_code}")
-        stats = response.json()
-        print(f"   Stats: {stats}\n")
+        logger.info("   Status: %s", response.status_code)
+        logger.info("   Stats: %s", response.json())
 
-        print("7) Session info")
+        logger.info("7) Session info")
         response = await client.get(f"{base_url}/api/sessions/{session_id}")
-        print(f"   Status: {response.status_code}")
-        session_info = response.json()
-        print(f"   Session Info: {session_info}\n")
+        logger.info("   Status: %s", response.status_code)
+        logger.info("   Session Info: %s", response.json())
 
-        print("Smoke check completed.")
+        logger.info("Smoke check completed.")
 
 
 def main() -> None:
     """Entry point for the `api-smoke` console script."""
+    configure_logging()
+    logger.info("ToPWR API smoke check - the API must already be running (just api)")
     asyncio.run(run_api_smoke())
 
 
 if __name__ == "__main__":
-    print("\n" + "=" * 60)
-    print("ToPWR API Smoke Check")
-    print("=" * 60 + "\n")
-    print("Make sure the API server is running:")
-    print("  just topwr-api")
-    print("  OR")
-    print("  uv run topwr-api\n")
-    print("=" * 60 + "\n")
-
     main()

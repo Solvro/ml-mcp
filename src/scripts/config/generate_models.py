@@ -4,22 +4,29 @@ Generate Pydantic models from graph_config.yaml
 This script creates src/config_models.py with type-safe models
 """
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
+from src.config.logging_config import configure_logging
+
+logger = logging.getLogger(__name__)
+
 
 def main():
+    configure_logging()
+
     # Get paths
     root_dir = Path(__file__).parent.parent.parent.parent
     yaml_path = root_dir / "graph_config.yaml"
     output_path = root_dir / "src" / "config" / "config_models.py"
 
     if not yaml_path.exists():
-        print(f"❌ Config file not found: {yaml_path}")
+        logger.error("Config file not found: %s", yaml_path)
         sys.exit(1)
 
-    print(f"📄 Generating models from {yaml_path.name}...")
+    logger.info("Generating models from %s", yaml_path.name)
 
     # Run datamodel-code-generator
     cmd = [
@@ -41,16 +48,16 @@ def main():
 
     try:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
-        print(f"✅ Models generated successfully at {output_path}")
-        print("📝 You can now import from: from src.config_models import GraphConfig")
+        logger.info("Models generated successfully at %s", output_path)
+        logger.info("You can now import from: from src.config_models import GraphConfig")
         return 0
     except subprocess.CalledProcessError as e:
-        print("❌ Error generating models:")
-        print(e.stderr)
+        logger.error("Error generating models: %s", e.stderr)
         return 1
     except FileNotFoundError:
-        print("❌ datamodel-codegen not found. Install it with:")
-        print("   uv add datamodel-code-generator")
+        logger.error(
+            "datamodel-codegen not found. Install it with: uv add datamodel-code-generator"
+        )
         return 1
 
 

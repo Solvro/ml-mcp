@@ -125,6 +125,14 @@ CLARIN_API_KEY=
 
 
 ########################################
+# Logging
+########################################
+
+# Root log level for every entry point: DEBUG, INFO, WARNING, ERROR or CRITICAL
+LOG_LEVEL=INFO
+
+
+########################################
 # Langfuse Observability
 ########################################
 
