@@ -10,6 +10,7 @@ from src.data_pipeline.graph_dump import (
     host_dump_path,
     import_graph_from_cypher_dump,
 )
+from src.data_pipeline.pipeline import data_pipeline_flow
 
 logger = logging.getLogger(__name__)
 
@@ -49,4 +50,17 @@ def dedup_graph_main() -> None:
         stats["relabelled_labels"],
         stats["keys_backfilled"],
         stats["groups_merged"],
+    )
+
+
+def prefect_pipeline_main() -> None:
+    """Run the pipeline and return nothing, so the console script exits 0."""
+
+    configure_logging()
+    load_dotenv()
+    outcome = data_pipeline_flow()
+    logger.info(
+        "Pipeline finished: processed=%d deleted=%d",
+        len(outcome.processed),
+        len(outcome.deleted),
     )
