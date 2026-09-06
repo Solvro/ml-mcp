@@ -609,6 +609,9 @@ def refresh_sources_flow(
         if attempted_sids or confirmed_deleted_paths:
             save_manifest(staging_dir, manifest)
 
+        if outcome.failed:
+            raise RuntimeError(f"Downstream pipeline failed for {len(outcome.failed)} documents")
+
     return stats
 
 

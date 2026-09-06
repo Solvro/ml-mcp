@@ -35,10 +35,14 @@ class PipelineOutcome(NamedTuple):
         processed: Document-level source ids confirmed to be in the graph.
         deleted: Document-level source ids whose Source nodes were detached and
             whose orphaned entities were removed.
+        failed: Document-level source ids whose pages raised while being claimed or
+            processed. A page failure is not fatal to the run, so this is the only way
+            a caller can tell a run that lost documents from one that did not.
     """
 
     processed: set[str]
     deleted: set[str]
+    failed: frozenset[str] = frozenset()
 
 
 def _get_max_concurrency() -> int:
@@ -437,8 +441,8 @@ def data_pipeline_flow(
         len(processed_documents),
         len(all_documents),
     )
-    return PipelineOutcome(processed=processed_documents, deleted=confirmed_deleted_source_ids)
-
-
-if __name__ == "__main__":
-    data_pipeline_flow()
+    return PipelineOutcome(
+        processed=processed_documents,
+        deleted=confirmed_deleted_source_ids,
+        failed=frozenset(failed_documents),
+    )

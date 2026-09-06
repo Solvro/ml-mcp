@@ -523,6 +523,32 @@ def test_refresh_marks_staged_entries_processed_after_downstream_success(staging
     assert manifest[sid]["last_error"] == ""
 
 
+def test_refresh_fails_the_run_when_downstream_loses_documents(staging_env, monkeypatch):
+    """A served run reports a lost document the way the CLI reports it: by failing.
+
+    The manifest still has to be written first, otherwise the attempt counter never advances
+    and the document is retried forever without ever reaching the failure limit.
+    """
+
+    def fake_pipeline(*, changed=None, deleted=None):
+        current = staging.load_manifest(staging_env)
+        pending = {
+            s for s, e in current.items() if e.get("status") == staging.MANIFEST_STATUS_PENDING
+        }
+        return PipelineOutcome(processed=set(), deleted=set(), failed=frozenset(pending))
+
+    monkeypatch.setattr(source_refresh, "data_pipeline_flow", fake_pipeline)
+
+    connector = WebConnector([HOME], max_depth=1, client=make_client(routes_v1()))
+    with pytest.raises(RuntimeError, match="Downstream pipeline failed"):
+        refresh_sources_flow(trigger_downstream=True, connector=connector)
+
+    sid = staging.source_id_for("pwr.edu.pl/files/regulamin.pdf")
+    manifest = staging.load_manifest(staging_env)
+    assert manifest[sid]["status"] == staging.MANIFEST_STATUS_PENDING
+    assert manifest[sid]["attempt_count"] == 1
+
+
 def test_refresh_keeps_pending_when_downstream_fails(staging_env, monkeypatch):
     def failing_pipeline(*, changed=None, deleted=None):
         raise RuntimeError("boom")
