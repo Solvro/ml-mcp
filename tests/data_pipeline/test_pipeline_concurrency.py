@@ -221,10 +221,11 @@ def test_pipeline_continues_after_page_failure(monkeypatch):
     populate_stub = SubmitStub(populate_submit)
     monkeypatch.setattr(pipeline_module, "populate_graph", populate_stub)
 
-    pipeline_module.data_pipeline_flow()
+    outcome = pipeline_module.data_pipeline_flow()
 
     assert len(populate_stub.calls) == 3
     assert len(reflection_calls) == 2
+    assert len(outcome.failed) == 1
 
 
 def test_pipeline_incremental_skips_when_source_hashes_unchanged(monkeypatch):
