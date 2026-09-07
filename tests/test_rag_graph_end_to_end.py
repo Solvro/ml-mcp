@@ -24,8 +24,20 @@ class FakeDatabase:
         self.get_schema = schema
         self.rows = rows
         self.queries: list[str] = []
+        self.refresh_calls = 0
+        self.version_calls = 0
+
+    def refresh_schema(self) -> None:
+        """Neo4jGraph re-reads the graph here; the fake's schema is already current."""
+        self.refresh_calls += 1
 
     def query(self, cypher_query: str) -> list[dict[str, Any]]:
+        if "PipelineRun" in cypher_query:
+            # Schema-cache bookkeeping, not retrieval: kept out of `queries` so the counts
+            # below still say how many queries the retrieval path itself ran.
+            self.version_calls += 1
+            return [{"version": "2026-09-07T03:00:00Z"}]
+
         self.queries.append(cypher_query)
         return self.rows
 
@@ -64,7 +76,7 @@ def _build_rag_graph_stub(
     rag.max_results = max_results
     rag.enable_fallback_search = False
     rag.graph_timeout_sec = graph_timeout_sec
-    rag._cached_schema = None
+    rag._init_schema_cache()
     rag.visualizer = GraphVisualizer()
 
     database = FakeDatabase(schema=SCHEMA_TEXT, rows=db_rows)

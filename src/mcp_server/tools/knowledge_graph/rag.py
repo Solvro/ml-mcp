@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+import threading
+import time
 from enum import Enum
 from typing import Any, Dict, List
 
@@ -22,7 +24,12 @@ from ....config.messages import (
     OFF_TOPIC_MESSAGE,
 )
 from ....config.system_labels import SYSTEM_LABELS
-from ....config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
+from ....config.timeouts import (
+    get_graph_timeout_seconds,
+    get_llm_timeout_seconds,
+    get_schema_refresh_seconds,
+    get_schema_version_probe_seconds,
+)
 from ....text_normalization import (
     ensure_case_insensitive_fuzzy_matching,
     fold_diacritics,
@@ -97,6 +104,14 @@ ORDER BY score DESC, title"""
 SHOW_FULLTEXT_INDEX_CYPHER = """SHOW INDEXES YIELD name, type, labelsOrTypes, properties
 WHERE name = $index_name
 RETURN labelsOrTypes AS labels, properties AS properties"""
+
+# Whether the schema needs re-reading is a question the graph can answer for the price of a
+# label scan. Every terminal path of data_pipeline_flow stamps a PipelineRun
+# (graph_populating.record_pipeline_run / record_restore_run), so a moved marker means new
+# labels and properties, and an unmoved one means the cached schema still describes the graph.
+# toString keeps the comparison a plain string rather than a neo4j.time.DateTime.
+GRAPH_VERSION_CYPHER = """MATCH (pr:PipelineRun)
+RETURN toString(max(pr.run_at)) AS version"""
 
 
 class LLMProvider(Enum):
@@ -174,7 +189,7 @@ class RAG:
             enhanced_schema=True,
         )
 
-        self._cached_schema = None
+        self._init_schema_cache()
 
         if self.enable_fallback_search:
             self.ensure_fulltext_index()
@@ -331,37 +346,165 @@ class RAG:
             exceptions_to_handle=PROVIDER_FALLBACK_EXCEPTIONS,
         )
 
-    @property
-    def schema(self):
-        """Cached database schema to avoid repeated fetches.
+    def _init_schema_cache(self) -> None:
+        """
+        Reset everything the schema cache is made of.
 
-        Only caches when a non-empty schema is found so that a temporary empty
-        database at startup does not permanently poison the cache.
+        Kept separate from ``__init__`` so a bare instance built for a test starts from the
+        same state a real one does.
+        """
+        self._cached_schema: str | None = None
+        self._schema_fetched_at: float = 0.0
+        self._schema_ttl_sec: float = get_schema_refresh_seconds()
+        self._schema_lock = threading.RLock()
+        self._known_labels: frozenset[str] | None = None
+        self._graph_version_seen: str | None = None
+        self._version_probed_at: float = 0.0
+        self._version_probe_interval_sec: float = get_schema_version_probe_seconds()
+
+    @staticmethod
+    def _schema_is_empty(db_schema: str | None) -> bool:
+        """Report whether a schema string describes a graph that holds nothing."""
+        stripped = (db_schema or "").strip()
+        headers_only = (
+            "Node properties:" in stripped
+            and "Relationship properties:" in stripped
+            and "The relationships:" in stripped
+            and stripped.replace("Node properties:", "")
+            .replace("Relationship properties:", "")
+            .replace("The relationships:", "")
+            .strip()
+            == ""
+        )
+        return not stripped or headers_only
+
+    def invalidate_schema_cache(self) -> None:
+        """Force the next schema read to re-query Neo4j."""
+        with self._schema_lock:
+            self._cached_schema = None
+            self._schema_fetched_at = 0.0
+            self._version_probed_at = 0.0
+            self._graph_version_seen = None
+
+    def _graph_version(self) -> str | None:
+        """
+        Read the marker the pipeline stamps at the end of every run.
+
+        Returns:
+            The latest run timestamp, an empty string when nothing has been ingested yet, or
+            None when the probe itself failed. The last two are deliberately different: "no
+            runs" is a fact about the graph, "probe failed" is an absence of information and
+            must not be allowed to look like an unchanged graph.
+        """
+        try:
+            rows = self.database.query(GRAPH_VERSION_CYPHER)
+        except Exception as exc:
+            logger.warning("Could not read the graph version marker: %s", exc)
+            return None
+
+        return str(rows[0].get("version") or "") if rows else ""
+
+    def _cached_schema_is_fresh(self) -> bool:
+        """
+        Report whether the cached schema may still be served without re-reading it.
+
+        Three gates, cheapest first. The TTL is the backstop rather than the mechanism: it
+        exists for whatever writes to the graph without recording a run - ``uv run
+        dedup-graph`` relabels nodes across the whole graph and stamps no PipelineRun, and
+        neither does a hand-run Cypher fix. Everything the pipeline itself does is caught by
+        the marker, within one probe interval instead of one TTL.
         """
         if not self._cached_schema:
-            db_schema = self.database.get_schema
+            return False
 
-            stripped = (db_schema or "").strip()
-            headers_only = (
-                "Node properties:" in stripped
-                and "Relationship properties:" in stripped
-                and "The relationships:" in stripped
-                and stripped.replace("Node properties:", "")
-                .replace("Relationship properties:", "")
-                .replace("The relationships:", "")
-                .strip()
-                == ""
+        now = time.monotonic()
+        if now - self._schema_fetched_at >= self._schema_ttl_sec:
+            return False
+
+        if now - self._version_probed_at < self._version_probe_interval_sec:
+            return True
+
+        version = self._graph_version()
+        self._version_probed_at = now
+
+        if version is None:
+            # The probe failed, so nothing is known about the graph. The cached schema is the
+            # last thing known to be true about it; the next question probes again.
+            return True
+
+        if version != self._graph_version_seen:
+            logger.info(
+                "Graph version moved (%s -> %s); re-reading the schema",
+                self._graph_version_seen or "(none)",
+                version or "(none)",
             )
+            return False
 
-            is_empty = not stripped or headers_only
+        return True
 
-            if not is_empty:
-                self._cached_schema = db_schema
-                logger.info("Fetched %d chars of schema from Neo4j", len(db_schema))
-            else:
-                logger.warning("Graph is empty; schema will be re-fetched on the next call")
+    def _fetch_schema(self) -> str:
+        """
+        Re-read the schema from Neo4j and cache it when it describes a populated graph.
 
-        return self._cached_schema or ""
+        ``Neo4jGraph.get_schema`` is a stored string, not a query: only ``refresh_schema()``
+        goes back to the database. Reading the property alone returns whatever the graph looked
+        like when the driver was constructed, which for any deployment that starts before
+        ingestion finishes is an empty graph, forever.
+
+        A failed refresh keeps the last good schema. Serving a slightly stale schema is a far
+        smaller problem than generating Cypher against nothing.
+
+        Returns:
+            The schema text, or an empty string when the graph holds nothing
+        """
+        # Read before refreshing, never after: a run that lands while the refresh is in flight
+        # would otherwise be recorded as already seen, and its labels would stay invisible
+        # until the run after it. Reading first can only cost one redundant refresh.
+        version = self._graph_version()
+
+        try:
+            self.database.refresh_schema()
+        except Exception as exc:
+            logger.warning("Could not refresh the Neo4j schema: %s", exc)
+            return self._cached_schema or ""
+
+        db_schema = self.database.get_schema
+
+        if self._schema_is_empty(db_schema):
+            # Not cached, and no timestamp written, so the next question tries again rather
+            # than waiting out the TTL on a graph that was merely mid-ingestion.
+            self._cached_schema = None
+            logger.warning("Graph is empty; schema will be re-fetched on the next call")
+            return ""
+
+        self._cached_schema = db_schema
+        self._schema_fetched_at = time.monotonic()
+        self._graph_version_seen = version
+        self._version_probed_at = self._schema_fetched_at
+        logger.info("Fetched %d chars of schema from Neo4j", len(db_schema))
+        return db_schema
+
+    @property
+    def schema(self) -> str:
+        """
+        Database schema for Cypher generation, re-read from Neo4j when the cache goes stale.
+
+        Cached for ``rag.schema_refresh_seconds`` rather than for the process lifetime: the
+        pipeline adds labels and properties on every nightly run, and a serving process that
+        never looks again generates queries against a graph that no longer exists. An empty
+        result is never cached, so a temporary empty database at startup cannot poison it.
+        """
+        if self._cached_schema_is_fresh():
+            return self._cached_schema or ""
+
+        fetched_at = self._schema_fetched_at
+        with self._schema_lock:
+            if self._cached_schema and self._schema_fetched_at != fetched_at:
+                # Another thread refreshed while this one waited for the lock. Re-running the
+                # freshness check here instead would meet the probe stamp that check had just
+                # written and conclude the cache is fine, skipping the refresh entirely.
+                return self._cached_schema
+            return self._fetch_schema()
 
     def get_graph(self):
         """Return graph visualizer with Mermaid capabilities"""
@@ -544,8 +687,15 @@ class RAG:
         )
         visualizer.add_conditional_edges("guardrails_system", guardrail_edges)
 
-        builder.add_edge("generate_cypher", "retrieve")
-        visualizer.add_edge("generate_cypher", "retrieve")
+        cypher_edges = {
+            "retrieve": "retrieve",
+            "end": END,
+        }
+
+        builder.add_conditional_edges(
+            "generate_cypher", lambda state: state["next_node"], cypher_edges
+        )
+        visualizer.add_conditional_edges("generate_cypher", cypher_edges)
 
         builder.add_edge("return_none", END)
         visualizer.add_edge("return_none", END)
@@ -583,6 +733,18 @@ class RAG:
             "Schema used for Cypher generation (%d chars):\n%s", len(schema), schema or "(empty)"
         )
 
+        if not schema:
+            # Neo4j has just told us it holds nothing. Two model calls cannot retrieve from an
+            # empty graph, and a query written against no schema is exactly the kind of
+            # invented-property answer the abstention path exists to prevent.
+            logger.warning("Neo4j reports an empty schema; abstaining instead of generating Cypher")
+            return {
+                "generated_cypher": None,
+                "context": [],
+                "retrieval_strategy": RetrievalStrategy.EMPTY.value,
+                "next_node": "end",
+            }
+
         chain = self.generate_cypher_template | self.cypher_llm | StrOutputParser()
         generated_cypher = chain.invoke(
             self._build_cypher_prompt_payload(state["user_question"], schema),
@@ -595,7 +757,7 @@ class RAG:
             ),
         )
 
-        return {"generated_cypher": generated_cypher}
+        return {"generated_cypher": generated_cypher, "next_node": "retrieve"}
 
     def retrieve(self, state: State):
         """
@@ -743,6 +905,15 @@ class RAG:
 
         if not labels:
             return False
+
+        label_set = frozenset(labels)
+        if self._known_labels is not None and label_set != self._known_labels:
+            # New labels carry new properties, and the Cypher model can only use what the
+            # schema shows it. Whoever noticed the label set moved is the cheapest place to
+            # notice the schema did too.
+            logger.info("Graph labels changed; dropping the cached Neo4j schema")
+            self.invalidate_schema_cache()
+        self._known_labels = label_set
 
         try:
             existing = self.database.query(

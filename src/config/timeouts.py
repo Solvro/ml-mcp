@@ -1,4 +1,4 @@
-"""Resolve LLM/graph timeouts: optional env override, else graph_config.yaml."""
+"""Resolve LLM/graph timeouts and the schema refresh interval: env override, else yaml."""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ logger = logging.getLogger(__name__)
 
 ENV_LLM_TIMEOUT = "LLM_TIMEOUT_SECONDS"
 ENV_GRAPH_TIMEOUT = "GRAPH_TIMEOUT_SECONDS"
+ENV_SCHEMA_REFRESH = "SCHEMA_REFRESH_SECONDS"
+ENV_SCHEMA_VERSION_PROBE = "SCHEMA_VERSION_PROBE_SECONDS"
 
 
 def _parse_positive_float(raw: str, *, env_name: str) -> float | None:
@@ -57,3 +59,25 @@ def get_graph_timeout_seconds() -> float:
     if from_env is not None:
         return from_env
     return float(get_config().rag.graph_timeout_seconds)
+
+
+def get_schema_refresh_seconds() -> float:
+    """How long a fetched Neo4j schema stays usable. Env overrides yaml."""
+    from_env = _parse_positive_float(
+        os.getenv(ENV_SCHEMA_REFRESH, ""),
+        env_name=ENV_SCHEMA_REFRESH,
+    )
+    if from_env is not None:
+        return from_env
+    return float(get_config().rag.schema_refresh_seconds)
+
+
+def get_schema_version_probe_seconds() -> float:
+    """How often the graph-version marker may be re-read. Env overrides yaml."""
+    from_env = _parse_positive_float(
+        os.getenv(ENV_SCHEMA_VERSION_PROBE, ""),
+        env_name=ENV_SCHEMA_VERSION_PROBE,
+    )
+    if from_env is not None:
+        return from_env
+    return float(get_config().rag.schema_version_probe_seconds)

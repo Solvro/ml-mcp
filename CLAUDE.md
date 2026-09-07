@@ -321,7 +321,9 @@ class State(MessagesState):
     guardrail_decision: Optional[str]
     trace_id: Optional[str]
 ```
-Nodes: `guardrails_system` → conditional → `generate_cypher` → `retrieve` → `return_none`
+Nodes: `guardrails_system` → conditional → `generate_cypher` → conditional → `retrieve` →
+`grade_context`; `return_none` is the off-topic exit, and `generate_cypher` takes its own
+second exit straight to the end when the graph reports an empty schema.
 
 ### Config System
 `graph_config.yaml` is the single source of truth. Loaded as a validated Pydantic singleton:
@@ -505,6 +507,63 @@ exact — a 3-character prefix matches half the graph.
 This widens recall deliberately; the score floor and the grader are what keep precision, which
 is the point of having both. If a Polish analyzer ever ships in the deployed build, configuring
 it at index creation is the better fix and this expansion can go.
+
+### The Cypher Model Sees the Live Schema
+
+`Neo4jGraph.get_schema` is a stored string, not a query — the driver fills it in once inside its
+own constructor, and reading the property again returns the same text. So `RAG.schema` calls
+`self.database.refresh_schema()` itself whenever its cache is stale.
+
+This is not a performance cache; it is the difference between answering and hallucinating. Bring
+the stack up on an empty database — the ordinary first `just up` — and the serving process would
+otherwise be pinned to an empty schema for its entire lifetime, generating provenance rows,
+invented properties and whole nodes, all tagged `retrieval_strategy: primary`, which is the one
+strategy the grader does not check. The nightly `DATA_PIPELINE_REFRESH_CRON` run has the same
+effect more slowly: it adds labels and properties the process would never see.
+
+**Staleness is detected, not guessed at.** A refresh is expensive — `enhanced_schema=True` means
+`enhance_schema` issues a sampling query per node label *and* per relationship type, so one
+refresh is tens of round trips, paid inline by whichever question triggers it. A timer would
+spend that on an idle graph and still miss an ingest by up to its own interval. Instead the
+graph is asked directly: every terminal path of `data_pipeline_flow` stamps a
+`PipelineRun {run_at}` (`graph_populating.record_pipeline_run` / `record_restore_run`), so
+`MATCH (pr:PipelineRun) RETURN toString(max(pr.run_at))` — one label scan over one node per run
+— says whether anything changed. A moved marker re-reads the schema; an unmoved one serves the
+cache. The probe itself is rate-limited by `rag.schema_version_probe_seconds` (30s) so a burst
+of questions doesn't each pay for it.
+
+`rag.schema_refresh_seconds` (an hour) is the **backstop**, not the mechanism. It exists for
+whatever writes to the graph without recording a run: `uv run dedup-graph` relabels nodes across
+the whole graph and stamps no `PipelineRun`, and neither does a hand-run Cypher fix. Both env
+vars (`SCHEMA_REFRESH_SECONDS`, `SCHEMA_VERSION_PROBE_SECONDS`) override the yaml, like the
+other rag knobs.
+
+Four rules keep it honest:
+
+- **An empty schema is never cached.** No timestamp is written either, so a graph that is merely
+  mid-ingestion is re-read on the very next question rather than waiting out the TTL.
+- **A failed refresh keeps the last good schema.** A slightly stale schema still answers
+  questions; an empty one abstains on all of them.
+- **A changed label set drops the cache immediately.** `ensure_fulltext_index` already reads
+  `db.labels()` to decide whether to rebuild the index, and new labels carry new properties, so
+  it invalidates the schema in the same breath.
+- **A failed probe is not an unchanged graph.** `_graph_version` returns `None` for a probe that
+  could not run and `""` for a graph with no runs yet. The first keeps the cache and re-probes
+  on the next question; only the second is a fact worth acting on.
+
+The version is read *before* `refresh_schema()`, never after: a run landing while the refresh is
+in flight would otherwise be recorded as already seen, and its labels would stay invisible until
+the run after it. Reading first can only cost one redundant refresh.
+
+Refreshes are taken under a lock. The waiter checks whether `_schema_fetched_at` moved rather
+than re-running the freshness check — that check would meet the probe stamp it had just written
+and conclude the cache was fine, skipping the refresh entirely.
+
+**An empty schema abstains before it costs anything.** When the graph reports nothing,
+`generate_cypher` routes straight to the end and the run answers `NO_GRAPH_DATA_MESSAGE` — no
+Cypher model call, and no generated query executed. Writing a query
+against no schema is exactly the invented-property answer the rest of this section exists to
+prevent, and it is not worth two LLM calls to produce one.
 
 ### Abstention Is a Retrieval Decision
 

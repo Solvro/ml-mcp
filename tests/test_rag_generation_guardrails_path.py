@@ -15,6 +15,11 @@ class FakeSchemaDatabase:
 
     def __init__(self, schema: str = SCHEMA_TEXT) -> None:
         self.get_schema = schema
+        self.refresh_calls = 0
+
+    def refresh_schema(self) -> None:
+        """Neo4jGraph re-reads the graph here; the fake's schema is already current."""
+        self.refresh_calls += 1
 
 
 class RecordingLLM:
@@ -41,7 +46,7 @@ def _rag_stub(
     taking {schema} or {user_question} breaks these tests too.
     """
     rag = object.__new__(RAG)
-    rag._cached_schema = None
+    rag._init_schema_cache()
     rag.database = FakeSchemaDatabase(schema)
     rag._initialize_prompt_templates()
 
@@ -68,7 +73,7 @@ def test_generate_cypher_feeds_schema_and_question_into_prompt():
     assert len(llm.prompts) == 1
     assert SCHEMA_TEXT in llm.prompts[0]
     assert QUESTION in llm.prompts[0]
-    assert result == {"generated_cypher": GENERATED_CYPHER}
+    assert result == {"generated_cypher": GENERATED_CYPHER, "next_node": "retrieve"}
 
 
 def test_generate_cypher_returns_llm_output_untouched():

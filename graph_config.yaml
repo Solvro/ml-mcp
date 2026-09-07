@@ -22,6 +22,17 @@ rag:
   # scores around 1.4 where the nominative form of the same question scores 10, so a floor set
   # from nominative scores would silently drop exactly the matches that expansion recovers.
   fallback_min_score: 0.5
+  # The serving process starts before ingestion finishes and the nightly refresh keeps adding
+  # labels, so a schema pinned at startup makes the Cypher model invent properties it can see
+  # no evidence for.
+  #
+  # Staleness is normally caught by the PipelineRun marker, not by this timer, so the timer is
+  # a backstop for whatever writes to the graph without recording a run (dedup-graph, a manual
+  # Cypher fix). It bounds how long such a change can stay invisible.
+  schema_refresh_seconds: 3600
+  # How often the cheap "did the pipeline run again" probe may fire. One label scan over one
+  # node per run, versus the ~60 sampling queries an enhanced schema refresh costs.
+  schema_version_probe_seconds: 30
 
 data_pipeline:
   max_chunk_size: 30000
