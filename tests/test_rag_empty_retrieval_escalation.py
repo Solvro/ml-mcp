@@ -71,6 +71,7 @@ def _rag_stub(
     rag.max_results = max_results
     rag.enable_fallback_search = enable_fallback_search
     rag.fallback_min_score = 0.5
+    rag._init_schema_cache()
 
     return rag, database
 
