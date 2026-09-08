@@ -538,6 +538,10 @@ the whole graph and stamps no `PipelineRun`, and neither does a hand-run Cypher 
 vars (`SCHEMA_REFRESH_SECONDS`, `SCHEMA_VERSION_PROBE_SECONDS`) override the yaml, like the
 other rag knobs.
 
+Neo4j runtime wait bounds are separate knobs: `NEO4J_QUERY_TIMEOUT_SECONDS`,
+`NEO4J_CONNECTION_TIMEOUT_SECONDS`, and `NEO4J_MAX_TRANSACTION_RETRY_SECONDS` (yaml:
+`rag.neo4j_*`).
+
 Four rules keep it honest:
 
 - **An empty schema is never cached.** No timestamp is written either, so a graph that is merely
@@ -681,6 +685,16 @@ returns a 503 naming the reason instead of hanging until docker kills the probe;
 `timeout` is deliberately larger (10s) so ours is the one that fires. A hung Neo4j leaves the
 worker thread behind until the driver's own timeout trips it, which is why the ping is a bare
 `RETURN 1` and not something that can queue.
+
+**An outage is bounded before the graph timeout is.** On the driver's defaults an unreachable
+host burns ~60s in internal connection retries, and the 90s `graph_timeout_seconds` was the only
+thing stopping it. `NEO4J_CONNECTION_TIMEOUT_SECONDS` (5s) and
+`NEO4J_MAX_TRANSACTION_RETRY_SECONDS` (10s) add up to bound that instead — measured against a
+non-routable host, the same failure now reports in ~19s, the overshoot past their sum being the
+retry loop's backoff. `NEO4J_QUERY_TIMEOUT_SECONDS` is a different thing: a server-side
+transaction timeout that only applies once Neo4j holds the query, so it bounds a slow answer and
+never an unreachable database. `RAG.__init__` caps the retry budget so connection plus retry
+stays inside the graph timeout.
 
 **Failure is not content.** `knowledge_graph_tool` raises `ToolError` when the graph cannot be
 consulted at all — no RAG, an unreachable database, or the pipeline timed out.

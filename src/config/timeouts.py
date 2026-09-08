@@ -1,4 +1,4 @@
-"""Resolve LLM/graph timeouts and the schema refresh interval: env override, else yaml."""
+"""Resolve timeout/runtime knobs: env override, else yaml."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ logger = logging.getLogger(__name__)
 
 ENV_LLM_TIMEOUT = "LLM_TIMEOUT_SECONDS"
 ENV_GRAPH_TIMEOUT = "GRAPH_TIMEOUT_SECONDS"
+ENV_NEO4J_QUERY_TIMEOUT = "NEO4J_QUERY_TIMEOUT_SECONDS"
+ENV_NEO4J_CONNECTION_TIMEOUT = "NEO4J_CONNECTION_TIMEOUT_SECONDS"
+ENV_NEO4J_MAX_RETRY = "NEO4J_MAX_TRANSACTION_RETRY_SECONDS"
 ENV_SCHEMA_REFRESH = "SCHEMA_REFRESH_SECONDS"
 ENV_SCHEMA_VERSION_PROBE = "SCHEMA_VERSION_PROBE_SECONDS"
 
@@ -59,6 +62,39 @@ def get_graph_timeout_seconds() -> float:
     if from_env is not None:
         return from_env
     return float(get_config().rag.graph_timeout_seconds)
+
+
+def get_neo4j_query_timeout_seconds() -> float:
+    """Per-query Neo4j timeout. Env overrides yaml rag.neo4j_query_timeout_seconds."""
+    from_env = _parse_positive_float(
+        os.getenv(ENV_NEO4J_QUERY_TIMEOUT, ""),
+        env_name=ENV_NEO4J_QUERY_TIMEOUT,
+    )
+    if from_env is not None:
+        return from_env
+    return float(get_config().rag.neo4j_query_timeout_seconds)
+
+
+def get_neo4j_connection_timeout_seconds() -> float:
+    """Neo4j connection timeout. Env overrides yaml rag.neo4j_connection_timeout_seconds."""
+    from_env = _parse_positive_float(
+        os.getenv(ENV_NEO4J_CONNECTION_TIMEOUT, ""),
+        env_name=ENV_NEO4J_CONNECTION_TIMEOUT,
+    )
+    if from_env is not None:
+        return from_env
+    return float(get_config().rag.neo4j_connection_timeout_seconds)
+
+
+def get_neo4j_max_transaction_retry_seconds() -> float:
+    """Neo4j driver retry budget. Env overrides yaml rag.neo4j_max_transaction_retry_seconds."""
+    from_env = _parse_positive_float(
+        os.getenv(ENV_NEO4J_MAX_RETRY, ""),
+        env_name=ENV_NEO4J_MAX_RETRY,
+    )
+    if from_env is not None:
+        return from_env
+    return float(get_config().rag.neo4j_max_transaction_retry_seconds)
 
 
 def get_schema_refresh_seconds() -> float:

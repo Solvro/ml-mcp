@@ -33,6 +33,9 @@ from ....config.system_labels import SYSTEM_LABELS
 from ....config.timeouts import (
     get_graph_timeout_seconds,
     get_llm_timeout_seconds,
+    get_neo4j_connection_timeout_seconds,
+    get_neo4j_max_transaction_retry_seconds,
+    get_neo4j_query_timeout_seconds,
     get_schema_refresh_seconds,
     get_schema_version_probe_seconds,
 )
@@ -169,6 +172,9 @@ class RAG:
         max_results: int = None,
         llm_timeout_sec: float | None = None,
         graph_timeout_sec: float | None = None,
+        neo4j_query_timeout_sec: float | None = None,
+        neo4j_connection_timeout_sec: float | None = None,
+        neo4j_max_transaction_retry_sec: float | None = None,
     ):
         """
         Initialize RAG system with API keys and database credentials.
@@ -182,6 +188,9 @@ class RAG:
             max_results: Maximum number of results from Neo4j (default: 5)
             llm_timeout_sec: Per-call HTTP timeout for each LLM client
             graph_timeout_sec: Wall-clock budget for the whole RAG run
+            neo4j_query_timeout_sec: Timeout for one Neo4j query execution
+            neo4j_connection_timeout_sec: Timeout for establishing a Neo4j connection
+            neo4j_max_transaction_retry_sec: Driver retry budget for transient failures
         """
         config = get_config()
 
@@ -199,6 +208,39 @@ class RAG:
         self.max_results = max_results if max_results is not None else config.rag.max_results
         self.enable_fallback_search = config.rag.enable_fallback_search
         self.fallback_min_score = config.rag.fallback_min_score
+        configured_neo4j_query_timeout = (
+            neo4j_query_timeout_sec
+            if neo4j_query_timeout_sec is not None
+            else get_neo4j_query_timeout_seconds()
+        )
+        if configured_neo4j_query_timeout > self.graph_timeout_sec:
+            logger.warning(
+                "Neo4j query timeout %.1fs exceeds graph timeout %.1fs; capping to graph timeout",
+                configured_neo4j_query_timeout,
+                self.graph_timeout_sec,
+            )
+        self.neo4j_query_timeout_sec = min(configured_neo4j_query_timeout, self.graph_timeout_sec)
+        self.neo4j_connection_timeout_sec = (
+            neo4j_connection_timeout_sec
+            if neo4j_connection_timeout_sec is not None
+            else get_neo4j_connection_timeout_seconds()
+        )
+        configured_retry_budget = (
+            neo4j_max_transaction_retry_sec
+            if neo4j_max_transaction_retry_sec is not None
+            else get_neo4j_max_transaction_retry_seconds()
+        )
+        outage_budget = self.graph_timeout_sec - self.neo4j_connection_timeout_sec
+        if configured_retry_budget > outage_budget:
+            logger.warning(
+                "Neo4j connection timeout %.1fs plus retry budget %.1fs would outlast the %.1fs "
+                "graph timeout; capping the retry budget to %.1fs",
+                self.neo4j_connection_timeout_sec,
+                configured_retry_budget,
+                self.graph_timeout_sec,
+                max(outage_budget, 0.0),
+            )
+        self.neo4j_max_transaction_retry_sec = max(min(configured_retry_budget, outage_budget), 0.0)
 
         self.fast_llm = self._build_llm_with_fallback(use_accurate=False)
         self.cypher_llm = self._build_llm_with_fallback(use_accurate=True)
@@ -210,6 +252,11 @@ class RAG:
             username=neo4j_username,
             password=neo4j_password,
             database=config.database.name,
+            timeout=self.neo4j_query_timeout_sec,
+            driver_config={
+                "connection_timeout": self.neo4j_connection_timeout_sec,
+                "max_transaction_retry_time": self.neo4j_max_transaction_retry_sec,
+            },
             enhanced_schema=True,
         )
 

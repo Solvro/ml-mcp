@@ -14,6 +14,14 @@ rag:
   enable_debug: false
   llm_timeout_seconds: 30
   graph_timeout_seconds: 90
+  # Server-side transaction timeout, applied once Neo4j holds the query. It bounds a slow
+  # answer; it does nothing for a database that cannot be reached, which never gets this far.
+  neo4j_query_timeout_seconds: 10
+  # The two below are what bound an outage, and they add up: the retry loop stops starting
+  # attempts once its budget is spent, and the attempt in flight still runs its connection
+  # timeout. Raising either lengthens how long a dead database stalls a request.
+  neo4j_connection_timeout_seconds: 5
+  neo4j_max_transaction_retry_seconds: 10
   enable_fallback_search: true
   # Lucene relevance floor for the label-agnostic fallback. Scores are corpus-relative, so
   # this is a junk filter, not a precision guarantee - the grader node is the precision gate.
