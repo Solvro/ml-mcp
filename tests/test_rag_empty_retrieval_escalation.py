@@ -8,8 +8,11 @@ reported as missing data, and a genuinely empty result must be reported as an ex
 
 from typing import Any
 
+import pytest
+from neo4j.exceptions import ClientError, ServiceUnavailable
+
 from src.config.messages import NO_GRAPH_DATA_MESSAGE, OFF_TOPIC_MESSAGE
-from src.mcp_server.tools.knowledge_graph.rag import RAG
+from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
 
 CRITERIA_QUESTION = "Jakie są kryteria doboru kandydatki lub kandydata?"
 CONFERENCE_QUESTION = "Co obejmuje udział w konferencjach?"
@@ -26,6 +29,13 @@ WRONG_LABEL_CYPHER = (
 
 CRITERIA_ROWS = [{"g.title": "Kryteria doboru", "comp.title": "Praca zespolowa"}]
 CONFERENCE_ROWS = [{"title": "Udzial w konferencjach", "related": ["HAS_SUBCOMPETENCY: Panel"]}]
+
+
+def _statement_error(message: str = "bad query") -> ClientError:
+    return ClientError._hydrate_neo4j(
+        code="Neo.ClientError.Statement.SyntaxError",
+        message=message,
+    )
 
 
 class ScriptedDatabase:
@@ -204,8 +214,17 @@ def test_blocked_query_is_not_retried() -> None:
     assert result["generated_cypher"].startswith("Blocked unsafe Cypher")
 
 
-def test_database_failure_is_not_retried() -> None:
-    rag, database = _rag_stub([RuntimeError("neo4j unavailable")])
+def test_database_outage_is_not_retried_and_is_propagated() -> None:
+    rag, database = _rag_stub([ServiceUnavailable("neo4j unavailable")])
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="neo4j unavailable"):
+        rag.retrieve({"generated_cypher": WRONG_LABEL_CYPHER, "user_question": CONFERENCE_QUESTION})
+
+    assert len(database.calls) == 1
+
+
+def test_statement_failure_is_not_retried_and_stays_query_failed() -> None:
+    rag, database = _rag_stub([_statement_error("invalid input")])
 
     result = rag.retrieve(
         {"generated_cypher": WRONG_LABEL_CYPHER, "user_question": CONFERENCE_QUESTION}
@@ -213,7 +232,39 @@ def test_database_failure_is_not_retried() -> None:
 
     assert len(database.calls) == 1
     assert result["retrieval_strategy"] == "empty"
-    assert result["generated_cypher"] == "Query failed: neo4j unavailable"
+    assert result["generated_cypher"].startswith("Query failed:")
+    assert "invalid input" in result["generated_cypher"]
+
+
+def test_infrastructure_failure_during_retry_is_propagated() -> None:
+    rag, database = _rag_stub([[], ServiceUnavailable("neo4j unavailable")])
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="neo4j unavailable"):
+        rag.retrieve(
+            {"generated_cypher": QUESTION_LITERAL_CYPHER, "user_question": CRITERIA_QUESTION}
+        )
+
+    assert len(database.calls) == 2
+
+
+def test_missing_fulltext_index_is_repaired_rather_than_reported_as_an_outage() -> None:
+    missing_index = ClientError._hydrate_neo4j(
+        code="Neo.ClientError.Procedure.ProcedureCallFailed",
+        message=(
+            "Failed to invoke procedure `db.index.fulltext.queryNodes`: "
+            "There is no such fulltext schema index: entity_search"
+        ),
+    )
+    rag, database = _rag_stub([[], missing_index, CONFERENCE_ROWS])
+
+    result = rag.retrieve(
+        {"generated_cypher": WRONG_LABEL_CYPHER, "user_question": CONFERENCE_QUESTION}
+    )
+
+    assert result["retrieval_strategy"] == "label_agnostic_phrases"
+    assert result["context"] == CONFERENCE_ROWS
+    assert len(database.calls) == 3, "the fallback runs again once the index has been rebuilt"
+    assert any(call.startswith("CREATE FULLTEXT") for call in database.schema_calls)
 
 
 def test_empty_context_is_reported_as_no_data_not_as_an_empty_list() -> None:

@@ -683,11 +683,17 @@ worker thread behind until the driver's own timeout trips it, which is why the p
 `RETURN 1` and not something that can queue.
 
 **Failure is not content.** `knowledge_graph_tool` raises `ToolError` when the graph cannot be
-consulted at all — no RAG, or the pipeline timed out. `fastmcp.Client.call_tool` raises on
-`isError` by default, so `topwr_api` lands in its `except` branch and tags the turn
-`source="error"` rather than feeding "Error: RAG not initialized" to the answering model as if
-it were graph data. `OFF_TOPIC_MESSAGE` and `NO_GRAPH_DATA_MESSAGE` are *answers* — retrieval
-ran and found nothing — and keep coming back as ordinary results.
+consulted at all — no RAG, an unreachable database, or the pipeline timed out.
+`fastmcp.Client.call_tool` raises on `isError` by default, so `topwr_api` lands in its `except`
+branch and tags the turn `source="error"` rather than feeding "Error: RAG not initialized" to
+the answering model as if it were graph data. `OFF_TOPIC_MESSAGE` and `NO_GRAPH_DATA_MESSAGE`
+are *answers* — retrieval ran and found nothing — and keep coming back as ordinary results.
+
+An outage arrives as `KnowledgeGraphUnavailableError`, raised by `retrieve()` for the failures
+in `NEO4J_INFRASTRUCTURE_EXCEPTIONS`; everything else Neo4j refuses — a bad statement, a missing
+index — stays a "found nothing" the escalation can still recover from. The message is the fixed
+`GRAPH_UNAVAILABLE_MESSAGE`, since `ToolError` detail reaches the caller verbatim and the
+driver's own text names codes, hosts and auth failures.
 
 Both consumers of the tool had to learn the difference. `topwr_api` already caught the
 exception. The `kg` CLI did not, and a raised `ToolError` would have surfaced as a traceback, so

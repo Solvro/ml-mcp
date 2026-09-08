@@ -15,6 +15,12 @@ from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
+from neo4j.exceptions import (
+    AuthError,
+    DatabaseError,
+    DriverError,
+    TransientError,
+)
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
 
 from ....config.config import get_config
@@ -112,6 +118,20 @@ RETURN labelsOrTypes AS labels, properties AS properties"""
 # toString keeps the comparison a plain string rather than a neo4j.time.DateTime.
 GRAPH_VERSION_CYPHER = """MATCH (pr:PipelineRun)
 RETURN toString(max(pr.run_at)) AS version"""
+# Retrieval never ran, so its zero rows say nothing about what the graph holds. Classified by
+# exception type, not error code: the driver's hierarchy already draws this line, and a prefix
+# list silently reclassifies whatever Neo4j adds next. OSError covers gaierror/ConnectionError.
+# The remaining ClientError codes are deliberately absent. Statement.*, Procedure.* and Schema.*
+# come from a database that is demonstrably up and mean this query could not run. A missing
+# full-text index arrives as Procedure.ProcedureCallFailed, and the reindex-and-retry rescue in
+# _search_every_label only happens while that stays a recoverable "found nothing".
+NEO4J_INFRASTRUCTURE_EXCEPTIONS = (
+    DriverError,
+    TransientError,
+    AuthError,
+    DatabaseError,
+    OSError,
+)
 
 
 class LLMProvider(Enum):
@@ -130,6 +150,10 @@ class RetrievalStrategy(Enum):
     LABEL_AGNOSTIC_PHRASES = "label_agnostic_phrases"
     GRADED_OUT = "graded_out"
     EMPTY = "empty"
+
+
+class KnowledgeGraphUnavailableError(RuntimeError):
+    """Raised when Neo4j cannot be consulted to answer a retrieval query."""
 
 
 class RAG:
@@ -805,11 +829,16 @@ class RAG:
                 "retrieval_strategy": RetrievalStrategy.EMPTY.value,
             }
 
-        except Exception as e:
-            error_msg = str(e)
+        except KnowledgeGraphUnavailableError:
+            raise
 
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            logger.error("Neo4j could not be consulted: %s", exc)
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
+
+        except Exception as exc:
+            error_msg = str(exc)
             logger.warning("Cypher execution failed: %s", error_msg)
-
             return {
                 "context": [],
                 "generated_cypher": f"Query failed: {error_msg}",
@@ -860,9 +889,11 @@ class RAG:
         self, cypher_query: str, description: str, params: Dict[str, Any] | None = None
     ) -> List[Dict[str, Any]]:
         """
-        Run a retry query, treating any failure as "recovered nothing".
+        Run a retry query, treating a rejected or failed query as "recovered nothing".
 
-        A retry exists to improve on an empty result, so it must never turn one into an error.
+        A retry exists to improve on an empty result, so a query the database refuses - a bad
+        statement, a missing index - must not turn that empty result into an error. Only an
+        unreachable graph propagates: then there was no retrieval to improve on.
 
         Args:
             cypher_query: Query to execute
@@ -877,6 +908,9 @@ class RAG:
             if params is None:
                 return self.database.query(cypher_query)
             return self.database.query(cypher_query, params=params)
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
+
         except Exception as exc:
             logger.warning("Retrieval retry (%s) failed: %s", description, exc)
             return []
