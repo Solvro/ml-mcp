@@ -1,13 +1,22 @@
-# Core MCP Stack: Neo4j + MCP Server + FastAPI Backend
+# Core MCP Stack: Neo4j + MCP Server
+#
+# Nothing here publishes a host port. The only consumer of this stack is the chat service in
+# Solvro/ml-mcp-backend, which reaches mcp-server by service name over the shared
+# `solvro-mcp-internal` network, and Neo4j is reachable only from mcp-server over `mcp_network`.
+# That network is created once, outside either Compose project, so neither side owns it and
+# either can come up first:
+#
+#     docker network create --internal solvro-mcp-internal      # `just network` does this
+#
+# For host-side work (Neo4j browser, `just kg`, `uv run dump-graph`) layer compose.dev.yml on
+# top (`just up-dev`); it republishes the ports on 127.0.0.1 only. See #6 in
+# ISSUES.prod-readiness.md.
 services:
   neo4j:
     image: neo4j:5.18
     container_name: ml-mcp-neo4j
     networks:
       - mcp_network
-    ports:
-      - "7474:7474"
-      - "7687:7687"
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}
       - NEO4J_PLUGINS=["apoc"]
@@ -36,15 +45,16 @@ services:
     container_name: ml-mcp-server
     networks:
       - mcp_network
-    ports:
-      - "8005:8005"
+      - solvro_internal
     env_file:
       - ../.env
     environment:
       # .env holds bolt://localhost:7687 for host-side development, where localhost is right.
-      # Inside the network localhost is this container, so the service name has to win here,
-      # the same way topwr-api overrides MCP_HOST.
+      # Inside the network localhost is this container, so the service name has to win here.
       - NEO4J_URI=bolt://neo4j:7687
+      # The bind inside the container. It has to be 0.0.0.0 for another container to connect;
+      # what keeps the server private is the absence of a `ports:` mapping, not the bind.
+      - MCP_BIND_HOST=0.0.0.0
     depends_on:
       neo4j:
         condition: service_healthy
@@ -64,50 +74,18 @@ services:
       # delays reporting a container that never comes up, never a healthy one.
       start_period: 180s
 
-  topwr-api:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.api
-    container_name: ml-mcp-api
-    networks:
-      - mcp_network
-    ports:
-      - "8000:8000"
-    env_file:
-      - ../.env
-    environment:
-      - MCP_HOST=mcp-server
-    depends_on:
-      mcp-server:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: [ "CMD-SHELL", "curl -f http://localhost:8000/health || exit 1" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  frontend:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.frontend
-    container_name: ml-mcp-frontend
-    networks:
-      - mcp_network
-    ports:
-      - "80:80"
-    depends_on:
-      topwr-api:
-        condition: service_healthy
-    restart: unless-stopped
-
 volumes:
   neo4j_data:
   neo4j_logs:
   neo4j_import:
   neo4j_plugins:
 
-
 networks:
+  # Private to this stack: Neo4j is on it and nothing else joins it.
   mcp_network:
     driver: bridge
+  # Shared with Solvro/ml-mcp-backend, whose chat-service is the only other member. Declared
+  # external so that `docker compose down` on either side leaves it in place for the other.
+  solvro_internal:
+    external: true
+    name: solvro-mcp-internal

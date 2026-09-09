@@ -30,13 +30,28 @@ api:
     uv run topwr-api
 
 # ============================================================================
-# 🐳 DOCKER STACK (Neo4j + MCP Server + API)
+# 🐳 DOCKER STACK (Neo4j + MCP Server)
 # ============================================================================
+#
+# The stack publishes no host ports. mcp-server is reachable only over the shared
+# `solvro-mcp-internal` network, which Solvro/ml-mcp-backend joins too; Neo4j only from
+# mcp-server. `just up-dev` republishes the ports on 127.0.0.1 for local work. See #6 in
+# ISSUES.prod-readiness.md.
 
-# Start all services
+# Create the network shared with ml-mcp-backend (idempotent; either stack may run it first)
 [group('docker')]
-up:
-    docker compose --env-file .env -f docker/compose.stack.yml up -d --build
+network:
+    docker network inspect solvro-mcp-internal >/dev/null 2>&1 || docker network create --internal solvro-mcp-internal
+
+# Start all services (no host ports)
+[group('docker')]
+up: network
+    docker compose --env-file .env -f docker/compose.stack.yml up -d --build --remove-orphans
+
+# Start all services with Neo4j and MCP republished on 127.0.0.1 for host-side development
+[group('docker')]
+up-dev: network
+    docker compose --env-file .env -f docker/compose.stack.yml -f docker/compose.dev.yml up -d --build --remove-orphans
 
 # Stop all services
 [group('docker')]
@@ -63,11 +78,6 @@ logs:
 logs-mcp:
     docker compose --env-file .env -f docker/compose.stack.yml logs -f mcp-server
 
-# View API logs
-[group('docker')]
-logs-api:
-    docker compose --env-file .env -f docker/compose.stack.yml logs -f topwr-api
-
 # View Neo4j logs
 [group('docker')]
 logs-neo4j:
@@ -82,11 +92,6 @@ dump-graph:
 [group('docker')]
 restore-graph:
     uv run restore-graph
-
-# View frontend logs
-[group('docker')]
-logs-frontend:
-    docker compose --env-file .env -f docker/compose.stack.yml logs -f frontend
 
 # Remove all containers and volumes
 [group('docker')]

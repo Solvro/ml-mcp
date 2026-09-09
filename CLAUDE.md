@@ -6,7 +6,7 @@
 
 **Architecture:** Four loosely-coupled services + a data pipeline:
 1. **Frontend** — React 18 + TypeScript chatbot UI served by Nginx (port 80); proxies `/api/*` to ToPWR API
-2. **MCP Server** — FastMCP server exposing a `knowledge_graph_tool` (port 8005)
+2. **MCP Server** — FastMCP server exposing a `knowledge_graph_tool` (port 8005, container-internal only — see *The Stack Publishes No Host Ports*)
 3. **ToPWR API** — FastAPI HTTP backend, session management, user-facing chat endpoint (port 8000)
 4. **Data Pipeline** — Prefect ETL: Azure Blob → PDF extraction → LLM Cypher generation → Neo4j
 5. **MCP Client** — CLI for direct graph queries
@@ -110,7 +110,7 @@ LOG_LEVEL=INFO      # DEBUG | INFO | WARNING | ERROR | CRITICAL
 
 **Service ports (have defaults):**
 ```
-MCP_BIND_HOST=0.0.0.0
+MCP_BIND_HOST=0.0.0.0   # bind inside the process/container; privacy comes from compose, not this
 MCP_HOST=localhost
 MCP_PORT=8005
 TOPWR_API_HOST=0.0.0.0
@@ -135,8 +135,11 @@ just frontend-dev      # → http://localhost:3000
 just kg "Kto wykłada analizę matematyczną?"
 # or: uv run kg "<question>"
 
-# Full stack via Docker (includes frontend at http://localhost)
+# Neo4j + MCP server via Docker. `just up` publishes no host ports: the server is reachable
+# only by ml-mcp-backend over the shared `solvro-mcp-internal` network. `just up-dev` adds
+# 127.0.0.1 port mappings so `just kg`, the Neo4j browser and dump/restore work from the host.
 just up
+just up-dev
 just down
 ```
 
@@ -239,13 +242,15 @@ just api                # Start FastAPI
 just kg "<question>"    # Query the knowledge graph
 
 # Docker
-just up                 # docker compose -f docker/compose.stack.yml up -d
-just down               # stop stack
+just network            # create the solvro-mcp-internal network shared with ml-mcp-backend (idempotent)
+just up                 # neo4j + mcp-server, no host ports (runs `network` first)
+just up-dev             # same, plus 127.0.0.1:7474/7687/8005 for host-side work (compose.dev.yml)
+just down               # stop stack (the shared network is external and stays)
 just restart            # restart stack
 just ps                 # container status
 just logs               # all logs
 just logs-mcp           # MCP server logs
-just logs-api           # API logs
+just logs-neo4j         # Neo4j logs
 just nuke               # remove containers + volumes
 
 # Data pipeline (Docker)
@@ -664,6 +669,32 @@ Two things `LOG_LEVEL` does not reach:
 
 `tests/test_no_print_in_src.py` walks the package with `ast` and fails on a new `print`, so the
 switch cannot quietly stop covering a module.
+
+### The Stack Publishes No Host Ports
+
+`docker/compose.stack.yml` maps nothing to the host. The one consumer of this server is the
+chat service in `Solvro/ml-mcp-backend`, and the two Compose projects share a single Docker
+network, `solvro-mcp-internal`, created once outside both of them with
+`docker network create --internal solvro-mcp-internal` (`just network`, which `just up` runs on
+both sides). `mcp-server` joins that network and its own `mcp_network`; Neo4j joins only
+`mcp_network`, so it is reachable from this server and nothing else. The backend addresses the
+server as `http://mcp-server:8005/mcp` — a Compose service name, resolved by Docker's DNS on the
+shared network.
+
+The network is declared `external: true` in both files so that `docker compose down` on either
+side leaves it in place for the other, and `--internal` means a container attached only to it
+has no route out; `mcp-server` keeps its egress to the LLM providers through `mcp_network`.
+
+Before this the backend reached the server through `host.docker.internal:8005`, which only
+worked because the port was published on `0.0.0.0` — the exposure was load-bearing, which is
+why the two repos had to change together (#6 in `ISSUES.prod-readiness.md`).
+
+`MCP_BIND_HOST=0.0.0.0` stays. It is the bind *inside* the container and another container
+cannot connect to `127.0.0.1` there; what makes the server private is the absent `ports:`
+mapping. The cost is that nothing on the host can reach Neo4j or the server either:
+`docker/compose.dev.yml` (`just up-dev`) republishes the three ports on `127.0.0.1` for the
+Neo4j browser, `just kg`, `just populate-graph` and `uv run dump-graph`, and it is an override
+on top of the production file rather than a second copy of it.
 
 ### The Health Signal Means "I Can Serve"
 
