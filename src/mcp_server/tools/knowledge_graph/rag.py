@@ -263,7 +263,10 @@ class RAG:
         self._init_schema_cache()
 
         if self.enable_fallback_search:
-            self.ensure_fulltext_index()
+            try:
+                self.ensure_fulltext_index()
+            except KnowledgeGraphUnavailableError as exc:
+                logger.warning("Could not build %s at startup: %s", FULLTEXT_INDEX_NAME, exc)
 
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
@@ -536,8 +539,14 @@ class RAG:
         try:
             self.database.refresh_schema()
         except Exception as exc:
+            if self._cached_schema:
+                logger.warning("Could not refresh the Neo4j schema; keeping cached schema: %s", exc)
+                return self._cached_schema
+            if isinstance(exc, NEO4J_INFRASTRUCTURE_EXCEPTIONS):
+                logger.error("Neo4j could not be consulted while refreshing schema: %s", exc)
+                raise KnowledgeGraphUnavailableError(str(exc)) from exc
             logger.warning("Could not refresh the Neo4j schema: %s", exc)
-            return self._cached_schema or ""
+            return ""
 
         db_schema = self.database.get_schema
 
@@ -971,6 +980,11 @@ class RAG:
         restarts; the search re-checks the index when a lookup fails, so a new label is picked
         up without waiting for a redeploy.
 
+        Raises:
+            KnowledgeGraphUnavailableError: The graph could not be consulted at all, so False
+                would claim the index is unavailable when the whole database is. Whether that
+                is fatal is the caller's call; __init__ is the one place that tolerates it.
+
         Returns:
             True when the index exists and covers the current labels
         """
@@ -980,6 +994,8 @@ class RAG:
                 for row in self.database.query("CALL db.labels() YIELD label RETURN label")
                 if row["label"] not in FULLTEXT_EXCLUDED_LABELS
             )
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
         except Exception as exc:
             logger.warning("Could not read graph labels for the full-text index: %s", exc)
             return False
@@ -1014,6 +1030,8 @@ class RAG:
             )
             logger.info("Full-text index %s covers %d labels", FULLTEXT_INDEX_NAME, len(labels))
             return True
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
         except Exception as exc:
             logger.warning("Could not create the %s full-text index: %s", FULLTEXT_INDEX_NAME, exc)
             return False

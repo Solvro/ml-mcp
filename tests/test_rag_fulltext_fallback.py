@@ -9,7 +9,9 @@ a full scan.
 from typing import Any
 
 import pytest
+from neo4j.exceptions import ServiceUnavailable
 
+import src.mcp_server.tools.knowledge_graph.rag as rag_module
 from src.mcp_server.tools.knowledge_graph.cypher_guardrails import (
     UnsafeCypherQueryError,
     validate_read_only,
@@ -20,6 +22,7 @@ from src.mcp_server.tools.knowledge_graph.rag import (
     FALLBACK_SEARCH_CYPHER,
     FULLTEXT_INDEX_NAME,
     RAG,
+    KnowledgeGraphUnavailableError,
 )
 
 QUESTION = "Co obejmuje udział w konferencjach?"
@@ -34,10 +37,14 @@ class ScriptedDatabase:
         results: list[list[dict[str, Any]] | Exception],
         labels: list[str] | None = None,
         existing_index: list[dict[str, Any]] | None = None,
+        labels_error: Exception | None = None,
+        index_error: Exception | None = None,
     ) -> None:
         self.results = list(results)
         self.labels = labels or []
         self.existing_index = existing_index
+        self.labels_error = labels_error
+        self.index_error = index_error
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
 
     def query(
@@ -46,10 +53,16 @@ class ScriptedDatabase:
         self.calls.append((cypher_query, params))
 
         if "db.labels()" in cypher_query:
+            if self.labels_error is not None:
+                raise self.labels_error
             return [{"label": label} for label in self.labels]
         if "SHOW INDEXES" in cypher_query:
+            if self.index_error is not None:
+                raise self.index_error
             return list(self.existing_index or [])
         if cypher_query.startswith(("CREATE FULLTEXT", "DROP INDEX")):
+            if self.index_error is not None:
+                raise self.index_error
             return []
 
         result = self.results.pop(0) if self.results else []
@@ -63,9 +76,17 @@ def _rag_stub(
     *,
     labels: list[str] | None = None,
     existing_index: list[dict[str, Any]] | None = None,
+    labels_error: Exception | None = None,
+    index_error: Exception | None = None,
     min_score: float = 0.5,
 ) -> tuple[RAG, ScriptedDatabase]:
-    database = ScriptedDatabase(results, labels=labels, existing_index=existing_index)
+    database = ScriptedDatabase(
+        results,
+        labels=labels,
+        existing_index=existing_index,
+        labels_error=labels_error,
+        index_error=index_error,
+    )
 
     rag = object.__new__(RAG)
     rag.database = database
@@ -139,6 +160,48 @@ def test_a_missing_index_is_created_and_the_search_retried() -> None:
     assert len(created) == 1
     assert "`Course`|`Semester`" in created[0]
     assert "ON EACH [n.title, n.context]" in created[0]
+
+
+def test_index_outage_is_propagated_during_request_path() -> None:
+    rag, _ = _rag_stub(
+        [[]],
+        labels=["Course"],
+        labels_error=ServiceUnavailable("neo4j unavailable"),
+    )
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="neo4j unavailable"):
+        rag._search_every_label(QUESTION)
+
+
+def test_startup_boots_when_the_index_cannot_be_built(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Escalating is the default, so the one caller that tolerates an outage has to say so.
+
+    A server that refuses to boot is worse than one without the rescue index, which the
+    search rebuilds on the first lookup that misses anyway.
+    """
+    reached: list[str] = []
+
+    def raise_outage(self) -> bool:
+        reached.append("ensure_fulltext_index")
+        raise KnowledgeGraphUnavailableError("neo4j unavailable")
+
+    monkeypatch.setattr(rag_module, "Neo4jGraph", lambda **kwargs: object())
+    monkeypatch.setattr(
+        rag_module.RAG, "_build_llm_with_fallback", lambda self, use_accurate=False: object()
+    )
+    monkeypatch.setattr(rag_module.RAG, "_initialize_prompt_templates", lambda self: None)
+    monkeypatch.setattr(rag_module.RAG, "_build_processing_graph", lambda self: object())
+    monkeypatch.setattr(rag_module.RAG, "ensure_fulltext_index", raise_outage)
+
+    rag = RAG(
+        api_key="test-key",
+        neo4j_url="bolt://neo4j:7687",
+        neo4j_username="neo4j",
+        neo4j_password="secret",
+    )
+
+    assert reached == ["ensure_fulltext_index"], "the tolerated call site was never reached"
+    assert rag.graph is not None, "construction finished despite the outage"
 
 
 def test_a_stale_index_is_rebuilt_when_labels_changed() -> None:
