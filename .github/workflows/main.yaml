@@ -123,12 +123,20 @@ jobs:
       - name: Type-check and build
         run: cd frontend && npm run build
 
-  # ── 5. Integration — full `just up` stack ────────────────────────────────────
+  # ── 5. Integration — the stack as it deploys: nothing published on the host ───
+  #
+  # compose.stack.yml maps no ports; mcp-server is reachable only over the external
+  # `solvro-mcp-internal` network that ml-mcp-backend joins, and Neo4j only from mcp-server.
+  # This job asserts exactly that, from the network the backend would use, and then checks
+  # that the compose.dev.yml override still republishes the ports on 127.0.0.1 for local work.
   integration:
     runs-on: ubuntu-latest
     needs: [build-check, frontend-build, test]
+    env:
+      COMPOSE: docker compose --env-file .env -f docker/compose.stack.yml
     steps:
       - uses: actions/checkout@v4
+      - uses: extractions/setup-just@v2
 
       - name: Create CI .env
         env:
@@ -142,56 +150,71 @@ jobs:
           MCP_BIND_HOST=0.0.0.0
           MCP_HOST=mcp-server
           MCP_PORT=8005
-          TOPWR_API_HOST=0.0.0.0
-          TOPWR_API_PORT=8000
           EOF
 
+      - name: Create the shared internal network
+        # Declared `external` in compose so neither stack's `down` removes it from under the
+        # other; `just up` does this too, but the job calls compose directly.
+        run: just network
+
       - name: Build images and start stack
-        run: |
-          docker compose --env-file .env -f docker/compose.stack.yml \
-            up -d --build --wait --wait-timeout 180
+        run: $COMPOSE up -d --build --wait --wait-timeout 180
 
-      - name: Wait for frontend (no healthcheck in compose)
+      # ── Smoke tests: production shape ─────────────────────────────────────────
+
+      - name: "Smoke: no host ports are published"
         run: |
-          echo "Polling http://localhost ..."
-          for i in $(seq 1 20); do
-            curl -sf http://localhost -o /dev/null && { echo "Frontend ready after ${i} attempts"; break; }
-            [ $i -eq 20 ] && echo "::error::Frontend did not become ready within 60 s" && exit 1
-            sleep 3
+          for c in ml-mcp-server ml-mcp-neo4j; do
+            if [ -n "$(docker port "$c")" ]; then
+              echo "::error::$c publishes host ports: $(docker port "$c" | tr '\n' ' ')"; exit 1
+            fi
           done
+          echo "no host ports on mcp-server or neo4j"
 
-      # ── Smoke tests ──────────────────────────────────────────────────────────
-
-      - name: "Smoke: Neo4j HTTP interface (port 7474)"
-        run: curl -sf http://localhost:7474
-
-      - name: "Smoke: MCP server port 8005 open"
+      - name: "Smoke: MCP /health by service name from the shared network"
+        # What ml-mcp-backend's chat-service sees.
         run: |
-          docker exec ml-mcp-server \
-            python3 -c "import socket; s=socket.socket(); s.connect(('localhost',8005)); s.close(); print('port 8005 open')"
+          docker run --rm --network solvro-mcp-internal curlimages/curl:8.10.1 \
+            -sf --max-time 10 http://mcp-server:8005/health
 
-      - name: "Smoke: ToPWR API /health"
-        run: curl -sf http://localhost:8000/health
-
-      - name: "Smoke: ToPWR API / (root)"
-        run: curl -sf http://localhost:8000/
-
-      - name: "Smoke: ToPWR API /api/stats"
-        run: curl -sf http://localhost:8000/api/stats
-
-      - name: "Smoke: Frontend returns HTTP 200"
+      - name: "Smoke: Neo4j is not reachable from the shared network"
         run: |
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost)
-          [ "$STATUS" = "200" ] || { echo "::error::Frontend returned HTTP $STATUS (expected 200)"; exit 1; }
+          if docker run --rm --network solvro-mcp-internal curlimages/curl:8.10.1 \
+               -s --max-time 5 -o /dev/null http://neo4j:7474; then
+            echo "::error::neo4j is reachable from solvro-mcp-internal"; exit 1
+          fi
+          echo "neo4j is not reachable from the shared network"
+
+      - name: "Smoke: the shared network has no route out"
+        run: |
+          if docker run --rm --network solvro-mcp-internal curlimages/curl:8.10.1 \
+               -s --max-time 5 -o /dev/null https://example.com; then
+            echo "::error::solvro-mcp-internal can reach the internet"; exit 1
+          fi
+          echo "no egress from the shared network"
+
+      # ── Smoke tests: dev override ─────────────────────────────────────────────
+
+      - name: "Smoke: compose.dev.yml republishes on 127.0.0.1"
+        run: |
+          $COMPOSE -f docker/compose.dev.yml up -d --wait --wait-timeout 180
+          curl -sf --max-time 10 http://127.0.0.1:8005/health
+          curl -sf --max-time 10 -o /dev/null http://127.0.0.1:7474
+          for c in ml-mcp-server ml-mcp-neo4j; do
+            if docker port "$c" | grep -q '0\.0\.0\.0'; then
+              echo "::error::$c is published on 0.0.0.0 under the dev override"; exit 1
+            fi
+          done
+          echo "dev override publishes on loopback only"
 
       # ── Cleanup ──────────────────────────────────────────────────────────────
 
       - name: Dump container logs on failure
         if: failure()
-        run: |
-          docker compose --env-file .env -f docker/compose.stack.yml logs --no-color
+        run: $COMPOSE -f docker/compose.dev.yml logs --no-color
 
       - name: Tear down stack
         if: always()
         run: |
-          docker compose --env-file .env -f docker/compose.stack.yml down -v --remove-orphans
+          $COMPOSE -f docker/compose.dev.yml down -v --remove-orphans
+          docker network rm solvro-mcp-internal || true
