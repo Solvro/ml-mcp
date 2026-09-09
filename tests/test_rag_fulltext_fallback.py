@@ -9,7 +9,7 @@ a full scan.
 from typing import Any
 
 import pytest
-from neo4j.exceptions import ServiceUnavailable
+from neo4j.exceptions import ClientError, ServiceUnavailable
 
 import src.mcp_server.tools.knowledge_graph.rag as rag_module
 from src.mcp_server.tools.knowledge_graph.cypher_guardrails import (
@@ -173,6 +173,20 @@ def test_index_outage_is_propagated_during_request_path() -> None:
         rag._search_every_label(QUESTION)
 
 
+def test_index_timeout_is_propagated_during_request_path() -> None:
+    rag, _ = _rag_stub(
+        [[]],
+        labels=["Course"],
+        labels_error=ClientError._hydrate_neo4j(
+            code="Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+            message="The transaction has been terminated.",
+        ),
+    )
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="terminated"):
+        rag._search_every_label(QUESTION)
+
+
 def test_startup_boots_when_the_index_cannot_be_built(monkeypatch: pytest.MonkeyPatch) -> None:
     """Escalating is the default, so the one caller that tolerates an outage has to say so.
 
@@ -185,7 +199,7 @@ def test_startup_boots_when_the_index_cannot_be_built(monkeypatch: pytest.Monkey
         reached.append("ensure_fulltext_index")
         raise KnowledgeGraphUnavailableError("neo4j unavailable")
 
-    monkeypatch.setattr(rag_module, "Neo4jGraph", lambda **kwargs: object())
+    monkeypatch.setattr(rag_module, "Neo4jGraph", lambda **kwargs: ScriptedDatabase([]))
     monkeypatch.setattr(
         rag_module.RAG, "_build_llm_with_fallback", lambda self, use_accurate=False: object()
     )

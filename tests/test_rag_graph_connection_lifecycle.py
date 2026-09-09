@@ -119,6 +119,24 @@ def _build_rag(**kwargs: Any) -> RAG:
 def test_rag_passes_neo4j_runtime_limits_to_driver(
     capture_neo4j_graph_init: dict[str, Any],
 ) -> None:
+    rag = _build_rag(
+        llm_timeout_sec=30,
+        graph_timeout_sec=20,
+        neo4j_query_timeout_sec=7,
+        neo4j_connection_timeout_sec=4,
+        neo4j_max_transaction_retry_sec=3,
+    )
+
+    assert rag.database.timeout == 7, "every query this class issues is still bounded"
+    assert capture_neo4j_graph_init["driver_config"] == {
+        "connection_timeout": 4,
+        "max_transaction_retry_time": 3,
+    }
+
+
+def test_the_constructors_own_schema_read_is_not_given_a_query_timeout(
+    capture_neo4j_graph_init: dict[str, Any],
+) -> None:
     _build_rag(
         llm_timeout_sec=30,
         graph_timeout_sec=20,
@@ -127,14 +145,10 @@ def test_rag_passes_neo4j_runtime_limits_to_driver(
         neo4j_max_transaction_retry_sec=3,
     )
 
-    assert capture_neo4j_graph_init["timeout"] == 7
-    assert capture_neo4j_graph_init["driver_config"] == {
-        "connection_timeout": 4,
-        "max_transaction_retry_time": 3,
-    }
+    assert "timeout" not in capture_neo4j_graph_init, "startup must not be able to time out here"
 
 
-def test_rag_caps_query_and_retry_timeout_to_graph_budget(
+def test_rag_scales_connection_and_retry_to_fit_the_graph_budget(
     capture_neo4j_graph_init: dict[str, Any],
 ) -> None:
     """Connection and retry are spent in sequence, so the graph budget has to cover both."""
@@ -147,15 +161,25 @@ def test_rag_caps_query_and_retry_timeout_to_graph_budget(
     )
 
     assert rag.neo4j_query_timeout_sec == 5
-    assert rag.neo4j_max_transaction_retry_sec == 1, "4s connecting leaves 1s of the 5s budget"
-    assert capture_neo4j_graph_init["timeout"] == 5
-    assert capture_neo4j_graph_init["driver_config"]["max_transaction_retry_time"] == 1
+    assert rag.database.timeout == 5
+    assert rag.neo4j_connection_timeout_sec == pytest.approx(5 * 4 / 13)
+    assert rag.neo4j_max_transaction_retry_sec == pytest.approx(5 * 9 / 13)
+    assert rag.neo4j_connection_timeout_sec + rag.neo4j_max_transaction_retry_sec == pytest.approx(
+        5
+    )
+    assert capture_neo4j_graph_init["driver_config"]["max_transaction_retry_time"] == pytest.approx(
+        5 * 9 / 13
+    )
 
 
-def test_rag_drops_retries_when_connecting_alone_fills_the_budget(
+def test_rag_keeps_retrying_when_connecting_alone_would_fill_the_budget(
     capture_neo4j_graph_init: dict[str, Any],
 ) -> None:
-    """A retry that could not start before the request expires is worse than no retry."""
+    """Retries also ride out a leader election on a healthy graph, so they never reach zero.
+
+    Spending the whole shortfall on the retry budget would leave connection_timeout untouched
+    and retries at 0, trading a bounded outage for fragility in ordinary operation.
+    """
     rag = _build_rag(
         llm_timeout_sec=30,
         graph_timeout_sec=3,
@@ -164,5 +188,8 @@ def test_rag_drops_retries_when_connecting_alone_fills_the_budget(
         neo4j_max_transaction_retry_sec=9,
     )
 
-    assert rag.neo4j_max_transaction_retry_sec == 0
-    assert capture_neo4j_graph_init["driver_config"]["max_transaction_retry_time"] == 0
+    assert rag.neo4j_max_transaction_retry_sec > 0
+    assert rag.neo4j_connection_timeout_sec > 0
+    assert rag.neo4j_connection_timeout_sec + rag.neo4j_max_transaction_retry_sec == pytest.approx(
+        3
+    )

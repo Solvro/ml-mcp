@@ -23,8 +23,6 @@ configure_logging()
 
 logger = logging.getLogger(__name__)
 
-logger = logging.getLogger(__name__)
-
 # The health route answers within this budget even when Neo4j has stopped responding, so the
 # container reports unhealthy with a reason instead of having its probe killed mid-query. Keep
 # it below the healthcheck timeout in docker/compose.stack.yml.

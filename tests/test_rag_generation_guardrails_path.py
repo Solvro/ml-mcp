@@ -2,7 +2,7 @@ from typing import Any
 
 import pytest
 from langchain_core.runnables import RunnableLambda
-from neo4j.exceptions import ServiceUnavailable
+from neo4j.exceptions import ClientError, ServiceUnavailable
 
 from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
 
@@ -96,6 +96,19 @@ def test_generate_cypher_raises_when_schema_refresh_hits_outage_without_cache() 
     )
 
     with pytest.raises(KnowledgeGraphUnavailableError, match="neo4j unavailable"):
+        rag.generate_cypher({"user_question": QUESTION})
+
+
+def test_generate_cypher_raises_when_the_schema_read_times_out() -> None:
+    rag, _, _ = _rag_stub(
+        reply=GENERATED_CYPHER,
+        refresh_error=ClientError._hydrate_neo4j(
+            code="Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+            message="The transaction has been terminated.",
+        ),
+    )
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="terminated"):
         rag.generate_cypher({"user_question": QUESTION})
 
 
