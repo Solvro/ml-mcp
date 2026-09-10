@@ -274,7 +274,8 @@ def test_pipeline_skips_deduplication_when_nothing_changed(monkeypatch):
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "deduplicate_entities",
-        lambda self, keys=None: dedup_calls.append(keys) or {"groups_merged": 0},
+        lambda self, keys=None: dedup_calls.append(keys)
+        or {"groups_merged": 0, "fallback_merged": 0},
     )
 
     pipeline_module.data_pipeline_flow()
@@ -309,7 +310,8 @@ def test_pipeline_deduplicates_only_the_keys_it_wrote(monkeypatch):
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "deduplicate_entities",
-        lambda self, keys=None: dedup_calls.append(keys) or {"groups_merged": 0},
+        lambda self, keys=None: dedup_calls.append(keys)
+        or {"groups_merged": 0, "fallback_merged": 0},
     )
 
     pipeline_module.data_pipeline_flow()

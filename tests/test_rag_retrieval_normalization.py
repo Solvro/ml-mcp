@@ -1,6 +1,8 @@
 from unittest.mock import MagicMock
 
-from src.mcp_server.tools.knowledge_graph.rag import RAG
+import pytest
+
+from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphQueryError
 
 
 def _retrieval_stub() -> RAG:
@@ -109,14 +111,14 @@ def test_retrieve_enforces_case_insensitive_fuzzy_matching() -> None:
 def test_retrieve_still_blocks_disallowed_call_after_normalization() -> None:
     rag = _retrieval_stub()
 
-    result = rag.retrieve(
-        {
-            "generated_cypher": (
-                "CALL db.index.fulltext.queryNodes('Wydziały', 'WROCŁAW') YIELD node RETURN node"
-            )
-        }
-    )
+    with pytest.raises(KnowledgeGraphQueryError, match="blocked"):
+        rag.retrieve(
+            {
+                "generated_cypher": (
+                    "CALL db.index.fulltext.queryNodes('Wydziały', 'WROCŁAW') "
+                    "YIELD node RETURN node"
+                )
+            }
+        )
 
     rag.database.query.assert_not_called()
-    assert result["context"] == []
-    assert result["generated_cypher"].startswith("Blocked unsafe Cypher:")

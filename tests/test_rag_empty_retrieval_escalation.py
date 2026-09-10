@@ -10,9 +10,14 @@ from typing import Any
 
 import pytest
 from neo4j.exceptions import ClientError, ServiceUnavailable
+from neo4j.time import DateTime
 
 from src.config.messages import NO_GRAPH_DATA_MESSAGE, OFF_TOPIC_MESSAGE
-from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
+from src.mcp_server.tools.knowledge_graph.rag import (
+    RAG,
+    KnowledgeGraphQueryError,
+    KnowledgeGraphUnavailableError,
+)
 
 CRITERIA_QUESTION = "Jakie są kryteria doboru kandydatki lub kandydata?"
 CONFERENCE_QUESTION = "Co obejmuje udział w konferencjach?"
@@ -201,17 +206,15 @@ def test_blocked_query_is_not_retried() -> None:
     """Escalation repairs a bad match, not a rejected query."""
     rag, database = _rag_stub([CRITERIA_ROWS])
 
-    result = rag.retrieve(
-        {
-            "generated_cypher": "MATCH (n) DETACH DELETE n RETURN n",
-            "user_question": CRITERIA_QUESTION,
-        }
-    )
+    with pytest.raises(KnowledgeGraphQueryError, match="blocked"):
+        rag.retrieve(
+            {
+                "generated_cypher": "MATCH (n) DETACH DELETE n RETURN n",
+                "user_question": CRITERIA_QUESTION,
+            }
+        )
 
     assert database.calls == []
-    assert result["context"] == []
-    assert result["retrieval_strategy"] == "empty"
-    assert result["generated_cypher"].startswith("Blocked unsafe Cypher")
 
 
 def test_database_outage_is_not_retried_and_is_propagated() -> None:
@@ -223,23 +226,34 @@ def test_database_outage_is_not_retried_and_is_propagated() -> None:
     assert len(database.calls) == 1
 
 
-def test_statement_failure_is_not_retried_and_stays_query_failed() -> None:
+def test_statement_failure_is_not_retried_and_is_a_query_error() -> None:
     rag, database = _rag_stub([_statement_error("invalid input")])
 
-    result = rag.retrieve(
-        {"generated_cypher": WRONG_LABEL_CYPHER, "user_question": CONFERENCE_QUESTION}
-    )
+    with pytest.raises(KnowledgeGraphQueryError, match="invalid input"):
+        rag.retrieve({"generated_cypher": WRONG_LABEL_CYPHER, "user_question": CONFERENCE_QUESTION})
 
     assert len(database.calls) == 1
-    assert result["retrieval_strategy"] == "empty"
-    assert result["generated_cypher"].startswith("Query failed:")
-    assert "invalid input" in result["generated_cypher"]
 
 
 def test_infrastructure_failure_during_retry_is_propagated() -> None:
     rag, database = _rag_stub([[], ServiceUnavailable("neo4j unavailable")])
 
     with pytest.raises(KnowledgeGraphUnavailableError, match="neo4j unavailable"):
+        rag.retrieve(
+            {"generated_cypher": QUESTION_LITERAL_CYPHER, "user_question": CRITERIA_QUESTION}
+        )
+
+    assert len(database.calls) == 2
+
+
+def test_timeout_during_retry_is_propagated() -> None:
+    timed_out = ClientError._hydrate_neo4j(
+        code="Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+        message="The transaction has been terminated.",
+    )
+    rag, database = _rag_stub([[], timed_out])
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="terminated"):
         rag.retrieve(
             {"generated_cypher": QUESTION_LITERAL_CYPHER, "user_question": CRITERIA_QUESTION}
         )
@@ -312,3 +326,20 @@ def test_off_topic_answer_keeps_reporting_no_cypher() -> None:
     assert result["answer"] == OFF_TOPIC_MESSAGE
     assert result["metadata"]["cypher_query"] is None
     assert result["metadata"]["context"] == []
+
+
+def test_rows_carrying_neo4j_temporal_values_still_serialise() -> None:
+    """Seen live on 2026-09-10: a query touched a ProcessedDocument, whose `created_at` is a
+    Cypher datetime(), and the whole call failed with "Object of type DateTime is not JSON
+    serializable". json has no encoder for the driver's types; the answer must not depend on
+    which properties a generated query happens to return."""
+    result = RAG._format_result(
+        {
+            "context": [{"d.title": "Zal. nr 2", "d.created_at": DateTime(2026, 9, 10, 11, 42)}],
+            "retrieval_strategy": "primary",
+            "generated_cypher": "MATCH (d:Document) RETURN d.title, d.created_at",
+        }
+    )
+
+    assert "2026-09-10" in result["answer"]
+    assert result["metadata"]["retrieval_strategy"] == "primary"

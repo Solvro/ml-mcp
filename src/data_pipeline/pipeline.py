@@ -390,9 +390,10 @@ def data_pipeline_flow(
     # `uv run dedup-graph` runs the full repair for nodes written before these rules existed.
     dedup_stats = populator.deduplicate_entities(sorted(written_keys))
     logger.info(
-        "Deduplication over %d key(s) written this run: groups_merged=%d",
+        "Deduplication over %d key(s) written this run: groups_merged=%d fallback_folded=%d",
         len(written_keys),
         dedup_stats["groups_merged"],
+        dedup_stats["fallback_merged"],
     )
 
     # Run one final reflection only after all futures have settled.

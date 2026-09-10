@@ -172,6 +172,21 @@ class KnowledgeGraphUnavailableError(RuntimeError):
     """Raised when Neo4j cannot be consulted to answer a retrieval query."""
 
 
+class KnowledgeGraphQueryError(RuntimeError):
+    """Raised when the generated Cypher could not be executed on a database that is up.
+
+    Either the read-only guardrail refused it or Neo4j rejected it. Both are failures of this
+    system, not facts about the graph: the question was never asked of the data, so neither
+    "no data" nor the error text may be handed back as an answer. The server turns this into a
+    ToolError with a fixed message; the Cypher and Neo4j's reason are logged for the operator.
+    """
+
+    def __init__(self, reason: str, *, cypher: str | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.cypher = cypher
+
+
 class RAG:
     """Retrieval-Augmented Generation system with Neo4j graph database backend."""
 
@@ -895,14 +910,9 @@ class RAG:
 
             return self._escalate_empty_retrieval(cypher_query, user_question)
 
-        except UnsafeCypherQueryError as e:
-            error_msg = f"Blocked unsafe Cypher: {e}"
-            logger.warning("Cypher blocked: %s", e)
-            return {
-                "context": [],
-                "generated_cypher": error_msg,
-                "retrieval_strategy": RetrievalStrategy.EMPTY.value,
-            }
+        except UnsafeCypherQueryError as exc:
+            logger.warning("Cypher blocked: %s", exc)
+            raise KnowledgeGraphQueryError(f"blocked: {exc}", cypher=cypher_query) from exc
 
         except KnowledgeGraphUnavailableError:
             raise
@@ -916,13 +926,8 @@ class RAG:
                 logger.error("Neo4j did not finish the query in time: %s", exc)
                 raise KnowledgeGraphUnavailableError(str(exc)) from exc
 
-            error_msg = str(exc)
-            logger.warning("Cypher execution failed: %s", error_msg)
-            return {
-                "context": [],
-                "generated_cypher": f"Query failed: {error_msg}",
-                "retrieval_strategy": RetrievalStrategy.EMPTY.value,
-            }
+            logger.warning("Cypher execution failed: %s", exc)
+            raise KnowledgeGraphQueryError(str(exc), cypher=cypher_query) from exc
 
     def _escalate_empty_retrieval(self, executed_cypher: str, user_question: str) -> Dict[str, Any]:
         """
@@ -1193,10 +1198,7 @@ class RAG:
                 "metadata": {**metadata, "cypher_query": None, "context": []},
             }
 
-        generated_cypher = str(result.get("generated_cypher") or "")
         if not context_data:
-            if generated_cypher.startswith(("Query failed:", "Blocked unsafe Cypher:")):
-                return {"answer": generated_cypher, "metadata": metadata}
             return {"answer": NO_GRAPH_DATA_MESSAGE, "metadata": metadata}
 
         # The strategy travels with the rows: how they were found is what says whether they are
@@ -1206,8 +1208,12 @@ class RAG:
             "context_graded": bool(result.get("context_graded")),
             "rows": context_data,
         }
+        # default=str: Neo4j hands back its own temporal and spatial types (neo4j.time.DateTime
+        # for any `datetime()` property, which the pipeline's provenance nodes all carry), and
+        # json has no encoder for them. Without this, a row that merely touches one turns the
+        # whole call into a ToolError. The grader's row rendering does the same.
         return {
-            "answer": json.dumps(payload, ensure_ascii=False, indent=2),
+            "answer": json.dumps(payload, ensure_ascii=False, indent=2, default=str),
             "metadata": metadata,
         }
 

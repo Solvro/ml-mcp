@@ -3,12 +3,15 @@ from typing import Any
 import pytest
 from neo4j.exceptions import ClientError, ServiceUnavailable
 
-from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
+from src.mcp_server.tools.knowledge_graph.rag import (
+    RAG,
+    KnowledgeGraphQueryError,
+    KnowledgeGraphUnavailableError,
+)
 
 READ_QUERY = "MATCH (n:Node) RETURN n"
 READ_QUERY_WITH_LIMIT = f"{READ_QUERY} LIMIT 2"
 FENCED_QUERY = "```cypher\nMATCH (n) RETURN n\n```"
-BLOCKED_PREFIX = "Blocked unsafe Cypher"
 
 MUTATING_QUERIES = [
     "MATCH (n) DETACH DELETE n RETURN n",
@@ -58,11 +61,11 @@ def _build_rag_for_test(
 def test_retrieve_blocks_mutating_query_before_db_call(query):
     rag, fake_db = _build_rag_for_test()
 
-    result = rag.retrieve({"generated_cypher": query})
+    with pytest.raises(KnowledgeGraphQueryError, match="blocked") as raised:
+        rag.retrieve({"generated_cypher": query})
 
     assert fake_db.calls == []
-    assert result["context"] == []
-    assert BLOCKED_PREFIX in result["generated_cypher"]
+    assert raised.value.cypher == query
 
 
 def test_retrieve_raises_when_neo4j_is_unreachable():
@@ -74,15 +77,17 @@ def test_retrieve_raises_when_neo4j_is_unreachable():
     assert len(fake_db.calls) == 1
 
 
-def test_retrieve_keeps_statement_errors_as_query_failures():
+def test_retrieve_raises_a_query_error_for_a_statement_neo4j_rejects():
     rag, fake_db = _build_rag_for_test(db_error=_statement_error("invalid input"))
 
-    result = rag.retrieve({"generated_cypher": READ_QUERY})
+    with pytest.raises(KnowledgeGraphQueryError, match="invalid input") as raised:
+        rag.retrieve({"generated_cypher": READ_QUERY})
 
     assert len(fake_db.calls) == 1
-    assert result["context"] == []
-    assert result["generated_cypher"].startswith("Query failed:")
-    assert "invalid input" in result["generated_cypher"]
+    assert raised.value.cypher == fake_db.calls[0], "the operator sees what actually ran"
+    assert not isinstance(raised.value, KnowledgeGraphUnavailableError), (
+        "a rejected statement is not an outage; the caller's messages differ"
+    )
 
 
 def test_retrieve_raises_when_the_query_outlives_its_timeout():
@@ -101,21 +106,19 @@ def test_retrieve_raises_when_the_query_outlives_its_timeout():
 def test_retrieve_reports_non_neo4j_runtime_failure():
     rag, fake_db = _build_rag_for_test(db_error=RuntimeError("unexpected failure"))
 
-    result = rag.retrieve({"generated_cypher": READ_QUERY})
+    with pytest.raises(KnowledgeGraphQueryError, match="unexpected failure"):
+        rag.retrieve({"generated_cypher": READ_QUERY})
 
     assert len(fake_db.calls) == 1
-    assert result["context"] == []
-    assert result["generated_cypher"] == "Query failed: unexpected failure"
 
 
 def test_retrieve_blocks_missing_cypher():
     rag, fake_db = _build_rag_for_test()
 
-    result = rag.retrieve({})
+    with pytest.raises(KnowledgeGraphQueryError, match="blocked"):
+        rag.retrieve({})
 
     assert fake_db.calls == []
-    assert result["context"] == []
-    assert BLOCKED_PREFIX in result["generated_cypher"]
 
 
 def test_retrieve_executes_safe_query_with_enforced_limit():
