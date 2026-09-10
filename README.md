@@ -208,7 +208,7 @@ uv run --with pytest python -m pytest tests/data_pipeline/test_pipeline_concurre
                 # Run pipeline concurrency/idempotency tests only
 
 # Data Pipeline
-just prefect-up  # Start Prefect
+just prefect-up  # Start Prefect (UI on 127.0.0.1:4200 only)
 just pipeline    # Run ETL
 ```
 
