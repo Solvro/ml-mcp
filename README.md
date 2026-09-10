@@ -19,11 +19,12 @@
 ---
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Frontend   │────▶│  ToPWR API  │────▶│  MCP Server │────▶│    Neo4j    │
-│    :80      │     │    :8000    │     │    :8005    │     │    :7687    │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-React + Nginx         FastAPI              FastMCP          Knowledge Graph
+ ml-mcp-backend (separate repo)   │            ml-mcp (this repo, no host ports)
+┌─────────────┐   ┌──────────────┐│   ┌─────────────┐          ┌─────────────┐
+│    nginx    │──▶│ chat-service │┼──▶│  MCP Server │─────────▶│    Neo4j    │
+│   :8080     │   │              ││   │ :8005 (int.)│          │ :7687 (int.)│
+└─────────────┘   └──────────────┘│   └─────────────┘          └─────────────┘
+   auth + UI          agent       │ solvro-mcp-internal          mcp_network
 ```
 
 - **PWrChat UI** - React chatbot (session sidebar, dark/light mode toggle, persistent theme)
@@ -44,7 +45,8 @@ just setup
 cp .env.example .env  # Edit with your API keys
 
 # Run with Docker
-just up      # Start Neo4j + MCP Server + API
+just up      # Neo4j + MCP Server, reachable only by ml-mcp-backend (no host ports)
+just up-dev  # same, plus 127.0.0.1 ports for local work
 just logs    # View logs
 just down    # Stop services
 ```
@@ -56,19 +58,21 @@ just down    # Stop services
 ### System Overview
 
 ```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Frontend   │────▶│  ToPWR API  │────▶│  MCP Server │────▶│    Neo4j    │
-│    :80      │     │    :8000    │     │    :8005    │     │    :7687    │
-└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
-React + Nginx         FastAPI              FastMCP          Knowledge Graph
+ ml-mcp-backend (separate repo)   │            ml-mcp (this repo, no host ports)
+┌─────────────┐   ┌──────────────┐│   ┌─────────────┐          ┌─────────────┐
+│    nginx    │──▶│ chat-service │┼──▶│  MCP Server │─────────▶│    Neo4j    │
+│   :8080     │   │              ││   │ :8005 (int.)│          │ :7687 (int.)│
+└─────────────┘   └──────────────┘│   └─────────────┘          └─────────────┘
+   auth + UI          agent       │ solvro-mcp-internal          mcp_network
 ```
 
-| Service | Port | Description |
-|---------|------|-------------|
-| `frontend` | 80 | PWrChat — React chatbot UI served by Nginx |
-| `topwr-api` | 8000 | FastAPI backend for ToPWR app |
-| `mcp-server` | 8005 | MCP server with RAG pipeline |
-| `neo4j` | 7474/7687 | Knowledge graph database |
+| Service | Container port | Reachable from | Description |
+|---------|----------------|----------------|-------------|
+| `mcp-server` | 8005 | `ml-mcp-backend` over `solvro-mcp-internal` | MCP server with RAG pipeline |
+| `neo4j` | 7474/7687 | `mcp-server` over `mcp_network` only | Knowledge graph database |
+
+Nothing is published on the host. `just up-dev` layers `docker/compose.dev.yml` on top, which
+republishes the ports on `127.0.0.1` for the Neo4j browser, `just kg` and `uv run dump-graph`.
 
 ### RAG Pipeline
 
@@ -204,7 +208,7 @@ uv run --with pytest python -m pytest tests/data_pipeline/test_pipeline_concurre
                 # Run pipeline concurrency/idempotency tests only
 
 # Data Pipeline
-just prefect-up  # Start Prefect
+just prefect-up  # Start Prefect (UI on 127.0.0.1:4200 only)
 just pipeline    # Run ETL
 ```
 

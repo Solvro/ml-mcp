@@ -56,7 +56,7 @@ curl http://localhost:8000/health
 # Stats endpoint
 curl http://localhost:8000/api/stats
 
-# Neo4j browser
+# Neo4j browser (needs `just up-dev`; `just up` publishes no host ports)
 open http://localhost:7474
 
 # Prefect UI
@@ -84,7 +84,7 @@ open http://localhost:4200
 
 ### MCP server not reachable from API
 - Check `MCP_HOST` and `MCP_PORT` match the running server
-- In Docker: services communicate via service names (`mcp-server:8005`)
+- In Docker: services communicate via service names (`mcp-server:8005`); ml-mcp-backend reaches it over the shared `solvro-mcp-internal` network, which `just network` creates
 - Health check: `docker compose ps` → mcp-server should show `healthy`
 
 ### Session not found (API)

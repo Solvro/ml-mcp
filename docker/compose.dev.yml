@@ -1,0 +1,14 @@
+# Development override: republish the stack's ports on the loopback interface only.
+#
+#     docker compose --env-file .env -f docker/compose.stack.yml -f docker/compose.dev.yml up -d
+#     just up-dev
+
+services:
+  neo4j:
+    ports:
+      - "127.0.0.1:7474:7474"
+      - "127.0.0.1:7687:7687"
+
+  mcp-server:
+    ports:
+      - "127.0.0.1:8005:8005"

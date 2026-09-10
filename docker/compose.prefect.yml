@@ -1,11 +1,17 @@
-# Prefect Data Pipeline (separate service)
+name: ml-mcp-prefect
+
+# Nothing here is reachable from outside the host: Postgres publishes no port at all, and the
+# Prefect UI is bound to 127.0.0.1, so on a server it is reached over an SSH tunnel
+# (`ssh -L 4200:127.0.0.1:4200 <host>`). The database password comes from .env like Neo4j's;
+# note that Postgres only reads it when it initialises data/postgres, so changing it later
+# means `ALTER USER prefect PASSWORD '...'` inside the container as well.
 services:
   postgres:
     image: postgres:15
     container_name: ml-mcp-postgres
     environment:
       POSTGRES_USER: prefect
-      POSTGRES_PASSWORD: prefect
+      POSTGRES_PASSWORD: ${PREFECT_POSTGRES_PASSWORD:?Set PREFECT_POSTGRES_PASSWORD in .env}
       POSTGRES_DB: prefect
     volumes:
       - ../data/postgres:/var/lib/postgresql/data
@@ -28,11 +34,17 @@ services:
     env_file:
       - ../.env
     environment:
-      PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://prefect:prefect@postgres:5432/prefect"
+      PREFECT_API_DATABASE_CONNECTION_URL: "postgresql+asyncpg://prefect:${PREFECT_POSTGRES_PASSWORD:?Set PREFECT_POSTGRES_PASSWORD in .env}@postgres:5432/prefect"
       PREFECT_API_URL: "http://0.0.0.0:4200/api"
       DATA_PIPELINE_STAGING_DIR: /app/staging
     volumes:
       - ../staging:/app/staging:ro
     ports:
-      - "4200:4200"
+      - "127.0.0.1:4200:4200"
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:4200/api/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
