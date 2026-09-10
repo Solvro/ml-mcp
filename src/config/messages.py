@@ -9,6 +9,10 @@ LLM_CALL_TIMEOUT_MESSAGE = "The language model request exceeded the maximum allo
 # own text names codes, hosts and auth failures, and this reaches a student-facing API.
 GRAPH_UNAVAILABLE_MESSAGE = "The knowledge graph database could not be reached."
 
+# Raised as a ToolError when the generated Cypher was refused by the guardrail or rejected by
+# Neo4j. Fixed for the same reason: Neo4j's message quotes the statement and its own internals.
+GRAPH_QUERY_FAILED_MESSAGE = "The knowledge graph query could not be executed."
+
 # Returned when the guardrail routes a question away from graph retrieval.
 OFF_TOPIC_MESSAGE = "W bazie danych nie ma informacji"
 

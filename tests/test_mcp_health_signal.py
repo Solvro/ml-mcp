@@ -20,8 +20,11 @@ from fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
 import src.mcp_server.server as server
-from src.config.messages import GRAPH_UNAVAILABLE_MESSAGE
-from src.mcp_server.tools.knowledge_graph.rag import KnowledgeGraphUnavailableError
+from src.config.messages import GRAPH_QUERY_FAILED_MESSAGE, GRAPH_UNAVAILABLE_MESSAGE
+from src.mcp_server.tools.knowledge_graph.rag import (
+    KnowledgeGraphQueryError,
+    KnowledgeGraphUnavailableError,
+)
 
 
 class FakeRag:
@@ -244,6 +247,31 @@ def test_an_outage_reaches_the_caller_as_a_failed_call(restore_rag) -> None:
         FailingRag(KnowledgeGraphUnavailableError(DRIVER_DETAIL)), raise_on_error=False
     )
     assert result.is_error, "an outage read as content would become 'no data in the graph'"
+
+
+QUERY_DETAIL = (
+    "{neo4j_code: Neo.ClientError.Statement.SyntaxError} {message: Invalid input 'RETRUN'}"
+)
+QUERY_CYPHER = "MATCH (n:Course) RETRUN n.title"
+
+
+def test_a_failed_query_reaches_the_caller_as_a_failed_call(restore_rag) -> None:
+    result = call_over_mcp(
+        FailingRag(KnowledgeGraphQueryError(QUERY_DETAIL, cypher=QUERY_CYPHER)),
+        raise_on_error=False,
+    )
+
+    assert result.is_error
+
+
+def test_the_query_detail_does_not_reach_the_caller(restore_rag) -> None:
+    with pytest.raises(ToolError) as raised:
+        call_over_mcp(FailingRag(KnowledgeGraphQueryError(QUERY_DETAIL, cypher=QUERY_CYPHER)))
+
+    assert GRAPH_QUERY_FAILED_MESSAGE in str(raised.value)
+    assert GRAPH_UNAVAILABLE_MESSAGE not in str(raised.value), "a bad query is not an outage"
+    assert "SyntaxError" not in str(raised.value)
+    assert "RETRUN" not in str(raised.value)
 
 
 def test_the_driver_detail_does_not_reach_the_caller(restore_rag) -> None:

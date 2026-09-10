@@ -25,7 +25,12 @@ def _pipeline_flow_no_external_services(monkeypatch):
     monkeypatch.setattr(
         pipeline_module.GraphPopulator,
         "deduplicate_entities",
-        lambda *a, **k: {"relabelled_labels": 0, "keys_backfilled": 0, "groups_merged": 0},
+        lambda *a, **k: {
+            "relabelled_labels": 0,
+            "keys_backfilled": 0,
+            "groups_merged": 0,
+            "fallback_merged": 0,
+        },
     )
 
     # 2. FILESYSTEM AND EXPORT MOCKING

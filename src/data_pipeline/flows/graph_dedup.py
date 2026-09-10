@@ -6,7 +6,9 @@ split until it is repaired, so this pass runs after ingestion:
 
 1. relabel nodes whose label is outside the configured vocabulary;
 2. backfill the canonical key on nodes that predate it;
-3. merge the nodes that end up sharing a label and a key.
+3. merge the nodes that end up sharing a label and a key;
+4. fold a node that carries only the fallback label into the node under a real label that
+   shares its key (issue #8).
 
 Merging needs APOC. If the plugin is missing the pass reports what it found and changes nothing,
 because a half-finished merge is worse than a duplicate.
@@ -37,9 +39,31 @@ INTERNAL_LABELS = SYSTEM_LABELS
 KEY_BACKFILL_BATCH_SIZE = 500
 MAX_CONTEXT_LENGTH = 2000
 
+# Shared tail of both merge queries: `nodes` is the group to collapse, first node surviving.
+# The survivor keeps the fullest title and every distinct context, and inherits the
+# relationships of the nodes it absorbs. One fragment, so the two passes cannot disagree about
+# what "merged" means.
+_MERGE_GROUP_CYPHER = """
+WITH nodes,
+     reduce(best = '', candidate IN [item IN nodes | coalesce(item.title, '')] |
+            CASE WHEN size(candidate) > size(best) THEN candidate ELSE best END) AS best_title,
+     reduce(kept = [], candidate IN [item IN nodes | coalesce(item.context, '')] |
+            CASE WHEN candidate = '' OR candidate IN kept THEN kept ELSE kept + candidate END)
+            AS contexts
+CALL apoc.refactor.mergeNodes(
+    nodes, {properties: 'discard', mergeRels: true, produceSelfRel: false})
+YIELD node AS merged
+SET merged.title = best_title,
+    merged.context = substring(
+        reduce(joined = '', part IN contexts |
+               CASE WHEN joined = '' THEN part ELSE joined + $context_separator + part END),
+        0, $max_context_length)
+"""
+
 # $keys is null for a full pass and a list for a run-scoped one, so one query serves both and
 # the two modes cannot drift apart. With a list the key index carries the lookup.
-MERGE_DUPLICATES_CYPHER = """
+MERGE_DUPLICATES_CYPHER = (
+    """
 MATCH (node)
 WHERE node.key IS NOT NULL
   AND ($keys IS NULL OR node.key IN $keys)
@@ -47,21 +71,53 @@ WHERE node.key IS NOT NULL
   AND NOT any(label IN labels(node) WHERE label IN $internal_labels)
 WITH apoc.coll.sort(labels(node)) AS label_set, node.key AS entity_key, collect(node) AS nodes
 WHERE size(nodes) > 1
-WITH nodes,
-     reduce(best = '', candidate IN [item IN nodes | coalesce(item.title, '')] |
-            CASE WHEN size(candidate) > size(best) THEN candidate ELSE best END) AS best_title,
-     reduce(kept = [], candidate IN [item IN nodes | coalesce(item.context, '')] |
-            CASE WHEN candidate = '' OR candidate IN kept THEN kept ELSE kept + candidate END)
-            AS contexts
-CALL apoc.refactor.mergeNodes(nodes, {properties: 'discard', mergeRels: true})
-YIELD node AS merged
-SET merged.title = best_title,
-    merged.context = substring(
-        reduce(joined = '', part IN contexts |
-               CASE WHEN joined = '' THEN part ELSE joined + $context_separator + part END),
-        0, $max_context_length)
+"""
+    + _MERGE_GROUP_CYPHER
+    + """
 RETURN count(merged) AS merged_groups
 """
+)
+
+
+def merge_fallback_cypher(fallback_label: str) -> str:
+    """
+    Build the query that folds fallback-labelled nodes into their properly labelled twin.
+
+    A key claimed by two different real labels is ambiguous and is left alone: fusing two
+    entities is worse than a duplicate, and nothing here can tell which one the fallback node
+    meant. The label has to be spliced in - a MATCH pattern cannot take a parameter - and it
+    is the configured value, not user input.
+
+    Args:
+        fallback_label: The label ingestion assigns when nothing in the vocabulary fits
+
+    Returns:
+        Cypher taking $keys, $fallback_label, $internal_labels, $context_separator and
+        $max_context_length, returning merged_groups
+    """
+    return (
+        f"""
+MATCH (fallback:`{fallback_label}`)
+WHERE size(labels(fallback)) = 1
+  AND fallback.key IS NOT NULL
+  AND ($keys IS NULL OR fallback.key IN $keys)
+  AND fallback.title IS NOT NULL
+MATCH (labelled)
+WHERE labelled.key = fallback.key
+  AND NOT $fallback_label IN labels(labelled)
+  AND labelled.title IS NOT NULL
+  AND NOT any(label IN labels(labelled) WHERE label IN $internal_labels)
+WITH fallback, collect(DISTINCT labelled) AS targets
+WHERE size(targets) = 1
+WITH [targets[0], fallback] AS nodes
+"""
+        + _MERGE_GROUP_CYPHER
+        + """
+WITH merged
+CALL apoc.create.removeLabels(merged, [$fallback_label]) YIELD node AS relabelled
+RETURN count(relabelled) AS merged_groups
+"""
+    )
 
 
 def _get_logger() -> logging.Logger:
@@ -185,6 +241,48 @@ def merge_duplicate_nodes(graph: Neo4jGraph, keys: list[str] | None = None) -> i
     return merged
 
 
+def merge_fallback_nodes(
+    graph: Neo4jGraph, fallback_label: str, keys: list[str] | None = None
+) -> int:
+    """
+    Fold nodes that carry only the fallback label into the real-labelled node sharing their key.
+
+    Runs after merge_duplicate_nodes, so each real label holds at most one node per key by the
+    time this looks; a key still claimed by two different real labels is ambiguous and is
+    skipped rather than guessed at.
+
+    Args:
+        graph: Connected Neo4j graph
+        fallback_label: The label ingestion assigns when nothing in the vocabulary fits
+        keys: Canonical keys to examine, or None for the whole graph (see merge_duplicate_nodes)
+
+    Returns:
+        Number of fallback nodes folded away, or 0 when APOC is unavailable
+    """
+    logger = _get_logger()
+    if keys is not None and not keys:
+        return 0
+
+    try:
+        rows = graph.query(
+            merge_fallback_cypher(fallback_label),
+            params={
+                "fallback_label": fallback_label,
+                "internal_labels": sorted(INTERNAL_LABELS),
+                "max_context_length": MAX_CONTEXT_LENGTH,
+                "context_separator": CONTEXT_SEPARATOR,
+                "keys": keys,
+            },
+        )
+    except Exception as exc:
+        logger.warning("Fallback-label merge skipped (APOC required): %s", exc)
+        return 0
+
+    merged = int(rows[0]["merged_groups"]) if rows else 0
+    logger.info("Folded %d %s node(s) into their labelled twin", merged, fallback_label)
+    return merged
+
+
 @task
 def deduplicate_graph(
     graph: Neo4jGraph | None = None, keys: list[str] | None = None
@@ -211,24 +309,35 @@ def deduplicate_graph(
         password = os.getenv("NEO4J_PASSWORD")
         if not uri or not username or not password:
             logger.warning("Neo4j credentials not set - skipping deduplication")
-            return {"relabelled_labels": 0, "keys_backfilled": 0, "groups_merged": 0}
+            return {
+                "relabelled_labels": 0,
+                "keys_backfilled": 0,
+                "groups_merged": 0,
+                "fallback_merged": 0,
+            }
         graph = Neo4jGraph(url=uri, username=username, password=password)
 
+    vocabulary = LabelVocabulary(get_config().graph_schema)
+
     if keys is not None:
+        # The fallback fold belongs here too: page one can write the fallback copy and page
+        # two the labelled one within a single run, and nothing later would revisit the pair.
+        groups_merged = merge_duplicate_nodes(graph, keys)
         return {
             "relabelled_labels": 0,
             "keys_backfilled": 0,
-            "groups_merged": merge_duplicate_nodes(graph, keys),
+            "groups_merged": groups_merged,
+            "fallback_merged": merge_fallback_nodes(graph, vocabulary.fallback_label, keys),
         }
-
-    vocabulary = LabelVocabulary(get_config().graph_schema)
 
     relabelled = relabel_off_vocabulary_nodes(graph, vocabulary)
     keys_backfilled = backfill_entity_keys(graph)
     groups_merged = merge_duplicate_nodes(graph)
+    fallback_merged = merge_fallback_nodes(graph, vocabulary.fallback_label)
 
     return {
         "relabelled_labels": len(relabelled),
         "keys_backfilled": keys_backfilled,
         "groups_merged": groups_merged,
+        "fallback_merged": fallback_merged,
     }

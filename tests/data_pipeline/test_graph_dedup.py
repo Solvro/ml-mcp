@@ -21,10 +21,12 @@ class FakeGraph:
         labels: list[str] | None = None,
         unkeyed_nodes: list[dict[str, Any]] | None = None,
         merge_result: list[dict[str, Any]] | Exception | None = None,
+        fallback_merge_result: list[dict[str, Any]] | Exception | None = None,
     ) -> None:
         self.labels = labels or []
         self.unkeyed_nodes = unkeyed_nodes or []
         self.merge_result = merge_result
+        self.fallback_merge_result = fallback_merge_result
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
 
     def query(self, cypher: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -34,11 +36,27 @@ class FakeGraph:
             return [{"label": label} for label in self.labels]
         if "node.key IS NULL" in cypher:
             return self.unkeyed_nodes
+        if "apoc.create.removeLabels" in cypher:
+            if isinstance(self.fallback_merge_result, Exception):
+                raise self.fallback_merge_result
+            return self.fallback_merge_result or [{"merged_groups": 0}]
         if "apoc.refactor.mergeNodes" in cypher:
             if isinstance(self.merge_result, Exception):
                 raise self.merge_result
             return self.merge_result or [{"merged_groups": 0}]
         return []
+
+
+def _same_label_merge_calls(graph: FakeGraph) -> list[tuple[str, dict[str, Any] | None]]:
+    return [
+        call
+        for call in graph.calls
+        if "apoc.refactor.mergeNodes" in call[0] and "removeLabels" not in call[0]
+    ]
+
+
+def _fallback_merge_calls(graph: FakeGraph) -> list[tuple[str, dict[str, Any] | None]]:
+    return [call for call in graph.calls if "apoc.create.removeLabels" in call[0]]
 
 
 @pytest.fixture
@@ -141,7 +159,12 @@ def test_deduplicate_graph_reports_every_stage() -> None:
 
     stats = graph_dedup.deduplicate_graph.fn(graph)
 
-    assert stats == {"relabelled_labels": 1, "keys_backfilled": 1, "groups_merged": 2}
+    assert stats == {
+        "relabelled_labels": 1,
+        "keys_backfilled": 1,
+        "groups_merged": 2,
+        "fallback_merged": 0,
+    }
 
 
 # Review feedback on PR #58: the repair walked the whole graph on every run, so its cost grew
@@ -151,8 +174,13 @@ def test_a_run_scoped_pass_only_examines_the_keys_it_wrote() -> None:
 
     stats = graph_dedup.deduplicate_graph.fn(graph, ["analiza matematyczna", "semestr zimowy"])
 
-    assert stats == {"relabelled_labels": 0, "keys_backfilled": 0, "groups_merged": 1}
-    merge_call = next(call for call in graph.calls if "apoc.refactor.mergeNodes" in call[0])
+    assert stats == {
+        "relabelled_labels": 0,
+        "keys_backfilled": 0,
+        "groups_merged": 1,
+        "fallback_merged": 0,
+    }
+    merge_call = _same_label_merge_calls(graph)[0]
     assert merge_call[1]["keys"] == ["analiza matematyczna", "semestr zimowy"]
 
 
@@ -184,6 +212,75 @@ def test_the_full_pass_still_walks_everything() -> None:
 
     stats = graph_dedup.deduplicate_graph.fn(graph)
 
-    assert stats == {"relabelled_labels": 1, "keys_backfilled": 1, "groups_merged": 2}
-    merge_call = next(call for call in graph.calls if "apoc.refactor.mergeNodes" in call[0])
+    assert stats == {
+        "relabelled_labels": 1,
+        "keys_backfilled": 1,
+        "groups_merged": 2,
+        "fallback_merged": 0,
+    }
+    merge_call = _same_label_merge_calls(graph)[0]
     assert merge_call[1]["keys"] is None
+    assert _fallback_merge_calls(graph)[0][1]["keys"] is None
+
+
+def test_a_fallback_node_is_folded_into_its_labelled_twin(vocabulary) -> None:
+    graph = FakeGraph(fallback_merge_result=[{"merged_groups": 12}])
+
+    assert graph_dedup.merge_fallback_nodes(graph, vocabulary.fallback_label) == 12
+
+    (call,) = _fallback_merge_calls(graph)
+    assert call[1]["fallback_label"] == "Topic"
+    assert call[1]["keys"] is None
+    assert call[1]["internal_labels"] == ["PipelineRun", "ProcessedDocument", "Source"]
+
+
+def test_the_fallback_fold_targets_only_pure_fallback_nodes_and_one_real_label() -> None:
+    cypher = graph_dedup.merge_fallback_cypher("Topic")
+
+    assert "MATCH (fallback:`Topic`)" in cypher
+    assert "size(labels(fallback)) = 1" in cypher
+    assert "size(targets) = 1" in cypher
+    assert "[targets[0], fallback] AS nodes" in cypher, "the labelled node's properties win"
+    assert "apoc.create.removeLabels(merged, [$fallback_label])" in cypher, (
+        "mergeNodes adds the absorbed node's labels to the survivor"
+    )
+
+
+def test_neither_merge_turns_a_relationship_between_the_pair_into_a_self_loop() -> None:
+    for cypher in (graph_dedup.MERGE_DUPLICATES_CYPHER, graph_dedup.merge_fallback_cypher("Topic")):
+        assert "produceSelfRel: false" in cypher
+        assert "mergeRels: true" in cypher, "the absorbed node's other relationships must move"
+
+
+def test_the_fallback_fold_runs_after_the_same_label_merge(vocabulary) -> None:
+    graph = FakeGraph(
+        merge_result=[{"merged_groups": 1}], fallback_merge_result=[{"merged_groups": 2}]
+    )
+
+    stats = graph_dedup.deduplicate_graph.fn(graph)
+
+    assert stats["groups_merged"] == 1
+    assert stats["fallback_merged"] == 2
+    order = [
+        "fallback" if "removeLabels" in call[0] else "same_label"
+        for call in graph.calls
+        if "apoc.refactor.mergeNodes" in call[0]
+    ]
+    assert order == ["same_label", "fallback"]
+
+
+def test_a_run_scoped_pass_also_folds_fallback_nodes_for_its_keys() -> None:
+    """Page one can write the Topic copy and page two the labelled one in a single run."""
+    graph = FakeGraph(fallback_merge_result=[{"merged_groups": 1}])
+
+    stats = graph_dedup.deduplicate_graph.fn(graph, ["opieka naukowa"])
+
+    assert stats["fallback_merged"] == 1
+    (call,) = _fallback_merge_calls(graph)
+    assert call[1]["keys"] == ["opieka naukowa"]
+
+
+def test_missing_apoc_leaves_fallback_nodes_untouched(vocabulary) -> None:
+    graph = FakeGraph(fallback_merge_result=RuntimeError("no procedure apoc.create.removeLabels"))
+
+    assert graph_dedup.merge_fallback_nodes(graph, vocabulary.fallback_label) == 0

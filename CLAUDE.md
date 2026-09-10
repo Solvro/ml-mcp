@@ -446,6 +446,25 @@ absorbs. `ProcessedDocument` and `PipelineRun` are excluded by label: relabellin
 without it the pass logs and changes nothing, because a half-finished merge is worse than a
 duplicate. The pass is idempotent — a second run is a no-op.
 
+**The fallback label is folded, not grouped.** The same-label merge groups by label, so a
+concept the model filed as `Topic` on one page and as `CriterionCategory` on the next survived
+every run as two nodes with one key: retrieval returned whichever copy the query matched, and
+the relationships were split between them. `merge_fallback_nodes` runs after the same-label
+merge, in both modes, and folds a node carrying *only* the fallback label into the node under a
+real label that shares its key. The labelled node goes first so its properties win, and the
+fallback label is removed from the survivor, since `apoc.refactor.mergeNodes` adds the absorbed
+node's labels. Two limits are deliberate: a node that is `Topic` *and* something else was
+placed on purpose and is left alone, and a key claimed by two different real labels is
+ambiguous and is skipped — fusing two entities is worse than a duplicate, and nothing in the
+pass can tell which one the fallback node meant. The count is reported as `fallback_merged`.
+
+Both merges pass `produceSelfRel: false`. APOC would otherwise turn a relationship *between*
+the two nodes being merged into a self-loop on the survivor, and the model has been seen
+relating a category to a sub-item whose titles canonicalise to the same key, so a `Topic` copy
+linked to its labelled twin is a live case, not a hypothetical one. Existing self-loops written
+at ingestion (the same key collapse happening within one page) are a separate defect the pass
+leaves alone.
+
 ### Text2Cypher Search Normalization
 
 - The Cypher prompt receives both the original Polish question and a lowercase,
@@ -735,10 +754,19 @@ the answering model as if it were graph data. `OFF_TOPIC_MESSAGE` and `NO_GRAPH_
 are *answers* — retrieval ran and found nothing — and keep coming back as ordinary results.
 
 An outage arrives as `KnowledgeGraphUnavailableError`, raised by `retrieve()` for the failures
-in `NEO4J_INFRASTRUCTURE_EXCEPTIONS`; everything else Neo4j refuses — a bad statement, a missing
-index — stays a "found nothing" the escalation can still recover from. The message is the fixed
-`GRAPH_UNAVAILABLE_MESSAGE`, since `ToolError` detail reaches the caller verbatim and the
+in `NEO4J_INFRASTRUCTURE_EXCEPTIONS` and for a query Neo4j cut off for time. The message is the
+fixed `GRAPH_UNAVAILABLE_MESSAGE`, since `ToolError` detail reaches the caller verbatim and the
 driver's own text names codes, hosts and auth failures.
+
+A *query* that could not run is a different failure with the same rule. Generated Cypher that
+`validate_read_only` refuses or that Neo4j rejects raises `KnowledgeGraphQueryError`, which the
+server maps to a `ToolError` carrying `GRAPH_QUERY_FAILED_MESSAGE`; the statement and Neo4j's
+reason go to the log. It used to come back as `NO_GRAPH_DATA_MESSAGE` — a claim about the graph
+that was never put to it — and for one commit as the error text in the answer, which the
+backend would have handed to the answering model as grounding. Neither is content. Only the
+*retries* keep "found nothing" for a statement Neo4j refuses: a retry exists to improve on an
+empty result, and a rejected retry must not turn that result into an error (#3 is where a
+failed primary query should be escalated rather than reported).
 
 Both consumers of the tool had to learn the difference. `topwr_api` already caught the
 exception. The `kg` CLI did not, and a raised `ToolError` would have surfaced as a traceback, so
