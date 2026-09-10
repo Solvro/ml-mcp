@@ -31,6 +31,7 @@ COPY ./graph_config.yaml ./graph_config.yaml
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PREFECT_HOME=/app/.prefect \
+    PREFECT_SERVER_UI_STATIC_DIRECTORY=/app/.prefect/ui_build \
     HOME=/app
 
 RUN groupadd -r prefectuser \

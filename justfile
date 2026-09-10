@@ -46,12 +46,12 @@ network:
 # Start all services (no host ports)
 [group('docker')]
 up: network
-    docker compose --env-file .env -f docker/compose.stack.yml up -d --build --remove-orphans
+    docker compose --env-file .env -f docker/compose.stack.yml up -d --build
 
 # Start all services with Neo4j and MCP republished on 127.0.0.1 for host-side development
 [group('docker')]
 up-dev: network
-    docker compose --env-file .env -f docker/compose.stack.yml -f docker/compose.dev.yml up -d --build --remove-orphans
+    docker compose --env-file .env -f docker/compose.stack.yml -f docker/compose.dev.yml up -d --build
 
 # Stop all services
 [group('docker')]

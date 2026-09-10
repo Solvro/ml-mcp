@@ -1,4 +1,5 @@
-# Prefect Data Pipeline (separate service)
+name: ml-mcp-prefect
+
 services:
   postgres:
     image: postgres:15
@@ -36,3 +37,9 @@ services:
     ports:
       - "4200:4200"
     restart: unless-stopped
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -sf http://localhost:4200/api/health || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
