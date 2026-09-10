@@ -972,7 +972,7 @@ class RAG:
 
         A retry exists to improve on an empty result, so a query the database refuses - a bad
         statement, a missing index - must not turn that empty result into an error. Only an
-        unreachable graph propagates: then there was no retrieval to improve on.
+        unreachable graph or a timed-out retry query propagates.
 
         Args:
             cypher_query: Query to execute
@@ -991,6 +991,8 @@ class RAG:
             raise KnowledgeGraphUnavailableError(str(exc)) from exc
 
         except Exception as exc:
+            if _is_neo4j_query_timeout(exc):
+                raise KnowledgeGraphUnavailableError(str(exc)) from exc
             logger.warning("Retrieval retry (%s) failed: %s", description, exc)
             return []
 
