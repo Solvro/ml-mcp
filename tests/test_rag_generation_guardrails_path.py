@@ -2,8 +2,9 @@ from typing import Any
 
 import pytest
 from langchain_core.runnables import RunnableLambda
+from neo4j.exceptions import ClientError, ServiceUnavailable
 
-from src.mcp_server.tools.knowledge_graph.rag import RAG
+from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
 
 QUESTION = "Kto wykłada analizę matematyczną?"
 SCHEMA_TEXT = "Node properties: Course\nRelationship properties: TEACHES\nThe relationships: X"
@@ -13,13 +14,16 @@ GENERATED_CYPHER = "MATCH (c:Course) RETURN c.name"
 class FakeSchemaDatabase:
     """Stands in for Neo4jGraph: serves a schema string and nothing else."""
 
-    def __init__(self, schema: str = SCHEMA_TEXT) -> None:
+    def __init__(self, schema: str = SCHEMA_TEXT, refresh_error: Exception | None = None) -> None:
         self.get_schema = schema
+        self.refresh_error = refresh_error
         self.refresh_calls = 0
 
     def refresh_schema(self) -> None:
         """Neo4jGraph re-reads the graph here; the fake's schema is already current."""
         self.refresh_calls += 1
+        if self.refresh_error is not None:
+            raise self.refresh_error
 
 
 class RecordingLLM:
@@ -38,7 +42,7 @@ class RecordingLLM:
 
 
 def _rag_stub(
-    reply: str, schema: str = SCHEMA_TEXT
+    reply: str, schema: str = SCHEMA_TEXT, refresh_error: Exception | None = None
 ) -> tuple[RAG, RecordingLLM, list[dict[str, Any]]]:
     """Build a RAG instance without running __init__ (no network, no LLM clients).
 
@@ -47,7 +51,7 @@ def _rag_stub(
     """
     rag = object.__new__(RAG)
     rag._init_schema_cache()
-    rag.database = FakeSchemaDatabase(schema)
+    rag.database = FakeSchemaDatabase(schema, refresh_error=refresh_error)
     rag._initialize_prompt_templates()
 
     llm = RecordingLLM(reply)
@@ -83,6 +87,45 @@ def test_generate_cypher_returns_llm_output_untouched():
     result = rag.generate_cypher({"user_question": QUESTION})
 
     assert result["generated_cypher"] == "  MATCH (n) RETURN n  "
+
+
+def test_generate_cypher_raises_when_schema_refresh_hits_outage_without_cache() -> None:
+    rag, _, _ = _rag_stub(
+        reply=GENERATED_CYPHER,
+        refresh_error=ServiceUnavailable("neo4j unavailable"),
+    )
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="neo4j unavailable"):
+        rag.generate_cypher({"user_question": QUESTION})
+
+
+def test_generate_cypher_raises_when_the_schema_read_times_out() -> None:
+    rag, _, _ = _rag_stub(
+        reply=GENERATED_CYPHER,
+        refresh_error=ClientError._hydrate_neo4j(
+            code="Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+            message="The transaction has been terminated.",
+        ),
+    )
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="terminated"):
+        rag.generate_cypher({"user_question": QUESTION})
+
+
+def test_generate_cypher_keeps_cached_schema_when_refresh_fails() -> None:
+    rag, _, _ = _rag_stub(
+        reply=GENERATED_CYPHER,
+        refresh_error=RuntimeError("temporary schema refresh error"),
+    )
+    rag._cached_schema = SCHEMA_TEXT
+    rag._schema_fetched_at = 0.0
+    rag._version_probed_at = 0.0
+    rag._graph_version_seen = "v-1"
+
+    result = rag.generate_cypher({"user_question": QUESTION})
+
+    assert result["generated_cypher"] == GENERATED_CYPHER
+    assert result["next_node"] == "retrieve"
 
 
 def test_generate_cypher_propagates_tracing_context():

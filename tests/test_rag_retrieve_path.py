@@ -1,8 +1,9 @@
 from typing import Any
 
 import pytest
+from neo4j.exceptions import ClientError, ServiceUnavailable
 
-from src.mcp_server.tools.knowledge_graph.rag import RAG
+from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
 
 READ_QUERY = "MATCH (n:Node) RETURN n"
 READ_QUERY_WITH_LIMIT = f"{READ_QUERY} LIMIT 2"
@@ -31,6 +32,13 @@ class FakeDatabase:
         return self.response
 
 
+def _statement_error(message: str = "bad query") -> ClientError:
+    return ClientError._hydrate_neo4j(
+        code="Neo.ClientError.Statement.SyntaxError",
+        message=message,
+    )
+
+
 def _build_rag_for_test(
     max_results: int = 5,
     db_response: list[dict[str, Any]] | None = None,
@@ -57,14 +65,47 @@ def test_retrieve_blocks_mutating_query_before_db_call(query):
     assert BLOCKED_PREFIX in result["generated_cypher"]
 
 
-def test_retrieve_reports_database_failure():
-    rag, fake_db = _build_rag_for_test(db_error=RuntimeError("neo4j unavailable"))
+def test_retrieve_raises_when_neo4j_is_unreachable():
+    rag, fake_db = _build_rag_for_test(db_error=ServiceUnavailable("neo4j unavailable"))
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="neo4j unavailable"):
+        rag.retrieve({"generated_cypher": READ_QUERY})
+
+    assert len(fake_db.calls) == 1
+
+
+def test_retrieve_keeps_statement_errors_as_query_failures():
+    rag, fake_db = _build_rag_for_test(db_error=_statement_error("invalid input"))
 
     result = rag.retrieve({"generated_cypher": READ_QUERY})
 
     assert len(fake_db.calls) == 1
     assert result["context"] == []
-    assert result["generated_cypher"] == "Query failed: neo4j unavailable"
+    assert result["generated_cypher"].startswith("Query failed:")
+    assert "invalid input" in result["generated_cypher"]
+
+
+def test_retrieve_raises_when_the_query_outlives_its_timeout():
+    timed_out = ClientError._hydrate_neo4j(
+        code="Neo.ClientError.Transaction.TransactionTimedOutClientConfiguration",
+        message="The transaction has been terminated.",
+    )
+    rag, fake_db = _build_rag_for_test(db_error=timed_out)
+
+    with pytest.raises(KnowledgeGraphUnavailableError, match="terminated"):
+        rag.retrieve({"generated_cypher": READ_QUERY})
+
+    assert len(fake_db.calls) == 1
+
+
+def test_retrieve_reports_non_neo4j_runtime_failure():
+    rag, fake_db = _build_rag_for_test(db_error=RuntimeError("unexpected failure"))
+
+    result = rag.retrieve({"generated_cypher": READ_QUERY})
+
+    assert len(fake_db.calls) == 1
+    assert result["context"] == []
+    assert result["generated_cypher"] == "Query failed: unexpected failure"
 
 
 def test_retrieve_blocks_missing_cypher():

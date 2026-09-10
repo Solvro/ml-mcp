@@ -14,14 +14,12 @@ from starlette.responses import JSONResponse
 
 from ..config.config import get_config
 from ..config.logging_config import configure_logging
-from ..config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE
+from ..config.messages import GRAPH_PIPELINE_TIMEOUT_MESSAGE, GRAPH_UNAVAILABLE_MESSAGE
 from ..config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
-from .tools.knowledge_graph.rag import RAG
+from .tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
 
 load_dotenv()
 configure_logging()
-
-logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -162,9 +160,10 @@ async def knowledge_graph_tool(
         AI-generated instructions based on knowledge graph data
 
     Raises:
-        ToolError: The graph could not be consulted at all. Reported as a failed tool call so
-            the caller can tell it apart from an answer; "no data in the graph" is an answer
-            and comes back normally.
+        ToolError: The graph could not be consulted at all - no RAG, an unreachable database,
+            or a pipeline that timed out. Reported as a failed tool call so the caller can tell
+            it apart from an answer; "no data in the graph" is an answer and comes back
+            normally.
     """
     if rag is None:
         raise ToolError("Knowledge graph unavailable: the server has no initialized RAG.")
@@ -183,6 +182,9 @@ async def knowledge_graph_tool(
         )
     except TimeoutError as exc:
         raise ToolError(GRAPH_PIPELINE_TIMEOUT_MESSAGE) from exc
+    except KnowledgeGraphUnavailableError as exc:
+        logger.error("Knowledge graph unavailable: %s", exc)
+        raise ToolError(GRAPH_UNAVAILABLE_MESSAGE) from exc
 
     metadata = result.get("metadata", {})
     logger.info("Guardrail decision: %s", metadata.get("guardrail_decision"))

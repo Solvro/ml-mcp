@@ -5,8 +5,13 @@ loop leaked a driver, and there was no way to ask the instance whether its conne
 worked - which is what the health route needs.
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 import pytest
 
+import src.mcp_server.tools.knowledge_graph.rag as rag_module
 from src.mcp_server.tools.knowledge_graph.rag import RAG
 
 
@@ -75,3 +80,116 @@ def test_close_without_a_database_is_not_an_error() -> None:
     rag = RAG.__new__(RAG)
 
     rag.close()
+
+
+class CapturingNeo4jGraph:
+    def __init__(self, sink: dict[str, Any], **kwargs: Any) -> None:
+        sink.update(kwargs)
+
+
+@pytest.fixture
+def capture_neo4j_graph_init(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        rag_module,
+        "Neo4jGraph",
+        lambda **kwargs: CapturingNeo4jGraph(captured, **kwargs),
+    )
+    monkeypatch.setattr(
+        rag_module.RAG, "_build_llm_with_fallback", lambda self, use_accurate=False: object()
+    )
+    monkeypatch.setattr(rag_module.RAG, "_initialize_prompt_templates", lambda self: None)
+    monkeypatch.setattr(rag_module.RAG, "_build_processing_graph", lambda self: object())
+    monkeypatch.setattr(rag_module.RAG, "ensure_fulltext_index", lambda self: True)
+
+    return captured
+
+
+def _build_rag(**kwargs: Any) -> RAG:
+    return RAG(
+        api_key="test-key",
+        neo4j_url="bolt://neo4j:7687",
+        neo4j_username="neo4j",
+        neo4j_password="secret",
+        **kwargs,
+    )
+
+
+def test_rag_passes_neo4j_runtime_limits_to_driver(
+    capture_neo4j_graph_init: dict[str, Any],
+) -> None:
+    rag = _build_rag(
+        llm_timeout_sec=30,
+        graph_timeout_sec=20,
+        neo4j_query_timeout_sec=7,
+        neo4j_connection_timeout_sec=4,
+        neo4j_max_transaction_retry_sec=3,
+    )
+
+    assert rag.database.timeout == 7, "every query this class issues is still bounded"
+    assert capture_neo4j_graph_init["driver_config"] == {
+        "connection_timeout": 4,
+        "max_transaction_retry_time": 3,
+    }
+
+
+def test_the_constructors_own_schema_read_is_not_given_a_query_timeout(
+    capture_neo4j_graph_init: dict[str, Any],
+) -> None:
+    _build_rag(
+        llm_timeout_sec=30,
+        graph_timeout_sec=20,
+        neo4j_query_timeout_sec=7,
+        neo4j_connection_timeout_sec=4,
+        neo4j_max_transaction_retry_sec=3,
+    )
+
+    assert "timeout" not in capture_neo4j_graph_init, "startup must not be able to time out here"
+
+
+def test_rag_scales_connection_and_retry_to_fit_the_graph_budget(
+    capture_neo4j_graph_init: dict[str, Any],
+) -> None:
+    """Connection and retry are spent in sequence, so the graph budget has to cover both."""
+    rag = _build_rag(
+        llm_timeout_sec=30,
+        graph_timeout_sec=5,
+        neo4j_query_timeout_sec=12,
+        neo4j_connection_timeout_sec=4,
+        neo4j_max_transaction_retry_sec=9,
+    )
+
+    assert rag.neo4j_query_timeout_sec == 5
+    assert rag.database.timeout == 5
+    assert rag.neo4j_connection_timeout_sec == pytest.approx(5 * 4 / 13)
+    assert rag.neo4j_max_transaction_retry_sec == pytest.approx(5 * 9 / 13)
+    assert rag.neo4j_connection_timeout_sec + rag.neo4j_max_transaction_retry_sec == pytest.approx(
+        5
+    )
+    assert capture_neo4j_graph_init["driver_config"]["max_transaction_retry_time"] == pytest.approx(
+        5 * 9 / 13
+    )
+
+
+def test_rag_keeps_retrying_when_connecting_alone_would_fill_the_budget(
+    capture_neo4j_graph_init: dict[str, Any],
+) -> None:
+    """Retries also ride out a leader election on a healthy graph, so they never reach zero.
+
+    Spending the whole shortfall on the retry budget would leave connection_timeout untouched
+    and retries at 0, trading a bounded outage for fragility in ordinary operation.
+    """
+    rag = _build_rag(
+        llm_timeout_sec=30,
+        graph_timeout_sec=3,
+        neo4j_query_timeout_sec=3,
+        neo4j_connection_timeout_sec=8,
+        neo4j_max_transaction_retry_sec=9,
+    )
+
+    assert rag.neo4j_max_transaction_retry_sec > 0
+    assert rag.neo4j_connection_timeout_sec > 0
+    assert rag.neo4j_connection_timeout_sec + rag.neo4j_max_transaction_retry_sec == pytest.approx(
+        3
+    )

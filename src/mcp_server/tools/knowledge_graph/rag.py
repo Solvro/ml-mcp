@@ -15,6 +15,13 @@ from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
+from neo4j.exceptions import (
+    AuthError,
+    ClientError,
+    DatabaseError,
+    DriverError,
+    TransientError,
+)
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
 
 from ....config.config import get_config
@@ -27,6 +34,9 @@ from ....config.system_labels import SYSTEM_LABELS
 from ....config.timeouts import (
     get_graph_timeout_seconds,
     get_llm_timeout_seconds,
+    get_neo4j_connection_timeout_seconds,
+    get_neo4j_max_transaction_retry_seconds,
+    get_neo4j_query_timeout_seconds,
     get_schema_refresh_seconds,
     get_schema_version_probe_seconds,
 )
@@ -112,6 +122,32 @@ RETURN labelsOrTypes AS labels, properties AS properties"""
 # toString keeps the comparison a plain string rather than a neo4j.time.DateTime.
 GRAPH_VERSION_CYPHER = """MATCH (pr:PipelineRun)
 RETURN toString(max(pr.run_at)) AS version"""
+# Retrieval never ran, so its zero rows say nothing about what the graph holds. Classified by
+# exception type, not error code: the driver's hierarchy already draws this line, and a prefix
+# list silently reclassifies whatever Neo4j adds next. OSError covers gaierror/ConnectionError.
+# The remaining ClientError codes are deliberately absent. Statement.*, Procedure.* and Schema.*
+# come from a database that is demonstrably up and mean this query could not run. A missing
+# full-text index arrives as Procedure.ProcedureCallFailed, and the reindex-and-retry rescue in
+# _search_every_label only happens while that stays a recoverable "found nothing".
+#
+# Transaction.TransactionTimedOut* is the one ClientError that escalates anyway, through
+# _is_neo4j_query_timeout rather than this tuple. It says nothing about the query and everything
+# about how long it was given, and neo4j_query_timeout_seconds is what gives it.
+NEO4J_INFRASTRUCTURE_EXCEPTIONS = (
+    DriverError,
+    TransientError,
+    AuthError,
+    DatabaseError,
+    OSError,
+)
+NEO4J_QUERY_TIMEOUT_CODE_PREFIX = "Neo.ClientError.Transaction.TransactionTimedOut"
+
+
+def _is_neo4j_query_timeout(exc: Exception) -> bool:
+    """Report whether Neo4j stopped a query for outliving the per-query timeout."""
+    return isinstance(exc, ClientError) and str(getattr(exc, "code", "")).startswith(
+        NEO4J_QUERY_TIMEOUT_CODE_PREFIX
+    )
 
 
 class LLMProvider(Enum):
@@ -132,6 +168,10 @@ class RetrievalStrategy(Enum):
     EMPTY = "empty"
 
 
+class KnowledgeGraphUnavailableError(RuntimeError):
+    """Raised when Neo4j cannot be consulted to answer a retrieval query."""
+
+
 class RAG:
     """Retrieval-Augmented Generation system with Neo4j graph database backend."""
 
@@ -145,6 +185,9 @@ class RAG:
         max_results: int = None,
         llm_timeout_sec: float | None = None,
         graph_timeout_sec: float | None = None,
+        neo4j_query_timeout_sec: float | None = None,
+        neo4j_connection_timeout_sec: float | None = None,
+        neo4j_max_transaction_retry_sec: float | None = None,
     ):
         """
         Initialize RAG system with API keys and database credentials.
@@ -158,6 +201,9 @@ class RAG:
             max_results: Maximum number of results from Neo4j (default: 5)
             llm_timeout_sec: Per-call HTTP timeout for each LLM client
             graph_timeout_sec: Wall-clock budget for the whole RAG run
+            neo4j_query_timeout_sec: Timeout for one Neo4j query execution
+            neo4j_connection_timeout_sec: Timeout for establishing a Neo4j connection
+            neo4j_max_transaction_retry_sec: Driver retry budget for transient failures
         """
         config = get_config()
 
@@ -175,6 +221,44 @@ class RAG:
         self.max_results = max_results if max_results is not None else config.rag.max_results
         self.enable_fallback_search = config.rag.enable_fallback_search
         self.fallback_min_score = config.rag.fallback_min_score
+        configured_neo4j_query_timeout = (
+            neo4j_query_timeout_sec
+            if neo4j_query_timeout_sec is not None
+            else get_neo4j_query_timeout_seconds()
+        )
+        if configured_neo4j_query_timeout > self.graph_timeout_sec:
+            logger.warning(
+                "Neo4j query timeout %.1fs exceeds graph timeout %.1fs; capping to graph timeout",
+                configured_neo4j_query_timeout,
+                self.graph_timeout_sec,
+            )
+        self.neo4j_query_timeout_sec = min(configured_neo4j_query_timeout, self.graph_timeout_sec)
+        self.neo4j_connection_timeout_sec = (
+            neo4j_connection_timeout_sec
+            if neo4j_connection_timeout_sec is not None
+            else get_neo4j_connection_timeout_seconds()
+        )
+        configured_retry_budget = (
+            neo4j_max_transaction_retry_sec
+            if neo4j_max_transaction_retry_sec is not None
+            else get_neo4j_max_transaction_retry_seconds()
+        )
+        self.neo4j_max_transaction_retry_sec = configured_retry_budget
+        configured_connection_timeout = self.neo4j_connection_timeout_sec
+        configured_total = configured_connection_timeout + configured_retry_budget
+        if configured_total > self.graph_timeout_sec > 0:
+            scale = self.graph_timeout_sec / configured_total
+            self.neo4j_connection_timeout_sec = configured_connection_timeout * scale
+            self.neo4j_max_transaction_retry_sec = configured_retry_budget * scale
+            logger.warning(
+                "Neo4j connection timeout %.1fs plus retry budget %.1fs would outlast the %.1fs "
+                "graph timeout; scaling both to %.1fs and %.1fs",
+                configured_connection_timeout,
+                configured_retry_budget,
+                self.graph_timeout_sec,
+                self.neo4j_connection_timeout_sec,
+                self.neo4j_max_transaction_retry_sec,
+            )
 
         self.fast_llm = self._build_llm_with_fallback(use_accurate=False)
         self.cypher_llm = self._build_llm_with_fallback(use_accurate=True)
@@ -186,13 +270,21 @@ class RAG:
             username=neo4j_username,
             password=neo4j_password,
             database=config.database.name,
+            driver_config={
+                "connection_timeout": self.neo4j_connection_timeout_sec,
+                "max_transaction_retry_time": self.neo4j_max_transaction_retry_sec,
+            },
             enhanced_schema=True,
         )
+        self.database.timeout = self.neo4j_query_timeout_sec
 
         self._init_schema_cache()
 
         if self.enable_fallback_search:
-            self.ensure_fulltext_index()
+            try:
+                self.ensure_fulltext_index()
+            except KnowledgeGraphUnavailableError as exc:
+                logger.warning("Could not build %s at startup: %s", FULLTEXT_INDEX_NAME, exc)
 
         self.visualizer = GraphVisualizer()
         self.graph = self._build_processing_graph()
@@ -454,6 +546,10 @@ class RAG:
         A failed refresh keeps the last good schema. Serving a slightly stale schema is a far
         smaller problem than generating Cypher against nothing.
 
+        Raises:
+            KnowledgeGraphUnavailableError: The refresh failed and there is no cached schema to
+                fall back on, so nothing is known about the graph.
+
         Returns:
             The schema text, or an empty string when the graph holds nothing
         """
@@ -465,8 +561,11 @@ class RAG:
         try:
             self.database.refresh_schema()
         except Exception as exc:
-            logger.warning("Could not refresh the Neo4j schema: %s", exc)
-            return self._cached_schema or ""
+            if self._cached_schema:
+                logger.warning("Could not refresh the Neo4j schema; keeping cached schema: %s", exc)
+                return self._cached_schema
+            logger.error("Neo4j could not be consulted while refreshing schema: %s", exc)
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
 
         db_schema = self.database.get_schema
 
@@ -805,11 +904,20 @@ class RAG:
                 "retrieval_strategy": RetrievalStrategy.EMPTY.value,
             }
 
-        except Exception as e:
-            error_msg = str(e)
+        except KnowledgeGraphUnavailableError:
+            raise
 
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            logger.error("Neo4j could not be consulted: %s", exc)
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
+
+        except Exception as exc:
+            if _is_neo4j_query_timeout(exc):
+                logger.error("Neo4j did not finish the query in time: %s", exc)
+                raise KnowledgeGraphUnavailableError(str(exc)) from exc
+
+            error_msg = str(exc)
             logger.warning("Cypher execution failed: %s", error_msg)
-
             return {
                 "context": [],
                 "generated_cypher": f"Query failed: {error_msg}",
@@ -860,9 +968,11 @@ class RAG:
         self, cypher_query: str, description: str, params: Dict[str, Any] | None = None
     ) -> List[Dict[str, Any]]:
         """
-        Run a retry query, treating any failure as "recovered nothing".
+        Run a retry query, treating a rejected or failed query as "recovered nothing".
 
-        A retry exists to improve on an empty result, so it must never turn one into an error.
+        A retry exists to improve on an empty result, so a query the database refuses - a bad
+        statement, a missing index - must not turn that empty result into an error. Only an
+        unreachable graph or a timed-out retry query propagates.
 
         Args:
             cypher_query: Query to execute
@@ -877,7 +987,12 @@ class RAG:
             if params is None:
                 return self.database.query(cypher_query)
             return self.database.query(cypher_query, params=params)
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
+
         except Exception as exc:
+            if _is_neo4j_query_timeout(exc):
+                raise KnowledgeGraphUnavailableError(str(exc)) from exc
             logger.warning("Retrieval retry (%s) failed: %s", description, exc)
             return []
 
@@ -890,6 +1005,11 @@ class RAG:
         restarts; the search re-checks the index when a lookup fails, so a new label is picked
         up without waiting for a redeploy.
 
+        Raises:
+            KnowledgeGraphUnavailableError: The graph could not be consulted at all, so False
+                would claim the index is unavailable when the whole database is. Whether that
+                is fatal is the caller's call; __init__ is the one place that tolerates it.
+
         Returns:
             True when the index exists and covers the current labels
         """
@@ -899,7 +1019,11 @@ class RAG:
                 for row in self.database.query("CALL db.labels() YIELD label RETURN label")
                 if row["label"] not in FULLTEXT_EXCLUDED_LABELS
             )
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
         except Exception as exc:
+            if _is_neo4j_query_timeout(exc):
+                raise KnowledgeGraphUnavailableError(str(exc)) from exc
             logger.warning("Could not read graph labels for the full-text index: %s", exc)
             return False
 
@@ -933,7 +1057,11 @@ class RAG:
             )
             logger.info("Full-text index %s covers %d labels", FULLTEXT_INDEX_NAME, len(labels))
             return True
+        except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
+            raise KnowledgeGraphUnavailableError(str(exc)) from exc
         except Exception as exc:
+            if _is_neo4j_query_timeout(exc):
+                raise KnowledgeGraphUnavailableError(str(exc)) from exc
             logger.warning("Could not create the %s full-text index: %s", FULLTEXT_INDEX_NAME, exc)
             return False
 
@@ -1065,7 +1193,10 @@ class RAG:
                 "metadata": {**metadata, "cypher_query": None, "context": []},
             }
 
+        generated_cypher = str(result.get("generated_cypher") or "")
         if not context_data:
+            if generated_cypher.startswith(("Query failed:", "Blocked unsafe Cypher:")):
+                return {"answer": generated_cypher, "metadata": metadata}
             return {"answer": NO_GRAPH_DATA_MESSAGE, "metadata": metadata}
 
         # The strategy travels with the rows: how they were found is what says whether they are

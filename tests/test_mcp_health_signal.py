@@ -20,6 +20,8 @@ from fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
 import src.mcp_server.server as server
+from src.config.messages import GRAPH_UNAVAILABLE_MESSAGE
+from src.mcp_server.tools.knowledge_graph.rag import KnowledgeGraphUnavailableError
 
 
 class FakeRag:
@@ -140,6 +142,32 @@ def test_close_rag_survives_a_driver_that_fails_to_close(restore_rag) -> None:
     assert server.rag is None
 
 
+# What a pipeline does is an argument, the way FakeRag already takes ping_error - one stub per
+# outcome rather than one class per test.
+NO_DATA_ANSWER = "Brak danych w grafie wiedzy dla tego pytania."
+# A real outage names the error code and why the database refused. None of it may reach a caller.
+DRIVER_DETAIL = (
+    "{neo4j_code: Neo.ClientError.Security.Unauthorized} "
+    "{message: The client is unauthorized due to authentication failure.}"
+)
+
+
+class AnsweringRag:
+    def __init__(self, answer: str):
+        self.answer = answer
+
+    async def ainvoke(self, **kwargs):
+        return {"answer": self.answer, "metadata": {}}
+
+
+class FailingRag:
+    def __init__(self, error: Exception):
+        self.error = error
+
+    async def ainvoke(self, **kwargs):
+        raise self.error
+
+
 def test_tool_raises_instead_of_answering_when_rag_is_missing(restore_rag) -> None:
     """A failure has to arrive as a failed call, not as text that looks like content."""
     server.rag = None
@@ -149,11 +177,14 @@ def test_tool_raises_instead_of_answering_when_rag_is_missing(restore_rag) -> No
 
 
 def test_tool_raises_on_pipeline_timeout(restore_rag) -> None:
-    class TimingOutRag:
-        async def ainvoke(self, **kwargs):
-            raise TimeoutError
+    server.rag = FailingRag(TimeoutError())
 
-    server.rag = TimingOutRag()
+    with pytest.raises(ToolError):
+        asyncio.run(server.knowledge_graph_tool.fn("Kto wyklada analize?"))
+
+
+def test_tool_raises_when_the_database_cannot_be_reached(restore_rag) -> None:
+    server.rag = FailingRag(KnowledgeGraphUnavailableError(DRIVER_DETAIL))
 
     with pytest.raises(ToolError):
         asyncio.run(server.knowledge_graph_tool.fn("Kto wyklada analize?"))
@@ -161,16 +192,11 @@ def test_tool_raises_on_pipeline_timeout(restore_rag) -> None:
 
 def test_tool_returns_the_answer_when_the_pipeline_works(restore_rag) -> None:
     """The abstention answer is content, not a failure, and must come back normally."""
-
-    class AnsweringRag:
-        async def ainvoke(self, **kwargs):
-            return {"answer": "Brak danych w grafie wiedzy dla tego pytania.", "metadata": {}}
-
-    server.rag = AnsweringRag()
+    server.rag = AnsweringRag(NO_DATA_ANSWER)
 
     answer = asyncio.run(server.knowledge_graph_tool.fn("Kto wyklada analize?"))
 
-    assert answer == "Brak danych w grafie wiedzy dla tego pytania."
+    assert answer == NO_DATA_ANSWER
 
 
 # --- through a real MCP client -------------------------------------------------------------
@@ -195,19 +221,6 @@ def call_over_mcp(rag, *, raise_on_error: bool = True):
     return asyncio.run(run())
 
 
-class AnsweringRag:
-    def __init__(self, answer: str):
-        self.answer = answer
-
-    async def ainvoke(self, **kwargs):
-        return {"answer": self.answer, "metadata": {}}
-
-
-class TimingOutRag:
-    async def ainvoke(self, **kwargs):
-        raise TimeoutError
-
-
 def test_missing_rag_reaches_the_caller_as_a_failed_call(restore_rag) -> None:
     result = call_over_mcp(None, raise_on_error=False)
 
@@ -221,16 +234,31 @@ def test_the_failure_reason_survives_to_the_caller(restore_rag) -> None:
 
 
 def test_pipeline_timeout_reaches_the_caller_as_a_failed_call(restore_rag) -> None:
-    result = call_over_mcp(TimingOutRag(), raise_on_error=False)
+    result = call_over_mcp(FailingRag(TimeoutError()), raise_on_error=False)
 
     assert result.is_error
 
 
+def test_an_outage_reaches_the_caller_as_a_failed_call(restore_rag) -> None:
+    result = call_over_mcp(
+        FailingRag(KnowledgeGraphUnavailableError(DRIVER_DETAIL)), raise_on_error=False
+    )
+    assert result.is_error, "an outage read as content would become 'no data in the graph'"
+
+
+def test_the_driver_detail_does_not_reach_the_caller(restore_rag) -> None:
+    """ToolError detail is passed through verbatim, so the message has to be a fixed one."""
+    with pytest.raises(ToolError) as raised:
+        call_over_mcp(FailingRag(KnowledgeGraphUnavailableError(DRIVER_DETAIL)))
+
+    assert GRAPH_UNAVAILABLE_MESSAGE in str(raised.value)
+    assert "Unauthorized" not in str(raised.value)
+    assert "neo4j_code" not in str(raised.value)
+
+
 def test_no_data_in_the_graph_is_content_not_a_failure(restore_rag) -> None:
     """Retrieval ran and found nothing. That is an answer, and the caller must get it as one."""
-    result = call_over_mcp(AnsweringRag("Brak danych w grafie wiedzy dla tego pytania."))
+    result = call_over_mcp(AnsweringRag(NO_DATA_ANSWER))
 
     assert not result.is_error
-    assert [block.text for block in result.content] == [
-        "Brak danych w grafie wiedzy dla tego pytania."
-    ]
+    assert [block.text for block in result.content] == [NO_DATA_ANSWER]
