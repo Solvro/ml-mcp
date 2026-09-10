@@ -458,6 +458,13 @@ placed on purpose and is left alone, and a key claimed by two different real lab
 ambiguous and is skipped — fusing two entities is worse than a duplicate, and nothing in the
 pass can tell which one the fallback node meant. The count is reported as `fallback_merged`.
 
+Both merges pass `produceSelfRel: false`. APOC would otherwise turn a relationship *between*
+the two nodes being merged into a self-loop on the survivor, and the model has been seen
+relating a category to a sub-item whose titles canonicalise to the same key, so a `Topic` copy
+linked to its labelled twin is a live case, not a hypothetical one. Existing self-loops written
+at ingestion (the same key collapse happening within one page) are a separate defect the pass
+leaves alone.
+
 ### Text2Cypher Search Normalization
 
 - The Cypher prompt receives both the original Polish question and a lowercase,

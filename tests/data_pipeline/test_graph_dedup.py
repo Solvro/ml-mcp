@@ -246,6 +246,12 @@ def test_the_fallback_fold_targets_only_pure_fallback_nodes_and_one_real_label()
     )
 
 
+def test_neither_merge_turns_a_relationship_between_the_pair_into_a_self_loop() -> None:
+    for cypher in (graph_dedup.MERGE_DUPLICATES_CYPHER, graph_dedup.merge_fallback_cypher("Topic")):
+        assert "produceSelfRel: false" in cypher
+        assert "mergeRels: true" in cypher, "the absorbed node's other relationships must move"
+
+
 def test_the_fallback_fold_runs_after_the_same_label_merge(vocabulary) -> None:
     graph = FakeGraph(
         merge_result=[{"merged_groups": 1}], fallback_merge_result=[{"merged_groups": 2}]

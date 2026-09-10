@@ -50,7 +50,8 @@ WITH nodes,
      reduce(kept = [], candidate IN [item IN nodes | coalesce(item.context, '')] |
             CASE WHEN candidate = '' OR candidate IN kept THEN kept ELSE kept + candidate END)
             AS contexts
-CALL apoc.refactor.mergeNodes(nodes, {properties: 'discard', mergeRels: true})
+CALL apoc.refactor.mergeNodes(
+    nodes, {properties: 'discard', mergeRels: true, produceSelfRel: false})
 YIELD node AS merged
 SET merged.title = best_title,
     merged.context = substring(
