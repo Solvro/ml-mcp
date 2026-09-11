@@ -782,7 +782,26 @@ because a shutdown derailed by its own cleanup is worse than a leaked socket.
 `SessionManager` is thread-safe in-memory storage (dict + `threading.Lock`). Not persisted across restarts. Suitable for single-instance deployments only.
 
 ### Multi-LLM Fallback
-The system tries LLM providers in order: OpenAI → DeepSeek → Google Gemini. Configured in `graph_config.yaml` under `llm.fast_model` and `llm.accurate_model`.
+
+Providers are tried in order — OpenAI → DeepSeek → Google Gemini — filtered to the keys present
+in the environment (`llm.provider_fallback_order`; model names in `llm.fast_model` /
+`llm.accurate_model`). Only `PROVIDER_FALLBACK_EXCEPTIONS` hand over to the next provider; a
+rejected key or a malformed request fails loudly rather than costing a second call.
+
+Clients are built with `max_retries=0` and that stays: resilience is the switch, not a retry
+against a provider that is already failing. **Unless there is nothing to switch to** — production
+sets only `OPENAI_API_KEY`, so the chain is one element long, `with_fallbacks` is never applied,
+and one dropped connection was one dropped user request.
+`_invoke_with_single_provider_retry` repeats the call once, only when `self.single_provider`
+(read once in `__init__`, beside the chain whose shape it describes), and only for
+`guardrails_system` and `generate_cypher` — `grade_context` already fails open.
+
+A timeout and a 429 are deliberately not repeated. `APITimeoutError` has already spent the full
+`llm_timeout_seconds`, and a second one inside a graph budget shared by three model calls reports
+the same failure as a pipeline timeout instead; it subclasses `APIConnectionError`, so
+`_is_worth_one_retry` has to exclude it by name. `RateLimitError` needs the `Retry-After` header
+that only the SDK reads, so a single-provider setup under a rate limit loses the request — the
+fix for that is a second key, not a second attempt.
 
 ---
 

@@ -69,6 +69,15 @@ PROVIDER_FALLBACK_EXCEPTIONS = (
     InternalServerError,
     GoogleServerError,
 )
+SINGLE_PROVIDER_RETRY_EXCEPTIONS = (APIConnectionError, InternalServerError, GoogleServerError)
+
+
+def _is_worth_one_retry(exc: Exception) -> bool:
+    """Report whether a failure is a blip a single-provider setup should repeat."""
+    if isinstance(exc, APITimeoutError):
+        return False
+    return isinstance(exc, SINGLE_PROVIDER_RETRY_EXCEPTIONS)
+
 
 GUARDRAIL_DECISION_ALIASES = {
     "generate": "generate_cypher",
@@ -275,6 +284,7 @@ class RAG:
                 self.neo4j_max_transaction_retry_sec,
             )
 
+        self.single_provider = len(self._get_configured_providers()) == 1
         self.fast_llm = self._build_llm_with_fallback(use_accurate=False)
         self.cypher_llm = self._build_llm_with_fallback(use_accurate=True)
 
@@ -452,6 +462,42 @@ class RAG:
             secondaries,
             exceptions_to_handle=PROVIDER_FALLBACK_EXCEPTIONS,
         )
+
+    def _invoke_with_single_provider_retry(
+        self,
+        chain: Any,
+        payload: dict[str, Any],
+        invoke_config: dict[str, Any],
+        *,
+        operation_name: str,
+    ) -> str:
+        """
+        Run one required LLM call, repeating a blip when nothing else could have answered.
+
+        Args:
+            chain: Prompt-to-string runnable for this call
+            payload: Prompt variables
+            invoke_config: LangChain invoke config carrying the Langfuse context
+            operation_name: Name of the call, for the log line
+
+        Returns:
+            The model's reply
+
+        Raises:
+            Exception: Whatever the provider raised - when another provider could take over,
+                when the failure is not worth repeating, or when the repeat failed too
+        """
+        try:
+            return chain.invoke(payload, config=invoke_config)
+        except PROVIDER_FALLBACK_EXCEPTIONS as exc:
+            if not self.single_provider or not _is_worth_one_retry(exc):
+                raise
+            logger.warning(
+                "%s hit a transient LLM error with a single provider configured; retrying once: %s",
+                operation_name,
+                exc,
+            )
+            return chain.invoke(payload, config=invoke_config)
 
     def _init_schema_cache(self) -> None:
         """
@@ -860,15 +906,17 @@ class RAG:
             }
 
         chain = self.generate_cypher_template | self.cypher_llm | StrOutputParser()
-        generated_cypher = chain.invoke(
-            self._build_cypher_prompt_payload(state["user_question"], schema),
-            config=self._get_invoke_config(
+        generated_cypher = self._invoke_with_single_provider_retry(
+            chain=chain,
+            payload=self._build_cypher_prompt_payload(state["user_question"], schema),
+            invoke_config=self._get_invoke_config(
                 trace_id=state.get("trace_id"),
                 tags=["knowledge_graph", "generated_cypher"],
                 run_name="Generate Cypher",
                 handler=state.get("callback_handler"),
                 session_id=state.get("session_id"),
             ),
+            operation_name="Generate Cypher",
         )
 
         return {"generated_cypher": generated_cypher, "next_node": "retrieve"}
@@ -1132,16 +1180,17 @@ class RAG:
             Updated state with next node decision
         """
         guardrails_chain = self.guard_rails_template | self.fast_llm | StrOutputParser()
-
-        guardrail_output = guardrails_chain.invoke(
-            {"user_question": state["user_question"]},
-            config=self._get_invoke_config(
+        guardrail_output = self._invoke_with_single_provider_retry(
+            chain=guardrails_chain,
+            payload={"user_question": state["user_question"]},
+            invoke_config=self._get_invoke_config(
                 trace_id=state.get("trace_id"),
                 tags=["knowledge_graph", "guardrails"],
                 run_name="Guardrails",
                 handler=state.get("callback_handler"),
                 session_id=state.get("session_id"),
             ),
+            operation_name="Guardrails",
         )
         guardrail_result = self._parse_guardrail_output(guardrail_output)
 
