@@ -196,6 +196,15 @@ class KnowledgeGraphQueryError(RuntimeError):
         self.cypher = cypher
 
 
+class LLMUnavailableError(RuntimeError):
+    """Raised when required LLM calls could not be completed."""
+
+    def __init__(self, reason: str, *, timed_out: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.timed_out = timed_out
+
+
 class RAG:
     """Retrieval-Augmented Generation system with Neo4j graph database backend."""
 
@@ -484,20 +493,34 @@ class RAG:
             The model's reply
 
         Raises:
-            Exception: Whatever the provider raised - when another provider could take over,
-                when the failure is not worth repeating, or when the repeat failed too
+            LLMUnavailableError: The model call failed and the run cannot continue
         """
         try:
             return chain.invoke(payload, config=invoke_config)
-        except PROVIDER_FALLBACK_EXCEPTIONS as exc:
-            if not self.single_provider or not _is_worth_one_retry(exc):
-                raise
-            logger.warning(
-                "%s hit a transient LLM error with a single provider configured; retrying once: %s",
-                operation_name,
-                exc,
-            )
-            return chain.invoke(payload, config=invoke_config)
+        except Exception as exc:
+            if self.single_provider and _is_worth_one_retry(exc):
+                logger.warning(
+                    "%s hit a transient LLM error with a single provider configured; "
+                    "retrying once: %s",
+                    operation_name,
+                    exc,
+                )
+                try:
+                    return chain.invoke(payload, config=invoke_config)
+                except Exception as retry_exc:
+                    logger.error(
+                        "%s failed after single-provider retry: %s", operation_name, retry_exc
+                    )
+                    raise LLMUnavailableError(
+                        f"{operation_name}: {retry_exc}",
+                        timed_out=isinstance(retry_exc, APITimeoutError),
+                    ) from retry_exc
+
+            logger.error("%s failed: %s", operation_name, exc)
+            raise LLMUnavailableError(
+                f"{operation_name}: {exc}",
+                timed_out=isinstance(exc, APITimeoutError),
+            ) from exc
 
     def _init_schema_cache(self) -> None:
         """

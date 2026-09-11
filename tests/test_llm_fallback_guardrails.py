@@ -16,6 +16,7 @@ from src.mcp_server.tools.knowledge_graph.rag import (
     PROVIDER_FALLBACK_EXCEPTIONS,
     RAG,
     LLMProvider,
+    LLMUnavailableError,
 )
 
 
@@ -181,19 +182,21 @@ def test_a_blip_is_retried_when_no_provider_can_take_over() -> None:
 def test_the_retry_is_made_once_and_then_gives_up() -> None:
     chain = CountingChain(failures=2)
 
-    with pytest.raises(APIConnectionError):
+    with pytest.raises(LLMUnavailableError) as raised:
         _invoke_with_retry(chain, single_provider=True)
 
     assert chain.calls == 2
+    assert isinstance(raised.value.__cause__, APIConnectionError)
 
 
 def test_a_chain_that_can_switch_providers_is_left_alone() -> None:
     chain = CountingChain(failures=1)
 
-    with pytest.raises(APIConnectionError):
+    with pytest.raises(LLMUnavailableError) as raised:
         _invoke_with_retry(chain, single_provider=False)
 
     assert chain.calls == 1
+    assert isinstance(raised.value.__cause__, APIConnectionError)
 
 
 def test_a_timed_out_call_is_not_repeated() -> None:
@@ -202,10 +205,12 @@ def test_a_timed_out_call_is_not_repeated() -> None:
         error=APITimeoutError(request=httpx.Request("POST", "https://api.openai.test/v1")),
     )
 
-    with pytest.raises(APITimeoutError):
+    with pytest.raises(LLMUnavailableError) as raised:
         _invoke_with_retry(chain, single_provider=True)
 
     assert chain.calls == 1
+    assert raised.value.timed_out
+    assert isinstance(raised.value.__cause__, APITimeoutError)
 
 
 def test_a_rate_limit_is_not_repeated_immediately() -> None:
@@ -220,10 +225,12 @@ def test_a_rate_limit_is_not_repeated_immediately() -> None:
         ),
     )
 
-    with pytest.raises(RateLimitError):
+    with pytest.raises(LLMUnavailableError) as raised:
         _invoke_with_retry(chain, single_provider=True)
 
     assert chain.calls == 1
+    assert not raised.value.timed_out
+    assert isinstance(raised.value.__cause__, RateLimitError)
 
 
 def test_a_client_error_is_never_repeated() -> None:
@@ -238,7 +245,9 @@ def test_a_client_error_is_never_repeated() -> None:
         ),
     )
 
-    with pytest.raises(AuthenticationError):
+    with pytest.raises(LLMUnavailableError) as raised:
         _invoke_with_retry(chain, single_provider=True)
 
     assert chain.calls == 1
+    assert not raised.value.timed_out
+    assert isinstance(raised.value.__cause__, AuthenticationError)

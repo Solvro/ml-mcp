@@ -768,6 +768,11 @@ backend would have handed to the answering model as grounding. Neither is conten
 empty result, and a rejected retry must not turn that result into an error (#3 is where a
 failed primary query should be escalated rather than reported).
 
+A *model* that could not answer is a third failure with the same rule. A required LLM call that
+fails raises `LLMUnavailableError`, which the server maps to `LLM_UNAVAILABLE_MESSAGE` — or
+`LLM_CALL_TIMEOUT_MESSAGE` when it timed out — keeping the provider's own text in the log. Only
+`guardrails_system` and `generate_cypher` raise it; `grade_context` fails open.
+
 Both consumers of the tool had to learn the difference. `topwr_api` already caught the
 exception. The `kg` CLI did not, and a raised `ToolError` would have surfaced as a traceback, so
 it now prints the failure to **stderr** and exits non-zero — the answer owns stdout, and anything
