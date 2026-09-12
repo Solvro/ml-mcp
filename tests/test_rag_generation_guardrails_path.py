@@ -1,10 +1,16 @@
 from typing import Any
 
+import httpx
 import pytest
 from langchain_core.runnables import RunnableLambda
 from neo4j.exceptions import ClientError, ServiceUnavailable
+from openai import APIConnectionError
 
-from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphUnavailableError
+from src.mcp_server.tools.knowledge_graph.rag import (
+    RAG,
+    KnowledgeGraphUnavailableError,
+    LLMUnavailableError,
+)
 
 QUESTION = "Kto wykłada analizę matematyczną?"
 SCHEMA_TEXT = "Node properties: Course\nRelationship properties: TEACHES\nThe relationships: X"
@@ -29,20 +35,22 @@ class FakeSchemaDatabase:
 class RecordingLLM:
     """Chat-model stand-in that records the rendered prompt and returns a canned reply."""
 
-    def __init__(self, reply: str) -> None:
+    def __init__(self, reply: str | Exception) -> None:
         self.reply = reply
         self.prompts: list[str] = []
 
     def as_runnable(self) -> RunnableLambda:
         def _invoke(prompt_value: Any, config: dict[str, Any] | None = None) -> str:
             self.prompts.append(prompt_value.to_string())
+            if isinstance(self.reply, Exception):
+                raise self.reply
             return self.reply
 
         return RunnableLambda(_invoke)
 
 
 def _rag_stub(
-    reply: str, schema: str = SCHEMA_TEXT, refresh_error: Exception | None = None
+    reply: str | Exception, schema: str = SCHEMA_TEXT, refresh_error: Exception | None = None
 ) -> tuple[RAG, RecordingLLM, list[dict[str, Any]]]:
     """Build a RAG instance without running __init__ (no network, no LLM clients).
 
@@ -53,6 +61,7 @@ def _rag_stub(
     rag._init_schema_cache()
     rag.database = FakeSchemaDatabase(schema, refresh_error=refresh_error)
     rag._initialize_prompt_templates()
+    rag.single_provider = False
 
     llm = RecordingLLM(reply)
     rag.fast_llm = llm.as_runnable()
@@ -152,6 +161,18 @@ def test_generate_cypher_propagates_tracing_context():
     ]
 
 
+def test_generate_cypher_raises_llm_unavailable_on_provider_error() -> None:
+    rag, _, _ = _rag_stub(
+        reply=APIConnectionError(request=httpx.Request("POST", "https://api.openai.test/v1"))
+    )
+    rag.single_provider = False
+
+    with pytest.raises(LLMUnavailableError, match="Generate Cypher") as raised:
+        rag.generate_cypher({"user_question": QUESTION})
+
+    assert isinstance(raised.value.__cause__, APIConnectionError)
+
+
 @pytest.mark.parametrize(
     ("llm_reply", "expected_decision"),
     [
@@ -221,3 +242,15 @@ def test_guardrails_propagates_tracing_context():
             "session_id": "session-1",
         }
     ]
+
+
+def test_guardrails_raises_llm_unavailable_on_provider_error() -> None:
+    rag, _, _ = _rag_stub(
+        reply=APIConnectionError(request=httpx.Request("POST", "https://api.openai.test/v1"))
+    )
+    rag.single_provider = False
+
+    with pytest.raises(LLMUnavailableError, match="Guardrails") as raised:
+        rag.guardrails_system({"user_question": QUESTION})
+
+    assert isinstance(raised.value.__cause__, APIConnectionError)

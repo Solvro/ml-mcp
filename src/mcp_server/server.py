@@ -18,12 +18,15 @@ from ..config.messages import (
     GRAPH_PIPELINE_TIMEOUT_MESSAGE,
     GRAPH_QUERY_FAILED_MESSAGE,
     GRAPH_UNAVAILABLE_MESSAGE,
+    LLM_CALL_TIMEOUT_MESSAGE,
+    LLM_UNAVAILABLE_MESSAGE,
 )
 from ..config.timeouts import get_graph_timeout_seconds, get_llm_timeout_seconds
 from .tools.knowledge_graph.rag import (
     RAG,
     KnowledgeGraphQueryError,
     KnowledgeGraphUnavailableError,
+    LLMUnavailableError,
 )
 
 load_dotenv()
@@ -168,10 +171,10 @@ async def knowledge_graph_tool(
         AI-generated instructions based on knowledge graph data
 
     Raises:
-        ToolError: The graph could not be consulted - no RAG, an unreachable database, a
-            pipeline that timed out, or generated Cypher that the guardrail refused or Neo4j
-            rejected. Reported as a failed tool call so the caller can tell it apart from an
-            answer; "no data in the graph" is an answer and comes back normally.
+        ToolError: The run could not be completed - no RAG, a provider outage, an unreachable
+            database, a pipeline timeout, or generated Cypher that the guardrail refused or
+            Neo4j rejected. Reported as a failed tool call so the caller can tell it apart from
+            an answer; "no data in the graph" is an answer and comes back normally.
     """
     if rag is None:
         raise ToolError("Knowledge graph unavailable: the server has no initialized RAG.")
@@ -190,6 +193,10 @@ async def knowledge_graph_tool(
         )
     except TimeoutError as exc:
         raise ToolError(GRAPH_PIPELINE_TIMEOUT_MESSAGE) from exc
+    except LLMUnavailableError as exc:
+        logger.error("LLM unavailable: %s", exc.reason)
+        message = LLM_CALL_TIMEOUT_MESSAGE if exc.timed_out else LLM_UNAVAILABLE_MESSAGE
+        raise ToolError(message) from exc
     except KnowledgeGraphUnavailableError as exc:
         logger.error("Knowledge graph unavailable: %s", exc)
         raise ToolError(GRAPH_UNAVAILABLE_MESSAGE) from exc

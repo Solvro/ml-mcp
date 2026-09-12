@@ -7,10 +7,12 @@ import time
 from enum import Enum
 from typing import Any, Dict, List
 
+from google.genai.errors import APIError as GoogleAPIError
 from google.genai.errors import ServerError as GoogleServerError
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
@@ -23,6 +25,7 @@ from neo4j.exceptions import (
     TransientError,
 )
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+from openai import APIError as OpenAIAPIError
 
 from ....config.config import get_config
 from ....config.messages import (
@@ -69,6 +72,16 @@ PROVIDER_FALLBACK_EXCEPTIONS = (
     InternalServerError,
     GoogleServerError,
 )
+SINGLE_PROVIDER_RETRY_EXCEPTIONS = (APIConnectionError, InternalServerError, GoogleServerError)
+PROVIDER_EXCEPTIONS = (OpenAIAPIError, GoogleAPIError, ChatGoogleGenerativeAIError)
+
+
+def _is_worth_one_retry(exc: Exception) -> bool:
+    """Report whether a failure is a blip a single-provider setup should repeat."""
+    if isinstance(exc, APITimeoutError):
+        return False
+    return isinstance(exc, SINGLE_PROVIDER_RETRY_EXCEPTIONS)
+
 
 GUARDRAIL_DECISION_ALIASES = {
     "generate": "generate_cypher",
@@ -187,6 +200,15 @@ class KnowledgeGraphQueryError(RuntimeError):
         self.cypher = cypher
 
 
+class LLMUnavailableError(RuntimeError):
+    """Raised when required LLM calls could not be completed."""
+
+    def __init__(self, reason: str, *, timed_out: bool = False) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.timed_out = timed_out
+
+
 class RAG:
     """Retrieval-Augmented Generation system with Neo4j graph database backend."""
 
@@ -275,6 +297,7 @@ class RAG:
                 self.neo4j_max_transaction_retry_sec,
             )
 
+        self.single_provider = len(self._get_configured_providers()) == 1
         self.fast_llm = self._build_llm_with_fallback(use_accurate=False)
         self.cypher_llm = self._build_llm_with_fallback(use_accurate=True)
 
@@ -452,6 +475,57 @@ class RAG:
             secondaries,
             exceptions_to_handle=PROVIDER_FALLBACK_EXCEPTIONS,
         )
+
+    def _invoke_with_single_provider_retry(
+        self,
+        chain: Any,
+        payload: dict[str, Any],
+        invoke_config: dict[str, Any],
+        *,
+        operation_name: str,
+    ) -> str:
+        """
+        Run one required LLM call, repeating a blip when nothing else could have answered.
+
+        Args:
+            chain: Prompt-to-string runnable for this call
+            payload: Prompt variables
+            invoke_config: LangChain invoke config carrying the Langfuse context
+            operation_name: Name of the call, for the log line
+
+        Returns:
+            The model's reply
+
+        Raises:
+            LLMUnavailableError: The model call failed and the run cannot continue. Anything
+                outside PROVIDER_EXCEPTIONS propagates untouched - it is a bug, not an outage
+        """
+        try:
+            return chain.invoke(payload, config=invoke_config)
+        except PROVIDER_EXCEPTIONS as exc:
+            if self.single_provider and _is_worth_one_retry(exc):
+                logger.warning(
+                    "%s hit a transient LLM error with a single provider configured; "
+                    "retrying once: %s",
+                    operation_name,
+                    exc,
+                )
+                try:
+                    return chain.invoke(payload, config=invoke_config)
+                except PROVIDER_EXCEPTIONS as retry_exc:
+                    logger.error(
+                        "%s failed after single-provider retry: %s", operation_name, retry_exc
+                    )
+                    raise LLMUnavailableError(
+                        f"{operation_name}: {retry_exc}",
+                        timed_out=isinstance(retry_exc, APITimeoutError),
+                    ) from retry_exc
+
+            logger.error("%s failed: %s", operation_name, exc)
+            raise LLMUnavailableError(
+                f"{operation_name}: {exc}",
+                timed_out=isinstance(exc, APITimeoutError),
+            ) from exc
 
     def _init_schema_cache(self) -> None:
         """
@@ -860,15 +934,17 @@ class RAG:
             }
 
         chain = self.generate_cypher_template | self.cypher_llm | StrOutputParser()
-        generated_cypher = chain.invoke(
-            self._build_cypher_prompt_payload(state["user_question"], schema),
-            config=self._get_invoke_config(
+        generated_cypher = self._invoke_with_single_provider_retry(
+            chain=chain,
+            payload=self._build_cypher_prompt_payload(state["user_question"], schema),
+            invoke_config=self._get_invoke_config(
                 trace_id=state.get("trace_id"),
                 tags=["knowledge_graph", "generated_cypher"],
                 run_name="Generate Cypher",
                 handler=state.get("callback_handler"),
                 session_id=state.get("session_id"),
             ),
+            operation_name="Generate Cypher",
         )
 
         return {"generated_cypher": generated_cypher, "next_node": "retrieve"}
@@ -1132,16 +1208,17 @@ class RAG:
             Updated state with next node decision
         """
         guardrails_chain = self.guard_rails_template | self.fast_llm | StrOutputParser()
-
-        guardrail_output = guardrails_chain.invoke(
-            {"user_question": state["user_question"]},
-            config=self._get_invoke_config(
+        guardrail_output = self._invoke_with_single_provider_retry(
+            chain=guardrails_chain,
+            payload={"user_question": state["user_question"]},
+            invoke_config=self._get_invoke_config(
                 trace_id=state.get("trace_id"),
                 tags=["knowledge_graph", "guardrails"],
                 run_name="Guardrails",
                 handler=state.get("callback_handler"),
                 session_id=state.get("session_id"),
             ),
+            operation_name="Guardrails",
         )
         guardrail_result = self._parse_guardrail_output(guardrail_output)
 

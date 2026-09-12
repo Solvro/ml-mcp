@@ -4,6 +4,10 @@ GRAPH_PIPELINE_TIMEOUT_MESSAGE = (
     "The knowledge graph pipeline exceeded the maximum allowed wait time."
 )
 LLM_CALL_TIMEOUT_MESSAGE = "The language model request exceeded the maximum allowed wait time."
+# Raised as a ToolError when no configured provider could answer a required model call.
+# Fixed for the same reason as the graph messages: provider text can include endpoints, models
+# and account details, and this reaches a student-facing API.
+LLM_UNAVAILABLE_MESSAGE = "The language model provider could not be reached."
 
 # Raised as a ToolError when Neo4j could not be consulted at all. Fixed on purpose: the driver's
 # own text names codes, hosts and auth failures, and this reaches a student-facing API.

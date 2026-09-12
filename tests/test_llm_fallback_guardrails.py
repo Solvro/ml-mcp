@@ -1,13 +1,23 @@
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-from openai import APITimeoutError, AuthenticationError, BadRequestError, RateLimitError
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+from openai import (
+    APIConnectionError,
+    APITimeoutError,
+    AuthenticationError,
+    BadRequestError,
+    RateLimitError,
+)
 
 from src.mcp_server.tools.knowledge_graph.rag import (
     PROVIDER_FALLBACK_EXCEPTIONS,
     RAG,
     LLMProvider,
+    LLMUnavailableError,
 )
 
 
@@ -122,3 +132,144 @@ def test_deepseek_client_uses_its_own_model_and_base_url(
     assert kwargs["model"] == "deepseek-accurate"
     assert kwargs["base_url"] == "https://api.deepseek.test"
     assert kwargs["timeout"] == 30.0
+
+
+@pytest.mark.parametrize("provider", list(LLMProvider))
+@patch("src.mcp_server.tools.knowledge_graph.rag.ChatGoogleGenerativeAI")
+@patch("src.mcp_server.tools.knowledge_graph.rag.BaseChatOpenAI")
+def test_clients_keep_the_sdk_retry_budget_at_zero(
+    mock_openai: MagicMock, mock_google: MagicMock, provider: LLMProvider
+) -> None:
+    _rag_stub()._build_chat_model(provider)
+
+    client = mock_google if provider is LLMProvider.GOOGLE else mock_openai
+    assert client.call_args.kwargs["max_retries"] == 0
+
+
+ANSWER = "answer"
+TRANSIENT_ERROR = APIConnectionError(request=httpx.Request("POST", "https://api.openai.test/v1"))
+
+
+class CountingChain:
+    """Chain stand-in that fails a fixed number of times, then answers."""
+
+    def __init__(self, failures: int, error: Exception = TRANSIENT_ERROR) -> None:
+        self.failures = failures
+        self.error = error
+        self.calls = 0
+
+    def invoke(self, payload: dict[str, Any], config: dict[str, Any] | None = None) -> str:
+        self.calls += 1
+        if self.calls <= self.failures:
+            raise self.error
+        return ANSWER
+
+
+def _invoke_with_retry(chain: CountingChain, *, single_provider: bool) -> str:
+    rag = _rag_stub()
+    rag.single_provider = single_provider
+    return rag._invoke_with_single_provider_retry(
+        chain=chain, payload={}, invoke_config={}, operation_name="Guardrails"
+    )
+
+
+def test_a_blip_is_retried_when_no_provider_can_take_over() -> None:
+    chain = CountingChain(failures=1)
+
+    assert _invoke_with_retry(chain, single_provider=True) == ANSWER
+    assert chain.calls == 2
+
+
+def test_the_retry_is_made_once_and_then_gives_up() -> None:
+    chain = CountingChain(failures=2)
+
+    with pytest.raises(LLMUnavailableError) as raised:
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 2
+    assert isinstance(raised.value.__cause__, APIConnectionError)
+
+
+def test_a_chain_that_can_switch_providers_is_left_alone() -> None:
+    chain = CountingChain(failures=1)
+
+    with pytest.raises(LLMUnavailableError) as raised:
+        _invoke_with_retry(chain, single_provider=False)
+
+    assert chain.calls == 1
+    assert isinstance(raised.value.__cause__, APIConnectionError)
+
+
+def test_a_timed_out_call_is_not_repeated() -> None:
+    chain = CountingChain(
+        failures=1,
+        error=APITimeoutError(request=httpx.Request("POST", "https://api.openai.test/v1")),
+    )
+
+    with pytest.raises(LLMUnavailableError) as raised:
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 1
+    assert raised.value.timed_out
+    assert isinstance(raised.value.__cause__, APITimeoutError)
+
+
+def test_a_rate_limit_is_not_repeated_immediately() -> None:
+    chain = CountingChain(
+        failures=1,
+        error=RateLimitError(
+            "rate limited",
+            response=httpx.Response(
+                429, request=httpx.Request("POST", "https://api.openai.test/v1")
+            ),
+            body=None,
+        ),
+    )
+
+    with pytest.raises(LLMUnavailableError) as raised:
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 1
+    assert not raised.value.timed_out
+    assert isinstance(raised.value.__cause__, RateLimitError)
+
+
+def test_a_client_error_is_never_repeated() -> None:
+    chain = CountingChain(
+        failures=1,
+        error=AuthenticationError(
+            "invalid api key",
+            response=httpx.Response(
+                401, request=httpx.Request("POST", "https://api.openai.test/v1")
+            ),
+            body=None,
+        ),
+    )
+
+    with pytest.raises(LLMUnavailableError) as raised:
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 1
+    assert not raised.value.timed_out
+    assert isinstance(raised.value.__cause__, AuthenticationError)
+
+
+def test_a_programming_error_is_not_reported_as_an_outage() -> None:
+    chain = CountingChain(failures=1, error=KeyError("schema"))
+
+    with pytest.raises(KeyError):
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 1
+
+
+def test_a_wrapped_google_client_error_is_an_outage() -> None:
+    chain = CountingChain(
+        failures=1, error=ChatGoogleGenerativeAIError("Error calling model 'gemini' (401)")
+    )
+
+    with pytest.raises(LLMUnavailableError) as raised:
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 1
+    assert isinstance(raised.value.__cause__, ChatGoogleGenerativeAIError)
