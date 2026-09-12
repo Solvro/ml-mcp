@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -251,3 +252,24 @@ def test_a_client_error_is_never_repeated() -> None:
     assert chain.calls == 1
     assert not raised.value.timed_out
     assert isinstance(raised.value.__cause__, AuthenticationError)
+
+
+def test_a_programming_error_is_not_reported_as_an_outage() -> None:
+    chain = CountingChain(failures=1, error=KeyError("schema"))
+
+    with pytest.raises(KeyError):
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 1
+
+
+def test_a_wrapped_google_client_error_is_an_outage() -> None:
+    chain = CountingChain(
+        failures=1, error=ChatGoogleGenerativeAIError("Error calling model 'gemini' (401)")
+    )
+
+    with pytest.raises(LLMUnavailableError) as raised:
+        _invoke_with_retry(chain, single_provider=True)
+
+    assert chain.calls == 1
+    assert isinstance(raised.value.__cause__, ChatGoogleGenerativeAIError)

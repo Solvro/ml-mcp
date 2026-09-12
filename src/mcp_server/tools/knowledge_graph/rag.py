@@ -7,10 +7,12 @@ import time
 from enum import Enum
 from typing import Any, Dict, List
 
+from google.genai.errors import APIError as GoogleAPIError
 from google.genai.errors import ServerError as GoogleServerError
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
 from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
@@ -23,6 +25,7 @@ from neo4j.exceptions import (
     TransientError,
 )
 from openai import APIConnectionError, APITimeoutError, InternalServerError, RateLimitError
+from openai import APIError as OpenAIAPIError
 
 from ....config.config import get_config
 from ....config.messages import (
@@ -70,6 +73,7 @@ PROVIDER_FALLBACK_EXCEPTIONS = (
     GoogleServerError,
 )
 SINGLE_PROVIDER_RETRY_EXCEPTIONS = (APIConnectionError, InternalServerError, GoogleServerError)
+PROVIDER_EXCEPTIONS = (OpenAIAPIError, GoogleAPIError, ChatGoogleGenerativeAIError)
 
 
 def _is_worth_one_retry(exc: Exception) -> bool:
@@ -493,11 +497,12 @@ class RAG:
             The model's reply
 
         Raises:
-            LLMUnavailableError: The model call failed and the run cannot continue
+            LLMUnavailableError: The model call failed and the run cannot continue. Anything
+                outside PROVIDER_EXCEPTIONS propagates untouched - it is a bug, not an outage
         """
         try:
             return chain.invoke(payload, config=invoke_config)
-        except Exception as exc:
+        except PROVIDER_EXCEPTIONS as exc:
             if self.single_provider and _is_worth_one_retry(exc):
                 logger.warning(
                     "%s hit a transient LLM error with a single provider configured; "
@@ -507,7 +512,7 @@ class RAG:
                 )
                 try:
                     return chain.invoke(payload, config=invoke_config)
-                except Exception as retry_exc:
+                except PROVIDER_EXCEPTIONS as retry_exc:
                     logger.error(
                         "%s failed after single-provider retry: %s", operation_name, retry_exc
                     )
