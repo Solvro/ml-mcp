@@ -150,6 +150,20 @@ def _is_neo4j_query_timeout(exc: Exception) -> bool:
     )
 
 
+# Neo4j refused the statement itself: a syntax error, an undefined variable, a type mismatch. It
+# says the model wrote bad Cypher and nothing about the graph, which is why such a failure is
+# escalated to the label-agnostic search rather than reported (issue #3). Schema.* and
+# Procedure.* codes are not in this family - they name something missing in the database.
+NEO4J_STATEMENT_ERROR_CODE_PREFIX = "Neo.ClientError.Statement."
+
+
+def _is_neo4j_statement_error(exc: Exception) -> bool:
+    """Report whether Neo4j rejected the generated statement as malformed."""
+    return isinstance(exc, ClientError) and str(getattr(exc, "code", "")).startswith(
+        NEO4J_STATEMENT_ERROR_CODE_PREFIX
+    )
+
+
 class LLMProvider(Enum):
     """Available LLM providers for the runtime fallback chain."""
 
@@ -164,6 +178,9 @@ class RetrievalStrategy(Enum):
     PRIMARY = "primary"
     REPAIRED_LITERALS = "repaired_literals"
     LABEL_AGNOSTIC_PHRASES = "label_agnostic_phrases"
+    # The model's Cypher was rejected by Neo4j and the full-text search answered instead. Kept
+    # distinct from LABEL_AGNOSTIC_PHRASES so a log or trace shows that no primary query ran.
+    LABEL_AGNOSTIC_AFTER_ERROR = "label_agnostic_after_error"
     GRADED_OUT = "graded_out"
     EMPTY = "empty"
 
@@ -926,8 +943,63 @@ class RAG:
                 logger.error("Neo4j did not finish the query in time: %s", exc)
                 raise KnowledgeGraphUnavailableError(str(exc)) from exc
 
+            if _is_neo4j_statement_error(exc):
+                return self._recover_from_statement_error(cypher_query, user_question, exc)
+
             logger.warning("Cypher execution failed: %s", exc)
             raise KnowledgeGraphQueryError(str(exc), cypher=cypher_query) from exc
+
+    def _recover_from_statement_error(
+        self, cypher_query: str, user_question: str, error: Exception
+    ) -> Dict[str, Any]:
+        """
+        Answer from the label-agnostic search when Neo4j rejected the model's Cypher.
+
+        Issue #3: a syntax or type error in generated Cypher was the single most common way a
+        question whose answer *is* in the graph came back as "no data", and the same question
+        would succeed on the next run. The statement is the model's mistake, not a fact about
+        the graph, so the question is put to the full-text index instead - the one retry that
+        does not depend on the model's query at all. The literal-repair retry is skipped: it is
+        derived from the failed statement and would fail the same way.
+
+        Args:
+            cypher_query: The statement Neo4j rejected
+            user_question: The question it was generated from
+            error: Neo4j's rejection
+
+        Returns:
+            Updated state: the recovered rows under LABEL_AGNOSTIC_AFTER_ERROR, or an empty
+            context when the search ran and matched nothing
+
+        Raises:
+            KnowledgeGraphQueryError: The search is disabled or the question yields nothing to
+                search for, so the failure stands - nothing was put to the graph
+        """
+        if not self._fallback_search_is_possible(user_question):
+            logger.warning("Cypher rejected by Neo4j and no search possible: %s", error)
+            raise KnowledgeGraphQueryError(str(error), cypher=cypher_query) from error
+
+        logger.warning("Cypher rejected by Neo4j; searching every label instead: %s", error)
+        fallback = self._search_every_label(user_question)
+        if fallback is None:
+            logger.info("Label-agnostic search after a rejected statement found nothing")
+            return {
+                "context": [],
+                "generated_cypher": cypher_query,
+                "retrieval_strategy": RetrievalStrategy.EMPTY.value,
+            }
+
+        return {
+            **fallback,
+            "retrieval_strategy": RetrievalStrategy.LABEL_AGNOSTIC_AFTER_ERROR.value,
+        }
+
+    def _fallback_search_is_possible(self, user_question: str) -> bool:
+        """Report whether the label-agnostic search has something it could run for a question."""
+        if not self.enable_fallback_search or not user_question:
+            return False
+        phrases = extract_search_phrases(user_question)
+        return bool(phrases) and bool(build_lucene_query(phrases))
 
     def _escalate_empty_retrieval(self, executed_cypher: str, user_question: str) -> Dict[str, Any]:
         """
