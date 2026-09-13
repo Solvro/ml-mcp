@@ -20,10 +20,16 @@ from fastmcp.exceptions import ToolError
 from starlette.testclient import TestClient
 
 import src.mcp_server.server as server
-from src.config.messages import GRAPH_QUERY_FAILED_MESSAGE, GRAPH_UNAVAILABLE_MESSAGE
+from src.config.messages import (
+    GRAPH_QUERY_FAILED_MESSAGE,
+    GRAPH_UNAVAILABLE_MESSAGE,
+    LLM_CALL_TIMEOUT_MESSAGE,
+    LLM_UNAVAILABLE_MESSAGE,
+)
 from src.mcp_server.tools.knowledge_graph.rag import (
     KnowledgeGraphQueryError,
     KnowledgeGraphUnavailableError,
+    LLMUnavailableError,
 )
 
 
@@ -186,6 +192,20 @@ def test_tool_raises_on_pipeline_timeout(restore_rag) -> None:
         asyncio.run(server.knowledge_graph_tool.fn("Kto wyklada analize?"))
 
 
+def test_tool_raises_when_the_provider_cannot_be_reached(restore_rag) -> None:
+    server.rag = FailingRag(LLMUnavailableError("Guardrails: Connection error."))
+
+    with pytest.raises(ToolError, match=LLM_UNAVAILABLE_MESSAGE):
+        asyncio.run(server.knowledge_graph_tool.fn("Kto wyklada analize?"))
+
+
+def test_tool_uses_timeout_message_for_provider_timeouts(restore_rag) -> None:
+    server.rag = FailingRag(LLMUnavailableError("Generate Cypher: timeout", timed_out=True))
+
+    with pytest.raises(ToolError, match=LLM_CALL_TIMEOUT_MESSAGE):
+        asyncio.run(server.knowledge_graph_tool.fn("Kto wyklada analize?"))
+
+
 def test_tool_raises_when_the_database_cannot_be_reached(restore_rag) -> None:
     server.rag = FailingRag(KnowledgeGraphUnavailableError(DRIVER_DETAIL))
 
@@ -282,6 +302,18 @@ def test_the_driver_detail_does_not_reach_the_caller(restore_rag) -> None:
     assert GRAPH_UNAVAILABLE_MESSAGE in str(raised.value)
     assert "Unauthorized" not in str(raised.value)
     assert "neo4j_code" not in str(raised.value)
+
+
+PROVIDER_DETAIL = "Connection error while calling https://api.openai.com/v1/chat/completions"
+
+
+def test_the_provider_detail_does_not_reach_the_caller(restore_rag) -> None:
+    with pytest.raises(ToolError) as raised:
+        call_over_mcp(FailingRag(LLMUnavailableError(PROVIDER_DETAIL)))
+
+    assert LLM_UNAVAILABLE_MESSAGE in str(raised.value)
+    assert "api.openai.com" not in str(raised.value)
+    assert "Connection error" not in str(raised.value)
 
 
 def test_no_data_in_the_graph_is_content_not_a_failure(restore_rag) -> None:
