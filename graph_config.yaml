@@ -272,8 +272,9 @@ prompts:
 
     How much to trust the rows depends on "retrieval_strategy":
     - "primary": the query was written directly from the question, so its rows are the answer.
-    - "repaired_literals" or "label_agnostic_phrases": the first query matched nothing, so the
-      search was widened. These rows are CANDIDATES, already filtered by a relevance grader.
+    - "repaired_literals", "label_agnostic_phrases" or "label_agnostic_after_error": the first
+      query matched nothing or could not run, so the search was widened. These rows are
+      CANDIDATES, already filtered by a relevance grader.
       Answer only when a row actually names the entity or carries the fact that was asked for.
       If they are merely on a similar topic, say you do not know.
 

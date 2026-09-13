@@ -78,6 +78,9 @@ def test_retrieve_raises_when_neo4j_is_unreachable():
 
 
 def test_retrieve_raises_a_query_error_for_a_statement_neo4j_rejects():
+    """This stub has the fallback search disabled, so the rejected statement stays a failure;
+    with it enabled it is escalated to the label-agnostic search instead (issue #3, see
+    test_rag_empty_retrieval_escalation)."""
     rag, fake_db = _build_rag_for_test(db_error=_statement_error("invalid input"))
 
     with pytest.raises(KnowledgeGraphQueryError, match="invalid input") as raised:

@@ -480,9 +480,12 @@ leaves alone.
 
 ### Text2Cypher Determinism and Empty-Result Escalation
 
-Both pipeline models run at `temperature: 0` (`llm.fast_model`, `llm.accurate_model`), so the
-same question routes and generates the same Cypher on every run. Do not reintroduce sampling:
-`tests/test_llm_determinism_config.py` fails if either temperature moves off zero.
+Both pipeline models run at `temperature: 0` (`llm.fast_model`, `llm.accurate_model`). That
+narrows the variance; it does not remove it — no provider guarantees identical output for
+identical input, and the same question has been seen to yield a syntactically broken query on
+one run and a valid one a minute later. The escalation below is what makes the *outcome* stable
+when the Cypher is not. Do not reintroduce sampling: `tests/test_llm_determinism_config.py`
+fails if either temperature moves off zero.
 
 A generated query that executes but matches nothing is retried rather than reported as missing
 data, because the two most common Text2Cypher mistakes both surface as zero rows. `retrieve()`
@@ -498,10 +501,20 @@ escalates in `src/mcp_server/tools/knowledge_graph/rag.py`:
    stored under a label the model did not pick. Longer phrases are boosted, and hits scoring
    below `rag.fallback_min_score` never leave the database. Gated by
    `rag.enable_fallback_search`.
+4. **label_agnostic_after_error** — the same search, reached a different way: Neo4j rejected
+   the model's statement (`Neo.ClientError.Statement.*` — a syntax error, an undefined variable,
+   a type mismatch). That says the model wrote bad Cypher and nothing about the graph, so the
+   question is put to the full-text index instead. This was the single most common way an
+   answerable question came back as "no data" (#3). The literal-repair retry is skipped here,
+   since it is derived from the failed statement. When the search is disabled or the question
+   yields no phrases, the failure stands as `KnowledgeGraphQueryError`: nothing was put to the
+   graph, so "no data" would be a claim about it that was never tested.
 
 The chosen step is reported as `metadata.retrieval_strategy` and logged by the MCP server.
-Escalation only follows a *successful* execution — a blocked or failing query is still reported
-as blocked or failed, never retried.
+Escalation otherwise only follows a *successful* execution: a query the guardrail blocks is a
+hard stop, and a database error outside the `Statement.*` family (`Schema.*`, `Procedure.*`)
+names something missing in the database rather than a mistake in the statement, so it is
+reported, not retried.
 
 Phrase extraction never starts or ends a phrase with a Polish question word or function word, so
 `"Co obejmuje udział w konferencjach?"` yields `"udzial w konferencjach"` (the stored title) and

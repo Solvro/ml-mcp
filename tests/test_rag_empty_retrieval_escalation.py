@@ -226,11 +226,77 @@ def test_database_outage_is_not_retried_and_is_propagated() -> None:
     assert len(database.calls) == 1
 
 
-def test_statement_failure_is_not_retried_and_is_a_query_error() -> None:
-    rag, database = _rag_stub([_statement_error("invalid input")])
+# Issue #3: a syntax or type error in the model's Cypher was the most common way a question
+# whose answer is in the graph came back as "no data", and the same question succeeded on the
+# next run. Neo4j rejecting the statement says nothing about the graph, so the question goes to
+# the full-text search instead - the one retry that does not depend on the model's query.
+BROKEN_CYPHER = "MATCH (n) RETURN r.title"
+
+
+def test_a_rejected_statement_is_escalated_to_the_label_agnostic_search() -> None:
+    rag, database = _rag_stub([_statement_error("Variable `r` not defined"), CONFERENCE_ROWS])
+
+    result = rag.retrieve({"generated_cypher": BROKEN_CYPHER, "user_question": CONFERENCE_QUESTION})
+
+    assert result["context"] == CONFERENCE_ROWS
+    assert result["retrieval_strategy"] == "label_agnostic_after_error"
+    assert len(database.calls) == 2
+    assert "db.index.fulltext.queryNodes" in database.calls[1][0]
+    assert result["generated_cypher"] != BROKEN_CYPHER, "the rows came from the search query"
+
+
+def test_the_literal_repair_retry_is_skipped_after_a_rejected_statement() -> None:
+    """That retry is derived from the failed statement and would fail the same way."""
+    rag, database = _rag_stub([_statement_error("invalid input"), CRITERIA_ROWS])
+
+    result = rag.retrieve(
+        {"generated_cypher": QUESTION_LITERAL_CYPHER, "user_question": CRITERIA_QUESTION}
+    )
+
+    assert result["retrieval_strategy"] == "label_agnostic_after_error"
+    assert len(database.calls) == 2
+    assert "db.index.fulltext.queryNodes" in database.calls[1][0]
+
+
+def test_a_rejected_statement_whose_search_finds_nothing_is_an_empty_result() -> None:
+    """The search ran against the graph and matched nothing: that is "no data", honestly."""
+    rag, database = _rag_stub([_statement_error("invalid input"), [], []])
+
+    result = rag.retrieve({"generated_cypher": BROKEN_CYPHER, "user_question": CONFERENCE_QUESTION})
+
+    assert result["context"] == []
+    assert result["retrieval_strategy"] == "empty"
+    assert len(database.calls) == 3, "primary, search, search again after the index re-check"
+
+
+def test_a_rejected_statement_stays_a_query_error_when_the_search_is_disabled() -> None:
+    """With nothing to escalate to, the failure stands: nothing was put to the graph."""
+    rag, database = _rag_stub([_statement_error("invalid input")], enable_fallback_search=False)
 
     with pytest.raises(KnowledgeGraphQueryError, match="invalid input"):
-        rag.retrieve({"generated_cypher": WRONG_LABEL_CYPHER, "user_question": CONFERENCE_QUESTION})
+        rag.retrieve({"generated_cypher": BROKEN_CYPHER, "user_question": CONFERENCE_QUESTION})
+
+    assert len(database.calls) == 1
+
+
+def test_a_rejected_statement_stays_a_query_error_without_a_question_to_search() -> None:
+    rag, database = _rag_stub([_statement_error("invalid input"), CONFERENCE_ROWS])
+
+    with pytest.raises(KnowledgeGraphQueryError, match="invalid input"):
+        rag.retrieve({"generated_cypher": BROKEN_CYPHER})
+
+    assert len(database.calls) == 1
+
+
+def test_a_database_error_outside_the_statement_family_is_not_escalated() -> None:
+    """Schema.* names something missing in the database, not a mistake in the statement."""
+    missing_index = ClientError._hydrate_neo4j(
+        code="Neo.ClientError.Schema.IndexNotFound", message="no such index"
+    )
+    rag, database = _rag_stub([missing_index, CONFERENCE_ROWS])
+
+    with pytest.raises(KnowledgeGraphQueryError, match="no such index"):
+        rag.retrieve({"generated_cypher": BROKEN_CYPHER, "user_question": CONFERENCE_QUESTION})
 
     assert len(database.calls) == 1
 
