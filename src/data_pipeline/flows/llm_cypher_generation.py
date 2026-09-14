@@ -14,6 +14,7 @@ from src.config.config import get_config
 from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.completeness import extract_list_rows, rows_missing_from_cypher
 from src.data_pipeline.label_vocabulary import LabelVocabulary, render_allowed_labels
+from src.data_pipeline.title_sanity import sanitize_titles
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
 # The second extraction pass is one extra model call per page that lost rows. It only fires on a
@@ -265,6 +266,42 @@ def _canonicalize_labels(parts: List[str], logger) -> List[str]:
     return canonical_parts
 
 
+def _sanitize_titles(parts: List[str], logger) -> List[str]:
+    """Take the page's layout back out of the titles, and drop the nodes left without a name.
+
+    The prompt asks for a title that names the entity, and mostly gets one. What it also
+    produced was the row's enumerator and full stop ("a) ... naukowych."), a heading's colon
+    ("Odbyte szkolenia:") and phrases cut in half ("Udzial w", "zagranicznych"). The first two
+    split one entity across two keys; the third puts something in the graph that no question can
+    reach.
+
+    Args:
+        parts: Generated Cypher statements
+        logger: Prefect run logger
+
+    Returns:
+        The statements with clean titles, minus the nodes whose title named nothing
+    """
+    kept, report = sanitize_titles(parts)
+
+    if report.cleaned:
+        logger.info(
+            "Title sanity: cleaned %d title(s): %s",
+            len(report.cleaned),
+            "; ".join(f"{before!r} -> {after!r}" for before, after in report.cleaned[:10]),
+        )
+
+    if report.rejected:
+        logger.warning(
+            "Title sanity: refused %d title(s), removing %d statement(s): %s",
+            len(report.rejected),
+            report.dropped_statements,
+            "; ".join(f"{title!r} ({reason})" for title, reason in report.rejected[:10]),
+        )
+
+    return kept
+
+
 @task
 def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> str:
     """Generate cypher statements from text using LLMPipe.
@@ -283,6 +320,7 @@ def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> st
     parts = _recover_missed_rows(llm, extracted_text, parts, logger)
     parts = [normalize_cypher_string_literals(part, normalizer=fold_diacritics) for part in parts]
     parts = _canonicalize_labels(parts, logger)
+    parts = _sanitize_titles(parts, logger)
     parts = [rewrite_merge_to_canonical_key(part) for part in parts]
 
     try:

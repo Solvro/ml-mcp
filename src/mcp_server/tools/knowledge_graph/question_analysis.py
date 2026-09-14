@@ -17,6 +17,7 @@ import re
 from ....text_normalization import (
     CYPHER_STRING_LITERAL_RE,
     FUZZY_STRING_COMPARISON_RE,
+    POLISH_FUNCTION_WORDS,
     normalize_search_text,
 )
 
@@ -66,56 +67,10 @@ QUESTION_WORD_SOURCE = (
     "pokaż",
 )
 
-# Words that must not start or end a search phrase. Interior occurrences are kept, so
-# "udzial w konferencjach" survives while "udzial w" does not.
-FUNCTION_WORD_SOURCE = (
-    "a",
-    "aby",
-    "albo",
-    "ale",
-    "bez",
-    "być",
-    "dla",
-    "do",
-    "i",
-    "jest",
-    "jako",
-    "lub",
-    "ma",
-    "mają",
-    "między",
-    "na",
-    "nad",
-    "nie",
-    "o",
-    "od",
-    "oraz",
-    "po",
-    "pod",
-    "przez",
-    "przy",
-    "są",
-    "się",
-    "ta",
-    "te",
-    "tego",
-    "tej",
-    "ten",
-    "to",
-    "tym",
-    "u",
-    "w",
-    "we",
-    "za",
-    "z",
-    "ze",
-    "że",
-)
-
 QUESTION_WORDS = frozenset(normalize_search_text(word) for word in QUESTION_WORD_SOURCE)
-PHRASE_BOUNDARY_WORDS = QUESTION_WORDS | frozenset(
-    normalize_search_text(word) for word in FUNCTION_WORD_SOURCE
-)
+# A phrase must not start or end on a function word either. Interior occurrences are kept, so
+# "udzial w konferencjach" survives while "udzial w" does not.
+PHRASE_BOUNDARY_WORDS = QUESTION_WORDS | POLISH_FUNCTION_WORDS
 
 SEARCH_TOKEN_RE = re.compile(r"[0-9a-z]+")
 # Phrases reaching the full-text index must carry no Lucene metacharacter.

@@ -27,6 +27,55 @@ FUZZY_STRING_COMPARISON_RE = re.compile(
 )
 
 
+# Polish words that carry no entity of their own: prepositions, conjunctions, copulas,
+# demonstratives. Retrieval refuses to start or end a search phrase on one, and ingestion reads
+# a title that ends on one as a phrase the model cut in half ("Udzial w"). One list, because it
+# is one fact about the language rather than two rules that happen to agree today.
+FUNCTION_WORD_SOURCE = (
+    "a",
+    "aby",
+    "albo",
+    "ale",
+    "bez",
+    "być",
+    "dla",
+    "do",
+    "i",
+    "jest",
+    "jako",
+    "lub",
+    "ma",
+    "mają",
+    "między",
+    "na",
+    "nad",
+    "nie",
+    "o",
+    "od",
+    "oraz",
+    "po",
+    "pod",
+    "przez",
+    "przy",
+    "są",
+    "się",
+    "ta",
+    "te",
+    "tego",
+    "tej",
+    "ten",
+    "to",
+    "tym",
+    "u",
+    "w",
+    "we",
+    "za",
+    "z",
+    "ze",
+    "że",
+)
+
+
 def fold_diacritics(value: str) -> str:
     """Fold Polish and decomposable Unicode diacritics while preserving case."""
     translated = value.translate(POLISH_DIACRITIC_TRANSLATION)
@@ -37,6 +86,9 @@ def fold_diacritics(value: str) -> str:
 def normalize_search_text(value: str) -> str:
     """Return the canonical case- and diacritic-insensitive search representation."""
     return fold_diacritics(value).casefold()
+
+
+POLISH_FUNCTION_WORDS = frozenset(normalize_search_text(word) for word in FUNCTION_WORD_SOURCE)
 
 
 def ensure_case_insensitive_fuzzy_matching(cypher: str) -> str:

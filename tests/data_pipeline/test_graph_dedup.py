@@ -20,11 +20,13 @@ class FakeGraph:
         self,
         labels: list[str] | None = None,
         unkeyed_nodes: list[dict[str, Any]] | None = None,
+        titled_nodes: list[dict[str, Any]] | None = None,
         merge_result: list[dict[str, Any]] | Exception | None = None,
         fallback_merge_result: list[dict[str, Any]] | Exception | None = None,
     ) -> None:
         self.labels = labels or []
         self.unkeyed_nodes = unkeyed_nodes or []
+        self.titled_nodes = titled_nodes or []
         self.merge_result = merge_result
         self.fallback_merge_result = fallback_merge_result
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
@@ -36,6 +38,8 @@ class FakeGraph:
             return [{"label": label} for label in self.labels]
         if "node.key IS NULL" in cypher:
             return self.unkeyed_nodes
+        if "node.key AS key" in cypher:
+            return self.titled_nodes
         if "apoc.create.removeLabels" in cypher:
             if isinstance(self.fallback_merge_result, Exception):
                 raise self.fallback_merge_result
@@ -161,6 +165,8 @@ def test_deduplicate_graph_reports_every_stage() -> None:
 
     assert stats == {
         "relabelled_labels": 1,
+        "titles_cleaned": 0,
+        "keys_repaired": 0,
         "keys_backfilled": 1,
         "groups_merged": 2,
         "fallback_merged": 0,
@@ -176,6 +182,8 @@ def test_a_run_scoped_pass_only_examines_the_keys_it_wrote() -> None:
 
     assert stats == {
         "relabelled_labels": 0,
+        "titles_cleaned": 0,
+        "keys_repaired": 0,
         "keys_backfilled": 0,
         "groups_merged": 1,
         "fallback_merged": 0,
@@ -185,13 +193,14 @@ def test_a_run_scoped_pass_only_examines_the_keys_it_wrote() -> None:
 
 
 def test_a_run_scoped_pass_skips_the_legacy_full_graph_repairs() -> None:
-    """Relabelling and key backfill only ever apply to nodes written before the rules existed."""
+    """Relabelling, title repair and key backfill only apply to nodes written before the rules."""
     graph = FakeGraph(labels=["Program"], unkeyed_nodes=[{"node_id": "4:a:1", "title": "Kurs"}])
 
     graph_dedup.deduplicate_graph.fn(graph, ["kurs"])
 
     assert not [call for call in graph.calls if "db.labels()" in call[0]]
     assert not [call for call in graph.calls if "node.key IS NULL" in call[0]]
+    assert not [call for call in graph.calls if "node.key AS key" in call[0]]
 
 
 def test_a_run_that_wrote_nothing_does_not_touch_the_graph() -> None:
@@ -214,6 +223,8 @@ def test_the_full_pass_still_walks_everything() -> None:
 
     assert stats == {
         "relabelled_labels": 1,
+        "titles_cleaned": 0,
+        "keys_repaired": 0,
         "keys_backfilled": 1,
         "groups_merged": 2,
         "fallback_merged": 0,
@@ -284,3 +295,89 @@ def test_missing_apoc_leaves_fallback_nodes_untouched(vocabulary) -> None:
     graph = FakeGraph(fallback_merge_result=RuntimeError("no procedure apoc.create.removeLabels"))
 
     assert graph_dedup.merge_fallback_nodes(graph, vocabulary.fallback_label) == 0
+
+
+# Issue #79: the graph already holds titles carrying the page's layout, and keys derived from
+# that spelling, so the enumerated copy of a criterion never merges with the plain one.
+def _title_updates(graph: FakeGraph) -> list[dict[str, Any]]:
+    return [
+        update
+        for call in graph.calls
+        if "SET node.title = update.title" in call[0]
+        for update in (call[1] or {}).get("updates", [])
+    ]
+
+
+def test_a_stored_title_loses_the_enumerator_and_its_key_is_recomputed() -> None:
+    graph = FakeGraph(
+        titled_nodes=[
+            {
+                "node_id": "4:a:1",
+                "title": "a) doswiadczenie w kierowaniu zespolem.",
+                "key": "a doswiadczenie w kierowaniu zespolem",
+            }
+        ]
+    )
+
+    assert graph_dedup.repair_stored_titles(graph) == {"titles_cleaned": 1, "keys_repaired": 1}
+    assert _title_updates(graph) == [
+        {
+            "node_id": "4:a:1",
+            "title": "doswiadczenie w kierowaniu zespolem",
+            "key": "doswiadczenie w kierowaniu zespolem",
+        }
+    ]
+
+
+def test_a_title_that_is_already_clean_is_not_rewritten() -> None:
+    graph = FakeGraph(
+        titled_nodes=[
+            {"node_id": "4:a:1", "title": "Analiza matematyczna", "key": "analiza matematyczna"}
+        ]
+    )
+
+    assert graph_dedup.repair_stored_titles(graph) == {"titles_cleaned": 0, "keys_repaired": 0}
+    assert _title_updates(graph) == []
+
+
+def test_a_node_without_a_key_yet_is_left_to_the_backfill() -> None:
+    """The backfill runs next and now derives a clean key of its own."""
+    graph = FakeGraph(
+        titled_nodes=[{"node_id": "4:a:1", "title": "Odbyte szkolenia:", "key": None}]
+    )
+
+    assert graph_dedup.repair_stored_titles(graph) == {"titles_cleaned": 1, "keys_repaired": 0}
+    assert _title_updates(graph) == [{"node_id": "4:a:1", "title": "Odbyte szkolenia", "key": None}]
+
+
+def test_a_stored_title_that_names_nothing_is_reported_and_kept() -> None:
+    """Ingestion refuses to write new ones; what to do with stored data is someone's call."""
+    graph = FakeGraph(
+        titled_nodes=[{"node_id": "4:a:1", "title": "zagranicznych", "key": "zagranicznych"}]
+    )
+
+    assert graph_dedup.repair_stored_titles(graph) == {"titles_cleaned": 0, "keys_repaired": 0}
+    assert _title_updates(graph) == []
+
+
+def test_the_full_pass_repairs_titles_before_it_merges() -> None:
+    graph = FakeGraph(
+        titled_nodes=[
+            {"node_id": "4:a:1", "title": "b) ksiazek,", "key": "b ksiazek"},
+        ],
+        merge_result=[{"merged_groups": 1}],
+    )
+
+    stats = graph_dedup.deduplicate_graph.fn(graph)
+
+    assert stats["titles_cleaned"] == 1
+    assert stats["keys_repaired"] == 1
+    repair_index = next(
+        index
+        for index, call in enumerate(graph.calls)
+        if "SET node.title = update.title" in call[0]
+    )
+    merge_index = next(
+        index for index, call in enumerate(graph.calls) if "apoc.refactor.mergeNodes" in call[0]
+    )
+    assert repair_index < merge_index

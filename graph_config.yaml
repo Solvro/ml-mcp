@@ -333,6 +333,16 @@ prompts:
          "Cyberbezpieczenstwo (CBE)" and keep it for every mention.
        - Put everything the context says about the entity into that one node's context property,
          instead of emitting one node with dates and another without.
+       - The title is the entity's name, not the line it was copied from. Drop the enumerator
+         the row carries ("a)", "1.", a bullet) and the punctuation that ends the line (":",
+         ",", "."): write 'doswiadczenie w kierowaniu zespolem', never
+         'a) doswiadczenie w kierowaniu zespolem.'.
+       - Never title a node with half a phrase ("Udzial w") or with one word lifted out of a
+         row ("zagranicznych"). Write the whole name the row gives, or put the row in the
+         context of the node it belongs to.
+       - An enumerated row is an item, not the heading above it. Give it the item label
+         (Criterion) and keep the category label (CriterionCategory) for the heading that has
+         items under it.
 
     3. OUTPUT FORMAT:
        - Contain ONLY executable Cypher statements
@@ -381,6 +391,8 @@ prompts:
 
     RULES:
     - Produce one node per missed row. Every row above must appear in the output.
+    - Title each node with the row's name alone: no leading "a)", "1." or bullet, no trailing
+      ":", "," or ".", and never half a phrase.
     - A row that carries only a date and a generic description is still a row; extract it exactly
       like one that carries a proper name.
     - Include 'title' and 'context' properties; keep dates and numbers verbatim in the title.

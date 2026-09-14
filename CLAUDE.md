@@ -181,12 +181,13 @@ ml-mcp/
 │   │   ├── completeness.py      # List/table row coverage check for extracted pages
 │   │   ├── label_vocabulary.py  # Closed node-label set and the rewrite that enforces it
 │   │   ├── canonical_nodes.py   # Canonical merge keys (one node per real entity)
+│   │   ├── title_sanity.py      # Titles are entity names: no enumerators, no fragments
 │   │   └── flows/
 │   │       ├── source_refresh.py        # Scheduled discovery + fetch of source docs (web connector)
 │   │       ├── data_acquisition.py      # Staging dir scan → document references
 │   │       ├── ocr_extraction.py        # PDF/TXT/DOCX → text (OCR fallback)
 │   │       ├── llm_cypher_generation.py # LLM → Cypher INSERT statements
-│   │       ├── graph_dedup.py           # Post-ingest relabel, key backfill, duplicate merge
+│   │       ├── graph_dedup.py           # Post-ingest relabel, title repair, key backfill, merge
 │   │       └── graph_populating.py      # Execute Cypher against Neo4j
 │   └── scripts/
 │       ├── api_smoke.py         # Manual smoke check against a live API (uv run api-smoke)
@@ -418,6 +419,37 @@ there. Relationship MERGEs and combined patterns are left alone — only a lone 
 `data_pipeline_flow` creates a `key` index per configured label before extracting, because MERGE
 on an unindexed property scans the whole label.
 
+**4. Title sanity (`title_sanity.py`).** A title is the entity's name. What extraction kept
+writing was the line the name was copied from: `a) doswiadczenie w kierowaniu i pracy w
+zespolach naukowych.`, `Odbyte szkolenia:`, `Udzial w`, `zagranicznych` (issue #79).
+
+`clean_title` drops the row's enumerator and the punctuation that ends the line. The enumerator
+pattern is deliberately narrower than the one that decides whether a *line* is a list row:
+misreading a line costs one extra node, while misreading a leading token rewrites a name and its
+merge key, so a letter needs a bracket to count — `W. Kowalski` is an initial, and dropping it
+would file two people under one node. A full stop after a whole word ends a sentence and goes; a
+full stop after a short one closes an abbreviation and stays, so `2 XI 2026 r.` survives intact.
+
+`title_rejection_reason` refuses two shapes, and `sanitize_titles` drops those nodes along with
+every statement naming their variable — a page runs as one query, so a relationship left
+pointing at an unbound variable would fail the whole page instead of the one node. A title
+ending on a Polish function word was cut mid-phrase (`Udzial w`). A title carrying one token is
+a name only when it is a code (`R1`, `W4`) or capitalised: `Informatyka` is an entity,
+`zagranicznych` is the tail of a row. The issue proposed refusing every title under two tokens,
+which would also have deleted `Informatyka`, `Rektor` and `Dziekanat` — capitalisation is what
+separates a one-word name from a one-word fragment.
+
+The function words are the same list retrieval uses for phrase boundaries
+(`text_normalization.POLISH_FUNCTION_WORDS`), because it is one fact about the language rather
+than two rules that happen to agree today.
+
+`canonical_entity_key` cleans the title before folding it, so the enumerated spelling and the
+plain one key alike — including for a node whose key is backfilled from a title stored before
+this rule existed. The titles in `tests/data_pipeline/test_title_sanity.py` are the ones the
+extraction actually wrote. A hallucinated spelling (`indyulanA organizacja studiow`) is untouched: no
+deterministic rule separates it from a legitimate rewording, and a check that flagged every
+title token missing from the page would fire on both.
+
 ### Post-Ingest Deduplication
 
 `graph_dedup.deduplicate_graph` repairs entities split across several nodes. It has two modes,
@@ -432,13 +464,19 @@ documents returns before the repair is reached, so it never touches the graph.
 database. It additionally:
 
 1. moves nodes under an off-vocabulary label to their canonical label;
-2. backfills `key` on titled nodes that predate it — computed in Python, so a backfilled node
+2. takes the page's layout back out of stored titles and recomputes the keys derived from it,
+   so the enumerated copy of a criterion can finally meet the plain one in step 4 (issue #79);
+3. backfills `key` on titled nodes that predate it — computed in Python, so a backfilled node
    and a freshly extracted one can never disagree about the key for a title;
-3. merges every group sharing a label and a key across the whole graph.
+4. merges every group sharing a label and a key across the whole graph.
 
-Steps 1 and 2 are deliberately absent from the per-run path: they repair nodes written before
-the rules existed, and no later run can reintroduce either, so paying for them every time buys
-nothing.
+Steps 1 to 3 are deliberately absent from the per-run path: they repair nodes written before
+the rules existed, and no later run can reintroduce any of them, so paying for them every time
+buys nothing.
+
+A stored title that names nothing (`zagranicznych`) is logged and left alone. Ingestion refuses
+to write new ones; deleting what is already stored is a decision for whoever knows what else
+points at it.
 
 Merging keeps the fullest title, every distinct context, and the relationships of the nodes it
 absorbs. `ProcessedDocument` and `PipelineRun` are excluded by label: relabelling
