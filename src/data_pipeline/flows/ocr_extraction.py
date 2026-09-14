@@ -9,7 +9,7 @@ from docx import Document
 from PIL import Image
 from prefect import get_run_logger, task
 
-from src.text_normalization import join_orphaned_list_markers
+from src.text_normalization import join_wrapped_list_rows
 
 MIN_EXTRACTED_TEXT_CHARS = 50
 DEFAULT_PDF_RENDER_SCALE = 2.0
@@ -31,7 +31,7 @@ def _normalize_text(text: str) -> str:
     """
     collapsed = re.sub(r"[ \t]+", " ", text or "")
     stripped = "\n".join(line.strip() for line in collapsed.split("\n"))
-    rejoined = join_orphaned_list_markers(stripped)
+    rejoined = join_wrapped_list_rows(stripped)
     return re.sub(r"\n{3,}", "\n\n", rejoined).strip()
 
 

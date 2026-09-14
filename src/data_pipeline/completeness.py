@@ -12,7 +12,7 @@ Issue #78 found the two ways this check could report success without meaning it:
 
 * A PDF text layer puts each bullet on a line of its own, so a page of 168 bullets held no line
   that reads as a row and nothing was ever counted. The markers are rejoined before rows are
-  read (:func:`~src.text_normalization.join_orphaned_list_markers`).
+  read (:func:`~src.text_normalization.join_wrapped_list_rows`).
 * A row counted as covered when its wording appeared in *any* quoted value, so one category node
   whose ``context`` recites sixteen bullets covered all sixteen of them. Coverage is therefore
   decided per node and anchored on the node's ``title``: the rule being enforced is that every
@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from src.text_normalization import (
     CYPHER_STRING_LITERAL_RE,
     LIST_MARKER_PATTERN,
-    join_orphaned_list_markers,
+    join_wrapped_list_rows,
     normalize_search_text,
 )
 
@@ -67,6 +67,8 @@ TITLE_MATCH_THRESHOLD = 0.6
 MIN_TOKEN_LENGTH = 2
 # A row needs some substance before its absence means anything.
 MIN_ROW_TOKENS = 2
+# A row ending on this heads the rows beneath it instead of carrying an entry of its own.
+HEADING_SUFFIX = ":"
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,11 @@ def extract_list_rows(text: str) -> list[str]:
     """
     Collect the list and table rows of a page, each of which should become its own node.
 
+    A row that ends on a colon introduces the rows beneath it rather than carrying an entry of
+    its own ("... kryteriami doboru kandydatek/kandydatow sa:"). Demanding a node for it is how
+    a lead-in sentence became a `CriterionCategory` titled with half a paragraph; the entries it
+    introduces are the rows that hold the content, and they are counted.
+
     Args:
         text: Page text as extracted from the source document
 
@@ -89,13 +96,15 @@ def extract_list_rows(text: str) -> list[str]:
     """
     rows: list[str] = []
 
-    for line in join_orphaned_list_markers(text).splitlines():
+    for line in join_wrapped_list_rows(text).splitlines():
         match = LIST_ROW_RE.match(line)
         if match is None:
             continue
 
         content = match.group("content") or match.group("cells") or ""
         content = content.replace("|", " ").replace("\t", " ").strip()
+        if content.endswith(HEADING_SUFFIX):
+            continue
         if len(_row_tokens(content)) < MIN_ROW_TOKENS:
             continue
 

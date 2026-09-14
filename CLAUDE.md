@@ -390,15 +390,27 @@ statements are appended. The pass only runs when something is missing, and a fai
 leaves the first pass output intact.
 
 A row is only as good as the line it was read from, and a PDF text layer does not write one.
-PyMuPDF puts the bullet and its text on separate lines (`•\nprowadzi badania …`) and wraps a long
-row across more, which left a 168-bullet page with zero rows on it.
-`text_normalization.join_orphaned_list_markers` puts each row back on one line, and it runs in
-`ocr_extraction._normalize_text` rather than only in the checker, so the extraction model is also
-shown a list where the page has a list. A row ends at a blank line, at the next marker, or at
-sentence-ending punctuation, so the paragraph after a list is not swallowed by its last entry.
-What counts as a marker (`LIST_MARKER_PATTERN`, bullets through `a)` and `iii.`) is defined once
-and used by both the rejoining and `LIST_ROW_RE`, so a row cannot be rebuilt and then go
-uncounted.
+PyMuPDF breaks a row in two ways: it puts the bullet and its text on separate lines
+(`•\nprowadzi badania …`), and it wraps a long row at the page width whether or not the marker
+shares the first line. The first left a 168-bullet page with zero rows on it. The second is
+worse, because it produces a row that *looks* extractable: `3. W grupie pracownikow
+dydaktycznych (ktorych podstawowym obowiazkiem jest ksztalcenie` is half a sentence that no node
+will ever carry as a title, so it is reported missing on every run and the missed-row pass mints
+a node out of it every time.
+
+`text_normalization.join_wrapped_list_rows` puts each row back on one line — marker-only lines
+and inline-marked ones alike — and it runs in `ocr_extraction._normalize_text` rather than only
+in the checker, so the extraction model is also shown a list where the page has a list. A row
+ends at a blank line, at the next row, or at sentence-ending punctuation, so the paragraph after
+a list is not swallowed by its last entry, and a cell-separated line always starts a row of its
+own rather than continuing the one above. What counts as a marker (`LIST_MARKER_PATTERN`,
+bullets through `a)` and `iii.`) is defined once and used by both the rejoining and
+`LIST_ROW_RE`, so a row cannot be rebuilt and then go uncounted.
+
+**A row ending in a colon is a heading, not an entry.** `... kryteriami doboru
+kandydatek/kandydatow sa:` introduces the rows beneath it; demanding a node for it is how a
+lead-in sentence became a node titled with half a paragraph. It is skipped, and the entries it
+introduces are counted as the rows they are.
 
 Rejoining changes the extracted page text, so every page's idempotency hash changes once and the
 next run reprocesses the staging dir. Canonical-key MERGE makes that an enrichment of the

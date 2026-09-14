@@ -3,7 +3,7 @@ import pytest
 from src.text_normalization import (
     ensure_case_insensitive_fuzzy_matching,
     fold_diacritics,
-    join_orphaned_list_markers,
+    join_wrapped_list_rows,
     normalize_cypher_string_literals,
     normalize_search_text,
 )
@@ -152,7 +152,7 @@ o zasięgu międzynarodowym.
 
 
 def test_a_marker_on_its_own_line_is_rejoined_with_its_text() -> None:
-    rejoined = join_orphaned_list_markers(PDF_BULLET_PAGE).splitlines()
+    rejoined = join_wrapped_list_rows(PDF_BULLET_PAGE).splitlines()
 
     assert "• prowadzi badania naukowe pod nadzorem opiekuna naukowego" in rejoined
     assert "a) o zasięgu krajowym," in rejoined
@@ -165,7 +165,7 @@ def test_the_lines_a_row_wraps_onto_are_folded_into_it() -> None:
         "obowiązkiem jest kształcenie studentów) prowadzi zajęcia."
     )
 
-    assert join_orphaned_list_markers(page) == (
+    assert join_wrapped_list_rows(page) == (
         "• W grupie pracowników dydaktycznych (których podstawowym "
         "obowiązkiem jest kształcenie studentów) prowadzi zajęcia."
     )
@@ -174,13 +174,13 @@ def test_the_lines_a_row_wraps_onto_are_folded_into_it() -> None:
 def test_a_row_stops_at_the_next_marker() -> None:
     page = "•\npierwsza pozycja listy\n•\ndruga pozycja listy"
 
-    assert join_orphaned_list_markers(page) == "• pierwsza pozycja listy\n• druga pozycja listy"
+    assert join_wrapped_list_rows(page) == "• pierwsza pozycja listy\n• druga pozycja listy"
 
 
 def test_a_finished_row_does_not_swallow_the_paragraph_after_it() -> None:
     page = "•\nostatnia pozycja listy.\nOcena kompetencji odbywa się raz w roku."
 
-    assert join_orphaned_list_markers(page) == (
+    assert join_wrapped_list_rows(page) == (
         "• ostatnia pozycja listy.\nOcena kompetencji odbywa się raz w roku."
     )
 
@@ -188,21 +188,55 @@ def test_a_finished_row_does_not_swallow_the_paragraph_after_it() -> None:
 def test_a_list_that_already_reads_as_one_is_left_alone() -> None:
     page = "- 1 XI 2026 r. - Wszystkich Świętych\n- 2 XI 2026 r. - dzień wolny od zajęć"
 
-    assert join_orphaned_list_markers(page) == page
+    assert join_wrapped_list_rows(page) == page
 
 
 def test_prose_is_left_alone() -> None:
     page = "Zajęcia odbywają się zgodnie z planem.\n\nDni wolne ogłasza rektor."
 
-    assert join_orphaned_list_markers(page) == page
+    assert join_wrapped_list_rows(page) == page
 
 
 def test_rejoining_is_idempotent() -> None:
-    once = join_orphaned_list_markers(PDF_BULLET_PAGE)
+    once = join_wrapped_list_rows(PDF_BULLET_PAGE)
 
-    assert join_orphaned_list_markers(once) == once
+    assert join_wrapped_list_rows(once) == once
 
 
 def test_a_marker_with_nothing_after_it_is_harmless() -> None:
-    assert join_orphaned_list_markers("•") == "•"
-    assert join_orphaned_list_markers("tekst\n•").splitlines() == ["tekst", "•"]
+    assert join_wrapped_list_rows("•") == "•"
+    assert join_wrapped_list_rows("tekst\n•").splitlines() == ["tekst", "•"]
+
+
+# Review of PR #83: a row whose marker shares its first line wraps just the same, and leaving it
+# cut at the page width is what kept minting a node out of half a sentence.
+def test_an_inline_marked_row_is_folded_too() -> None:
+    page = (
+        "3. W grupie pracowników dydaktycznych (których podstawowym obowiązkiem jest kształcenie\n"
+        "i wychowywanie studentów lub uczestniczenie w kształceniu doktorantów) kryteriami doboru\n"
+        "kandydatek/kandydatów są:"
+    )
+
+    assert join_wrapped_list_rows(page) == (
+        "3. W grupie pracowników dydaktycznych (których podstawowym obowiązkiem jest kształcenie "
+        "i wychowywanie studentów lub uczestniczenie w kształceniu doktorantów) kryteriami doboru "
+        "kandydatek/kandydatów są:"
+    )
+
+
+def test_an_inline_marked_row_stops_at_the_next_row() -> None:
+    page = "1. Pierwszy punkt regulaminu\n2) Drugi punkt regulaminu"
+
+    assert join_wrapped_list_rows(page) == page
+
+
+def test_a_finished_inline_row_does_not_swallow_what_follows() -> None:
+    page = "- Ostatnia pozycja listy.\nOcena następuje raz w roku."
+
+    assert join_wrapped_list_rows(page) == page
+
+
+def test_a_table_row_is_never_folded_into_the_row_above_it() -> None:
+    page = "2) Drugi punkt regulaminu\n| Kurs | 5 ECTS |"
+
+    assert join_wrapped_list_rows(page) == page

@@ -170,7 +170,6 @@ def test_pdf_bullets_are_rejoined_with_their_text(monkeypatch, tmp_path: Path):
 
     assert extract_list_rows(result[0][1]) == [
         "prowadzi badania naukowe pod nadzorem opiekuna naukowego",
-        "publikuje wyniki swoich badan w czasopismach:",
         "o zasiegu krajowym,",
     ]
 

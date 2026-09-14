@@ -259,7 +259,6 @@ Ocena kompetencji odbywa się raz w roku.
 COMPETENCY_ROWS = [
     "prowadzi badania naukowe pod nadzorem opiekuna naukowego",
     "zna metody badawcze stosowane w swojej dyscyplinie",
-    "publikuje wyniki swoich badań w czasopismach naukowych:",
     "o zasięgu krajowym,",
     "o zasięgu międzynarodowym.",
     "W grupie pracowników dydaktycznych (których podstawowym obowiązkiem jest kształcenie "
@@ -368,3 +367,76 @@ def test_a_context_blob_sends_its_rows_to_the_second_pass(monkeypatch) -> None:
 
     assert second_pass_rows == [COMPETENCY_ROWS]
     assert "Zna metody badawcze stosowane w swojej dyscyplinie" in result
+
+
+# Review of PR #83: the junk node from issue #78 was still being created, from the other half of
+# the problem. Page 6 marks its row inline and wraps it at the page width:
+#
+#   3. W grupie pracownikow dydaktycznych (ktorych podstawowym obowiazkiem jest ksztalcenie
+#   i wychowywanie studentow lub uczestniczenie w ksztalceniu doktorantow) kryteriami doboru
+#   kandydatek/kandydatow sa:
+#
+# "3." is a marker, so the first line alone read as a row. Nothing would ever carry that
+# half-sentence as a title, so it was reported missing on every run and the missed-row pass made
+# a node of it every time - the same fragment as before, now labelled Criterion.
+CRITERIA_PAGE = """Kryteria doboru kandydatek i kandydatów
+
+3. W grupie pracowników dydaktycznych (których podstawowym obowiązkiem jest kształcenie
+i wychowywanie studentów lub uczestniczenie w kształceniu doktorantów) kryteriami doboru
+kandydatek/kandydatów są:
+a) doświadczenie dydaktyczne,
+b) ocena zajęć przez studentów.
+
+Ocena następuje raz w roku.
+"""
+
+CRITERIA_ROWS = [
+    "doświadczenie dydaktyczne,",
+    "ocena zajęć przez studentów.",
+]
+
+FRAGMENT = "W grupie pracowników dydaktycznych (których podstawowym obowiązkiem jest kształcenie"
+
+
+def test_an_inline_marked_row_is_folded_whole() -> None:
+    rows = extract_list_rows(CRITERIA_PAGE)
+
+    assert FRAGMENT not in rows
+    assert not any(row.endswith("jest kształcenie") for row in rows)
+
+
+def test_a_row_ending_in_a_colon_heads_the_rows_beneath_it() -> None:
+    """The lead-in names what follows; the entries under it are what hold the content."""
+    rows = extract_list_rows(CRITERIA_PAGE)
+
+    assert rows == CRITERIA_ROWS
+    assert not any(row.endswith(":") for row in extract_list_rows(COMPETENCY_PAGE))
+
+
+def test_the_missed_row_pass_is_never_handed_the_fragment(monkeypatch) -> None:
+    """It used to be, on every run, and it turned it into a node every time."""
+    second_pass_rows: list[list[str]] = []
+
+    class FakePipe:
+        def run(self, context: str, schema_context: str = "") -> list[str]:
+            return [
+                "MERGE (n1:Criterion {title: 'Doswiadczenie dydaktyczne', context: 'Kryterium'})"
+            ]
+
+        def run_missing_rows(self, context: str, rows: list[str]) -> list[str]:
+            second_pass_rows.append(rows)
+            return [
+                "MERGE (extra1:Criterion {title: 'Ocena zajec przez studentow', "
+                "context: 'Kryterium'})"
+            ]
+
+    monkeypatch.delenv("DATA_PIPELINE_MAX_MISSED_ROW_PASSES", raising=False)
+    cypher_module.reset_missed_row_passes()
+    monkeypatch.setattr(cypher_module, "LLMPipe", FakePipe)
+    monkeypatch.setattr(cypher_module, "get_run_logger", MagicMock)
+
+    result = cypher_module.generate_cypher_queries.fn(CRITERIA_PAGE)
+
+    assert second_pass_rows == [["ocena zajęć przez studentów."]]
+    assert FRAGMENT not in result
+    assert "kryteriami doboru" not in result
