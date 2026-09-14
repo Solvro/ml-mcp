@@ -100,3 +100,83 @@ def normalize_cypher_string_literals(
         return f"{quote}{normalizer(literal[1:-1])}{quote}"
 
     return CYPHER_STRING_LITERAL_RE.sub(replace_literal, cypher)
+
+
+# A list marker: a bullet glyph, a number, or a letter, with or without a wrapping bracket.
+# PDF text layers emit these on a line of their own, detached from the text they introduce.
+LIST_MARKER_GLYPHS = "-*•▪◦‣·–—>+"
+LIST_MARKER_PATTERN = (
+    rf"(?:[{re.escape(LIST_MARKER_GLYPHS)}]"
+    rf"|\(?(?:\d{{1,3}}|[a-z]|[ivx]{{1,4}})[.)])"
+)
+ORPHANED_LIST_MARKER_RE = re.compile(rf"^{LIST_MARKER_PATTERN}$", re.IGNORECASE)
+INLINE_LIST_MARKER_RE = re.compile(rf"^{LIST_MARKER_PATTERN}\s+\S", re.IGNORECASE)
+# A row that ends on one of these is finished; anything after it starts something new.
+SENTENCE_END_CHARACTERS = ".;:!?"
+
+
+def _collect_orphaned_row(lines: list[str], marker_index: int) -> tuple[str, int]:
+    """Rebuild the row introduced by the marker on ``marker_index``.
+
+    Args:
+        lines: All lines of the page
+        marker_index: Index of the line holding nothing but a list marker
+
+    Returns:
+        The rebuilt row and how many lines it consumed
+    """
+    parts: list[str] = []
+    index = marker_index + 1
+
+    while index < len(lines):
+        candidate = lines[index].strip()
+        if not candidate:
+            break
+        if ORPHANED_LIST_MARKER_RE.match(candidate) or INLINE_LIST_MARKER_RE.match(candidate):
+            break
+
+        parts.append(candidate)
+        index += 1
+
+        if candidate.endswith(tuple(SENTENCE_END_CHARACTERS)):
+            break
+
+    if not parts:
+        return lines[marker_index].strip(), 1
+
+    return f"{lines[marker_index].strip()} {' '.join(parts)}", index - marker_index
+
+
+def join_orphaned_list_markers(text: str) -> str:
+    """Reattach list markers that a PDF text layer left on a line of their own.
+
+    PyMuPDF writes a bullet and its text as two lines ("•\nprowadzi badania ..."), and wraps a
+    long row onto further lines. Nothing in that page reads as a list row - not for the model
+    that has to turn each row into a node, and not for the completeness check that verifies it
+    did. The marker is put back in front of its text and the wrapped remainder is folded in, so
+    one row is one line again.
+
+    A row ends at a blank line, at the next marker, or at sentence-ending punctuation, so the
+    paragraph following a list is not swallowed by its last entry.
+
+    Args:
+        text: Extracted page text
+
+    Returns:
+        The text with every orphaned marker joined to the row it introduces
+    """
+    lines = text.splitlines()
+    rejoined: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        if not ORPHANED_LIST_MARKER_RE.match(lines[index].strip()):
+            rejoined.append(lines[index])
+            index += 1
+            continue
+
+        row, consumed = _collect_orphaned_row(lines, index)
+        rejoined.append(row)
+        index += consumed
+
+    return "\n".join(rejoined)

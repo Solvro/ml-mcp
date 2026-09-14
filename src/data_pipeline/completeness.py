@@ -7,26 +7,74 @@ dates is exactly where the misses are invisible.
 
 Rows are therefore counted before generation and checked against what was generated, so a miss
 becomes a second extraction pass over the rows that were skipped instead of silent data loss.
+
+Issue #78 found the two ways this check could report success without meaning it:
+
+* A PDF text layer puts each bullet on a line of its own, so a page of 168 bullets held no line
+  that reads as a row and nothing was ever counted. The markers are rejoined before rows are
+  read (:func:`~src.text_normalization.join_orphaned_list_markers`).
+* A row counted as covered when its wording appeared in *any* quoted value, so one category node
+  whose ``context`` recites sixteen bullets covered all sixteen of them. Coverage is therefore
+  decided per node and anchored on the node's ``title``: the rule being enforced is that every
+  row becomes a node of its own, and a node's title is what says which row it is.
 """
 
 import re
+from dataclasses import dataclass
 
-from src.text_normalization import CYPHER_STRING_LITERAL_RE, normalize_search_text
+from src.text_normalization import (
+    CYPHER_STRING_LITERAL_RE,
+    LIST_MARKER_PATTERN,
+    join_orphaned_list_markers,
+    normalize_search_text,
+)
 
-# A list or table row: a bullet, a number, or a cell-separated line. These are the shapes the
-# issue calls out as the ones where dropping an entry is actively harmful.
+# A list or table row: a marker, or a cell-separated line. These are the shapes the issue calls
+# out as the ones where dropping an entry is actively harmful. The marker is the one the joining
+# pass recognises, so a row cannot be rebuilt and then go uncounted - lettered sub-entries such
+# as "a) o zasiegu krajowym" were exactly that gap.
 LIST_ROW_RE = re.compile(
-    r"^\s*(?:[-*•–—>]|\d{1,3}[.)]|\|)\s*(?P<content>\S.*?)\s*$|"
-    r"^\s*(?P<cells>[^|\t]*(?:[|\t][^|\t]*)+)\s*$"
+    rf"^\s*(?:{LIST_MARKER_PATTERN}|\|)\s*(?P<content>\S.*?)\s*$|"
+    r"^\s*(?P<cells>[^|\t]*(?:[|\t][^|\t]*)+)\s*$",
+    re.IGNORECASE,
 )
 TOKEN_RE = re.compile(r"[0-9a-z]+")
 
-# Below this share of a row's tokens appearing in the generated values, the row counts as missed.
+_IDENTIFIER = r"(?:`[^`]+`|[A-Za-z_]\w*)"
+# A node in a generated statement: "(var:Label {title: '...', context: '...'})". Relationship
+# property maps sit in square brackets and are left out, as they describe no entity of their own.
+NODE_PROPERTY_MAP_RE = re.compile(
+    rf"\(\s*(?P<variable>[A-Za-z_]\w*)?\s*(?P<labels>(?::\s*{_IDENTIFIER}\s*)*)"
+    rf"\{{(?P<properties>[^{{}}]*)\}}"
+)
+PROPERTY_ENTRY_RE = re.compile(
+    rf"(?P<key>{_IDENTIFIER})\s*:\s*(?P<value>{CYPHER_STRING_LITERAL_RE.pattern})"
+)
+# The canonical-key rewrite moves properties out of the pattern: "ON CREATE SET n1.title = '...'".
+SET_ASSIGNMENT_RE = re.compile(
+    rf"(?P<variable>[A-Za-z_]\w*)\s*\.\s*(?P<key>{_IDENTIFIER})\s*=\s*"
+    rf"(?P<value>{CYPHER_STRING_LITERAL_RE.pattern})"
+)
+TITLE_PROPERTY = "title"
+
+# Below this share of a row's tokens appearing in one node's values, that node does not hold the
+# row at all.
 ROW_COVERAGE_THRESHOLD = 0.6
+# How much of a node's title and the row must line up before the node counts as the row's own
+# node rather than the node of the section the row sits in.
+TITLE_MATCH_THRESHOLD = 0.6
 # One-character tokens carry no evidence either way.
 MIN_TOKEN_LENGTH = 2
 # A row needs some substance before its absence means anything.
 MIN_ROW_TOKENS = 2
+
+
+@dataclass(frozen=True)
+class GeneratedNode:
+    """One node in the generated Cypher, reduced to the tokens it was given."""
+
+    title_tokens: frozenset[str]
+    value_tokens: frozenset[str]
 
 
 def extract_list_rows(text: str) -> list[str]:
@@ -41,7 +89,7 @@ def extract_list_rows(text: str) -> list[str]:
     """
     rows: list[str] = []
 
-    for line in text.splitlines():
+    for line in join_orphaned_list_markers(text).splitlines():
         match = LIST_ROW_RE.match(line)
         if match is None:
             continue
@@ -65,43 +113,123 @@ def _row_tokens(row: str) -> list[str]:
     ]
 
 
-def _generated_value_text(statements: list[str]) -> str:
-    """Return every quoted value in the generated Cypher as one normalized haystack."""
-    values = [
-        literal.group(0)[1:-1]
-        for statement in statements
-        for literal in CYPHER_STRING_LITERAL_RE.finditer(statement)
-    ]
-    return normalize_search_text(" ".join(values))
+def _token_set(values: list[str]) -> frozenset[str]:
+    """Return the matchable tokens of a group of property values."""
+    return frozenset(_row_tokens(" ".join(values)))
+
+
+def _record_property(properties: dict[str, list[str]], key: str, value: str) -> None:
+    """Add one property value to a node, keeping the title apart from the rest."""
+    if key.strip("`").casefold() == TITLE_PROPERTY:
+        properties[TITLE_PROPERTY].append(value)
+    properties["values"].append(value)
+
+
+def extract_generated_nodes(statements: list[str]) -> list[GeneratedNode]:
+    """
+    Read back the nodes the model wrote, one entry per node rather than per statement.
+
+    A statement may bind several nodes, and the canonical-key rewrite splits one node's
+    properties between its pattern and an ``ON CREATE SET`` clause, so properties are grouped by
+    the variable that carries them.
+
+    Args:
+        statements: Generated Cypher statements
+
+    Returns:
+        One entry per node that was given at least one property value
+    """
+    nodes: list[GeneratedNode] = []
+
+    for statement in statements:
+        groups: dict[str, dict[str, list[str]]] = {}
+
+        for order, node_match in enumerate(NODE_PROPERTY_MAP_RE.finditer(statement)):
+            variable = node_match.group("variable") or f"#{order}"
+            properties = groups.setdefault(variable, {TITLE_PROPERTY: [], "values": []})
+            for entry in PROPERTY_ENTRY_RE.finditer(node_match.group("properties")):
+                _record_property(properties, entry.group("key"), entry.group("value")[1:-1])
+
+        for assignment in SET_ASSIGNMENT_RE.finditer(statement):
+            properties = groups.setdefault(
+                assignment.group("variable"), {TITLE_PROPERTY: [], "values": []}
+            )
+            _record_property(properties, assignment.group("key"), assignment.group("value")[1:-1])
+
+        nodes.extend(
+            GeneratedNode(
+                title_tokens=_token_set(properties[TITLE_PROPERTY]),
+                value_tokens=_token_set(properties["values"]),
+            )
+            for properties in groups.values()
+            if properties["values"]
+        )
+
+    return nodes
+
+
+def _shared_share(tokens: frozenset[str], other: frozenset[str]) -> float:
+    """Return the share of ``tokens`` that also appears in ``other``."""
+    if not tokens:
+        return 0.0
+    return len(tokens & other) / len(tokens)
+
+
+def _node_holds_row(node: GeneratedNode, row_tokens: frozenset[str]) -> bool:
+    """
+    Report whether this node is the row's own node.
+
+    Two things have to hold. The node has to carry most of the row's wording, which a node that
+    merely mentions the row's subject does not. And its title has to line up with the row, in
+    either direction: a title shorter than the row is the row's name ("Swieto Niepodleglosci"
+    for a dated entry), a title longer than the row is the row's fuller form. A title matching
+    in neither direction belongs to something else - typically the section heading whose context
+    recites the row along with all its siblings, the shape issue #78 reported as covered while
+    the graph held no node for the row at all.
+
+    Args:
+        node: One node from the generated Cypher
+        row_tokens: Tokens of the row being looked for
+
+    Returns:
+        True when this node is the node the row was supposed to become
+    """
+    if not node.title_tokens:
+        return False
+    if _shared_share(row_tokens, node.value_tokens) < ROW_COVERAGE_THRESHOLD:
+        return False
+    return (
+        _shared_share(node.title_tokens, row_tokens) >= TITLE_MATCH_THRESHOLD
+        or _shared_share(row_tokens, node.title_tokens) >= TITLE_MATCH_THRESHOLD
+    )
 
 
 def rows_missing_from_cypher(rows: list[str], statements: list[str]) -> list[str]:
     """
-    Report the rows whose content did not make it into any generated node.
+    Report the rows that did not get a node of their own.
 
-    A row counts as covered when most of its tokens appear somewhere in the generated values.
     Partial credit matters: the model is free to reword a row, but a row it never read leaves
-    almost none of its wording behind.
+    almost none of its wording behind, and a row folded into a parent node's context leaves no
+    title of its own.
 
     Args:
         rows: Rows found on the page
         statements: Generated Cypher statements
 
     Returns:
-        The rows that are not represented in the generated output
+        The rows that are not represented by a node of their own
     """
     if not rows:
         return []
 
-    haystack_tokens = set(TOKEN_RE.findall(_generated_value_text(statements)))
+    nodes = extract_generated_nodes(statements)
 
     missing: list[str] = []
     for row in rows:
-        tokens = _row_tokens(row)
+        tokens = frozenset(_row_tokens(row))
         if not tokens:
             continue
-        found = sum(1 for token in tokens if token in haystack_tokens)
-        if found / len(tokens) < ROW_COVERAGE_THRESHOLD:
+        if not any(_node_holds_row(node, tokens) for node in nodes):
             missing.append(row)
 
     return missing
