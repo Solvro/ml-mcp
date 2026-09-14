@@ -63,8 +63,9 @@ def test_a_title_cut_mid_phrase_is_refused(title: str) -> None:
     assert title_rejection_reason(title) == REASON_TRUNCATED
 
 
-@pytest.mark.parametrize("title", ["zagranicznych", "dydaktyczne", "ksiazek", "grantow"])
+@pytest.mark.parametrize("title", ["zagranicznych", "dydaktyczne", "naukowe", "miedzynarodowych"])
 def test_a_fragment_lifted_out_of_a_row_is_refused(title: str) -> None:
+    """Only when nothing points at it - the same word linked to a category is a row."""
     assert title_rejection_reason(title) == REASON_FRAGMENT
 
 
@@ -187,12 +188,14 @@ def test_statements_without_a_title_are_untouched() -> None:
 
 PAGE = "Kryteria oceny pracownikow naukowych opisane sa w zalaczniku do uchwaly.\n"
 
-# One page of the criteria document as it came out of extraction: enumerated rows, a heading
-# with its colon, and two fragments that name nothing.
+# One page of the criteria document as it came out of extraction: an enumerated row, a heading
+# with its colon, a one-word row the model attached to its category, and wording that fell out
+# of a wrapped row and is attached to nothing.
 EXTRACTED_STATEMENTS = [
     "MERGE (n1:CriterionCategory {title: 'Dzialalnosc organizacyjna:', context: 'Kategoria'})",
     "MERGE (n2:Criterion {title: 'a) doswiadczenie w kierowaniu zespolem.', context: 'Ocena'})",
-    "MERGE (n3:Criterion {title: 'zagranicznych', context: 'Fragment wiersza'})",
+    "MERGE (n3:Criterion {title: 'patenty', context: 'Rodzaj osiagniecia'})",
+    "MERGE (n4:Criterion {title: 'zagranicznych', context: 'Fragment wiersza'})",
     "MERGE (n1)-[:HAS_CRITERION]->(n2)",
     "MERGE (n1)-[:HAS_CRITERION]->(n3)",
 ]
@@ -214,6 +217,74 @@ def test_a_generated_page_reaches_the_graph_with_names_only(monkeypatch) -> None
     assert "'doswiadczenie w kierowaniu zespolem'" in result
     assert "a) doswiadczenie" not in result
     assert "Dzialalnosc organizacyjna:" not in result
+    assert "'patenty'" in result
     assert "zagranicznych" not in result
-    # The category, the criterion, and the one relationship between them.
-    assert result.count("MERGE") == 3
+    # The category, two criteria, and the two relationships holding them together.
+    assert result.count("MERGE") == 5
+
+
+# Review of PR #84: the fragment rule deleted eight enumerated rows in one ingest run -
+# 'patenty', 'wynalazki', 'wdrozenia', 'ksiazek', 'grantow', 'cytowania' are the PDF's own rows,
+# publication and achievement types whose names really are one lowercase Polish word. Nothing
+# brought them back, because the completeness check counts no one-word rows either. What tells
+# them apart from a fragment is not the title but whether anything in the page attaches to it.
+LINKED_ROWS = [
+    "MERGE (n1:CriterionCategory {title: 'Inne wazne osiagniecia:', context: 'Kategoria'})",
+    "MERGE (n2:Criterion {title: 'patenty', context: 'Rodzaj osiagniecia'})",
+    "MERGE (n3:Criterion {title: 'wdrozenia', context: 'Rodzaj osiagniecia'})",
+    "MERGE (n4:Criterion {title: 'ksiazek', context: 'Rodzaj osiagniecia'})",
+    "MERGE (n1)-[:HAS_CRITERION]->(n2)",
+    "MERGE (n1)-[:HAS_CRITERION]->(n3)",
+    "MERGE (n1)-[:HAS_CRITERION]->(n4)",
+]
+
+
+def test_a_one_word_row_the_page_links_to_is_kept() -> None:
+    kept, report = sanitize_titles(LINKED_ROWS)
+
+    assert len(kept) == len(LINKED_ROWS)
+    assert report.rejected == []
+    assert report.dropped_statements == 0
+
+
+@pytest.mark.parametrize("title", ["patenty", "wynalazki", "wdrozenia", "grantow", "cytowania"])
+def test_every_enumerated_row_from_that_run_survives(title: str) -> None:
+    assert title_rejection_reason(title, linked=True) is None
+
+
+def test_a_one_word_title_nothing_points_at_is_still_refused() -> None:
+    statements = [
+        "MERGE (n1:CriterionCategory {title: 'Inne wazne osiagniecia:', context: 'Kategoria'})",
+        "MERGE (n2:Criterion {title: 'patenty', context: 'Rodzaj'})",
+        "MERGE (n3:Criterion {title: 'zagranicznych', context: 'Fragment wiersza'})",
+        "MERGE (n1)-[:HAS_CRITERION]->(n2)",
+    ]
+
+    kept, report = sanitize_titles(statements)
+
+    assert report.rejected == [("zagranicznych", REASON_FRAGMENT)]
+    assert any("'patenty'" in statement for statement in kept)
+
+
+def test_both_ends_of_a_relationship_count_as_linked() -> None:
+    statements = [
+        "MERGE (n1:Criterion {title: 'patenty', context: 'Rodzaj'})",
+        "MERGE (n2:CriterionCategory {title: 'Osiagniecia', context: 'Kategoria'})",
+        "MERGE (n1)-[:BELONGS_TO]->(n2)",
+    ]
+
+    kept, report = sanitize_titles(statements)
+
+    assert kept == statements
+    assert report.rejected == []
+
+
+def test_a_heading_ending_on_a_copula_is_not_a_cut_phrase() -> None:
+    """ "... kryteriami doboru kandydata sa:" is how a Polish heading introduces its rows."""
+    assert title_rejection_reason("Kryteriami doboru kandydatki/kandydata sa") is None
+    assert title_rejection_reason("Warunkiem przyjecia jest") is None
+
+
+@pytest.mark.parametrize("title", ["Udzial w", "Wspolpraca z", "Publikacje i", "Dostep do"])
+def test_a_preposition_or_conjunction_still_marks_a_cut(title: str) -> None:
+    assert title_rejection_reason(title) == REASON_TRUNCATED

@@ -432,16 +432,30 @@ full stop after a short one closes an abbreviation and stays, so `2 XI 2026 r.` 
 
 `title_rejection_reason` refuses two shapes, and `sanitize_titles` drops those nodes along with
 every statement naming their variable — a page runs as one query, so a relationship left
-pointing at an unbound variable would fail the whole page instead of the one node. A title
-ending on a Polish function word was cut mid-phrase (`Udzial w`). A title carrying one token is
-a name only when it is a code (`R1`, `W4`) or capitalised: `Informatyka` is an entity,
-`zagranicznych` is the tail of a row. The issue proposed refusing every title under two tokens,
-which would also have deleted `Informatyka`, `Rektor` and `Dziekanat` — capitalisation is what
-separates a one-word name from a one-word fragment.
+pointing at an unbound variable would fail the whole page instead of the one node.
 
-The function words are the same list retrieval uses for phrase boundaries
-(`text_normalization.POLISH_FUNCTION_WORDS`), because it is one fact about the language rather
-than two rules that happen to agree today.
+**A title ending on a preposition or conjunction was cut mid-phrase** (`Udzial w`). A copula is
+not a cut: `... kryteriami doboru kandydata sa:` is how a Polish heading introduces the rows
+beneath it, and refusing it would take its `HAS_CRITERION` statements with it. Ingestion
+therefore reads only `text_normalization.POLISH_PHRASE_CUT_WORDS`, the prepositions and
+conjunctions, out of the function-word list retrieval uses whole for phrase boundaries.
+
+**A one-token title is a name when it is a code (`R1`, `W4`), capitalised, or linked.** The
+issue proposed refusing every title under two tokens, which would have deleted `Informatyka`,
+`Rektor` and `Dziekanat`. Capitalisation rescued those but not enough: on one ingest run the
+rule deleted eight enumerated rows — `patenty`, `wynalazki`, `wdrozenia`, `ksiazek`, `grantow`,
+`cytowania` are the PDF's own `b) książek, … e) grantów`, achievement types whose names really
+are one lowercase Polish noun, and they went out together with the `HAS_CRITERION` link to their
+category. Nothing brought them back, because the completeness check counts no one-word rows
+either, so a refusal is permanent.
+
+No rule reading the title alone can separate `patenty` from `zagranicznych`. What does is
+whether the model attached the node to anything: a node a relationship names is part of the
+structure the page describes, whatever its title looks like, while wording that fell out of a
+wrapped row is attached to nothing. `related_variables` collects both ends of every
+relationship pattern, and only an unlinked one-token lowercase title is refused. A fragment the
+model did link survives — the safe direction, since deleting a real row cannot be undone by any
+later pass.
 
 `canonical_entity_key` cleans the title before folding it, so the enumerated spelling and the
 plain one key alike — including for a node whose key is backfilled from a title stored before
@@ -449,6 +463,16 @@ this rule existed. The titles in `tests/data_pipeline/test_title_sanity.py` are 
 extraction actually wrote. A hallucinated spelling (`indyulanA organizacja studiow`) is untouched: no
 deterministic rule separates it from a legitimate rewording, and a check that flagged every
 title token missing from the page would fire on both.
+
+**One degenerate statement must not cost a whole page.** A page's statements run as one query,
+so `MERGE (node13)` — no label, no properties, next to the `node13` the page already bound —
+fails every row on that page with `Variable `node13` already declared`. `_drop_redeclarations`
+removes that shape after every other rewrite; a bare MERGE nothing else binds is left alone,
+since there it *is* the binding and dropping it would strand the relationships naming it. No
+rewrite in this repo reproduces the statement and it appeared in no logged model output, so
+this drops the shape rather than claiming to know who wrote it — and every generated part is
+now logged at `DEBUG`, untruncated, so the next one can be attributed. The INFO log still shows
+the first ten, cut at 400 characters, which is what made the first occurrence unattributable.
 
 ### Post-Ingest Deduplication
 

@@ -27,29 +27,24 @@ FUZZY_STRING_COMPARISON_RE = re.compile(
 )
 
 
-# Polish words that carry no entity of their own: prepositions, conjunctions, copulas,
-# demonstratives. Retrieval refuses to start or end a search phrase on one, and ingestion reads
-# a title that ends on one as a phrase the model cut in half ("Udzial w"). One list, because it
-# is one fact about the language rather than two rules that happen to agree today.
-FUNCTION_WORD_SOURCE = (
+# Polish words that carry no entity of their own. Retrieval refuses to start or end a search
+# phrase on any of them. Ingestion uses only the first group: a phrase that ends on a
+# preposition or a conjunction was cut in half ("Udzial w"), while one ending on a copula is an
+# ordinary Polish lead-in and a legitimate heading ("... kryteriami doboru kandydata sa:").
+PREPOSITION_AND_CONJUNCTION_SOURCE = (
     "a",
     "aby",
     "albo",
     "ale",
     "bez",
-    "być",
     "dla",
     "do",
     "i",
-    "jest",
     "jako",
     "lub",
-    "ma",
-    "mają",
     "między",
     "na",
     "nad",
-    "nie",
     "o",
     "od",
     "oraz",
@@ -57,6 +52,20 @@ FUNCTION_WORD_SOURCE = (
     "pod",
     "przez",
     "przy",
+    "u",
+    "w",
+    "we",
+    "za",
+    "z",
+    "ze",
+    "że",
+)
+COPULA_AND_PRONOUN_SOURCE = (
+    "być",
+    "jest",
+    "ma",
+    "mają",
+    "nie",
     "są",
     "się",
     "ta",
@@ -66,14 +75,8 @@ FUNCTION_WORD_SOURCE = (
     "ten",
     "to",
     "tym",
-    "u",
-    "w",
-    "we",
-    "za",
-    "z",
-    "ze",
-    "że",
 )
+FUNCTION_WORD_SOURCE = PREPOSITION_AND_CONJUNCTION_SOURCE + COPULA_AND_PRONOUN_SOURCE
 
 
 def fold_diacritics(value: str) -> str:
@@ -89,6 +92,10 @@ def normalize_search_text(value: str) -> str:
 
 
 POLISH_FUNCTION_WORDS = frozenset(normalize_search_text(word) for word in FUNCTION_WORD_SOURCE)
+# The subset whose presence at the end of a phrase means the phrase is unfinished.
+POLISH_PHRASE_CUT_WORDS = frozenset(
+    normalize_search_text(word) for word in PREPOSITION_AND_CONJUNCTION_SOURCE
+)
 
 
 def ensure_case_insensitive_fuzzy_matching(cypher: str) -> str:

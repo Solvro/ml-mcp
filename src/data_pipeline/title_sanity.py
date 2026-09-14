@@ -15,6 +15,14 @@ different faults, one symptom:
 
 The prompt asks for clean titles and mostly gets them. What is left is corrected here, where the
 rule is deterministic and the result is the same on every run.
+
+Refusing a title deletes a row, and nothing brings it back: the completeness check counts no
+one-word rows, so a second pass never re-extracts one. A one-word title is therefore refused
+only when nothing in the page's own output attaches to it. ``patenty``, ``wynalazki``,
+``ksiazek`` and ``grantow`` are the PDF's own enumerated rows and the model links each to the
+category above it; ``zagranicznych`` is wording that fell out of a wrapped row and is attached
+to nothing. Both are one lowercase Polish noun, so no rule reading the title alone can separate
+them - review of PR #84, where the capitalisation rule alone deleted eight real rows in one run.
 """
 
 import re
@@ -22,7 +30,7 @@ from dataclasses import dataclass, field
 
 from src.text_normalization import (
     CYPHER_STRING_LITERAL_RE,
-    POLISH_FUNCTION_WORDS,
+    POLISH_PHRASE_CUT_WORDS,
     normalize_search_text,
 )
 
@@ -64,6 +72,10 @@ TITLE_ENTRY_RE = re.compile(
     rf"(?P<prefix>\btitle\s*:\s*)(?P<value>{CYPHER_STRING_LITERAL_RE.pattern})",
     re.IGNORECASE,
 )
+# A statement that relates two nodes, and the variables its pattern names. What the model
+# attached to something is a part of the page's structure, whatever its title looks like.
+RELATIONSHIP_PATTERN_RE = re.compile(r"-\s*\[[^\]]*\]\s*->|<-\s*\[[^\]]*\]\s*-")
+PATTERN_VARIABLE_RE = re.compile(r"\(\s*(?P<variable>[A-Za-z_]\w*)\s*[:)]")
 
 REASON_EMPTY = "empty after cleaning"
 REASON_TRUNCATED = "cut off mid-phrase"
@@ -138,21 +150,27 @@ def _title_tokens(title: str) -> list[str]:
     ]
 
 
-def title_rejection_reason(title: str) -> str | None:
+def title_rejection_reason(title: str, *, linked: bool = False) -> str | None:
     """
     Report why a title is not usable as an entity name, or None when it is.
 
-    Two shapes are refused. A title ending on a Polish function word was cut mid-phrase, which
-    is how "Udzial w" reached the graph. A title carrying one token is a name only when it is a
-    code (R1, W4) or a capitalised noun - "Informatyka" is an entity, "zagranicznych" is the
-    tail of a row.
+    Two shapes are refused. A title ending on a Polish preposition or conjunction was cut
+    mid-phrase, which is how "Udzial w" reached the graph; a copula is not a cut, since
+    "... kryteriami doboru kandydata sa" is how a Polish heading introduces the rows beneath it.
+    A title carrying one token is a name only when it is a code (R1, W4), a capitalised noun, or
+    something the page's own output links to.
+
+    ``linked`` is what separates "patenty" from "zagranicznych". Both are one lowercase Polish
+    noun, so the title alone cannot tell an enumerated row from wording that fell out of one;
+    what does is whether the model attached the node to anything. A node with a relationship is
+    part of the structure the page describes, whatever its title looks like.
 
     The issue proposed refusing every title under two tokens. That would also delete
-    "Informatyka", "Rektor" and "Dziekanat", so the capitalised single noun is kept: an entity
-    name is written as one, a fragment lifted from mid-phrase is not.
+    "Informatyka", "Rektor" and "Dziekanat", and on one run it deleted eight enumerated rows.
 
     Args:
         title: Cleaned title
+        linked: Whether a relationship in the same page attaches to this node
 
     Returns:
         A short reason for the log, or None when the title names something
@@ -161,7 +179,7 @@ def title_rejection_reason(title: str) -> str | None:
         return REASON_EMPTY
 
     words = title.split()
-    if normalize_search_text(words[-1]) in POLISH_FUNCTION_WORDS:
+    if normalize_search_text(words[-1]) in POLISH_PHRASE_CUT_WORDS:
         return REASON_TRUNCATED
 
     tokens = _title_tokens(title)
@@ -169,7 +187,7 @@ def title_rejection_reason(title: str) -> str | None:
         return None
     if tokens and ENTITY_CODE_RE.match(tokens[0]):
         return None
-    if title[0].isupper():
+    if title[0].isupper() or linked:
         return None
 
     return REASON_FRAGMENT
@@ -181,7 +199,9 @@ def sanitize_titles(statements: list[str]) -> tuple[list[str], TitleSanityReport
 
     A dropped node takes with it every statement that names its variable: the pipeline runs a
     page's statements as one query, so a relationship left pointing at a variable nothing binds
-    would fail the whole page rather than the one node.
+    would fail the whole page rather than the one node. That is also why a linked node is never
+    dropped for a one-word title - the statement removed with it is a relationship the page
+    asserts, and no later pass puts either back.
 
     Args:
         statements: Generated Cypher statements
@@ -190,11 +210,12 @@ def sanitize_titles(statements: list[str]) -> tuple[list[str], TitleSanityReport
         The surviving statements and a report of what was corrected
     """
     report = TitleSanityReport()
+    linked_variables = related_variables(statements)
     rejected_variables: set[str] = set()
     rewritten: list[str] = []
 
     for statement in statements:
-        updated, rejected = _sanitize_statement(statement, report)
+        updated, rejected = _sanitize_statement(statement, report, linked_variables)
         rejected_variables.update(rejected)
         rewritten.append(updated)
 
@@ -211,7 +232,27 @@ def sanitize_titles(statements: list[str]) -> tuple[list[str], TitleSanityReport
     return kept, report
 
 
-def _sanitize_statement(statement: str, report: TitleSanityReport) -> tuple[str, set[str]]:
+def related_variables(statements: list[str]) -> set[str]:
+    """
+    Collect the node variables a relationship statement names.
+
+    Args:
+        statements: Generated Cypher statements
+
+    Returns:
+        Every variable appearing in a pattern that relates two nodes, at either end
+    """
+    return {
+        variable.group("variable")
+        for statement in statements
+        if RELATIONSHIP_PATTERN_RE.search(statement)
+        for variable in PATTERN_VARIABLE_RE.finditer(statement)
+    }
+
+
+def _sanitize_statement(
+    statement: str, report: TitleSanityReport, linked_variables: set[str]
+) -> tuple[str, set[str]]:
     """Rewrite the titles in one statement and report the variables whose title was refused."""
     rejected: set[str] = set()
     result: list[str] = []
@@ -226,7 +267,7 @@ def _sanitize_statement(statement: str, report: TitleSanityReport) -> tuple[str,
         title = literal[1:-1]
         cleaned = clean_title(title)
 
-        reason = title_rejection_reason(cleaned)
+        reason = title_rejection_reason(cleaned, linked=node.group("variable") in linked_variables)
         if reason is not None:
             report.rejected.append((title, reason))
             rejected.add(node.group("variable"))
