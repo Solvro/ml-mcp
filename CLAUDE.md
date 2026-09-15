@@ -168,6 +168,7 @@ ml-mcp/
 │   │       ├── state.py         # GraphState TypedDict definition
 │   │       ├── cypher_guardrails.py # Read-only validation, LIMIT enforcement
 │   │       ├── question_analysis.py # Polish question-literal detection, search phrases
+│   │       ├── schema_visibility.py # Hides the pipeline's bookkeeping labels from the prompt
 │   │       └── graph_visualizer.py  # Mermaid diagram generator
 │   ├── topwr_api/
 │   │   ├── server.py            # FastAPI app, endpoints, MCP client integration
@@ -207,6 +208,7 @@ ml-mcp/
 │   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
+│   ├── test_schema_visibility.py               # Bookkeeping labels never reach the Cypher prompt
 │   ├── test_logging_config.py                  # LOG_LEVEL resolution and root-logger setup
 │   ├── test_no_print_in_src.py                 # src/ logs instead of printing (AST walk)
 │   ├── test_mcp_health_signal.py               # /health, ToolError on failure, driver shutdown
@@ -702,6 +704,33 @@ and conclude the cache was fine, skipping the refresh entirely.
 Cypher model call, and no generated query executed. Writing a query
 against no schema is exactly the invented-property answer the rest of this section exists to
 prevent, and it is not worth two LLM calls to produce one.
+
+**It sees the live schema, not the whole database.** `refresh_schema()` describes every label
+Neo4j holds, and three of them are the pipeline's own books: `ProcessedDocument {hash, status,
+claimed_at, …}`, `Source {source_id}` and `PipelineRun {run_at, source_hashes}`. They record
+which page was ingested when, and in the prompt they look exactly like the entities a question
+is about — a question about *dokumenty* answered from them returns ingestion bookkeeping
+dressed as university data. `schema_visibility.hide_system_labels` takes them out of the text
+in `_fetch_schema`, before anything caches or reads it, along with every relationship pattern
+with one of them at either end and any relationship type left without a surviving pattern
+(`FROM_SOURCE` only ever ends at `:Source`, so once those go it cannot be traversed at all).
+
+The vocabulary is `SYSTEM_LABELS`, the same one the full-text index and the dedup pass already
+honour. Removing the labels rather than telling the model to avoid them is the point: a prompt
+line is something a model can talk itself out of on any given run, while a label that was never
+described is simply not there. **Filtering happens before the emptiness check**, so a graph
+holding nothing but bookkeeping — a run that ingested no entities — reads as empty and abstains
+instead of querying run timestamps, and an empty schema is not cached, so the next question
+looks again.
+
+A layout the filter cannot parse is logged and passed through untouched. One stray line in the
+prompt is a smaller problem than cutting real entities out of the only description of the graph
+the model gets. `tests/test_schema_visibility.py` builds its input by calling the same
+`neo4j_graphrag.schema.format_schema` the driver calls, so a library that changes that layout
+fails there instead of quietly letting the bookkeeping back in.
+
+The pipeline's own `reflect_on_schema` still reads the unfiltered schema; it feeds the
+extraction model, not this one, and `label_vocabulary` bounds what it can produce.
 
 ### Abstention Is a Retrieval Decision
 
