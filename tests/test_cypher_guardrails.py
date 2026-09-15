@@ -147,16 +147,67 @@ def test_rejects_empty_query(query):
 
 
 def test_ensure_limit_appends_when_missing():
-    assert ensure_limit(READ_QUERY, max_results=10) == READ_QUERY_WITH_LIMIT
+    assert ensure_limit(READ_QUERY, max_results=10) == f"{READ_QUERY}\nLIMIT 10"
 
 
-def test_ensure_limit_preserves_existing_clause():
-    assert ensure_limit(READ_QUERY_WITH_LIMIT, max_results=5) == READ_QUERY_WITH_LIMIT
+def test_ensure_limit_clamps_a_larger_limit_to_the_configured_cap():
+    # Issue #85: any LIMIT at all used to satisfy the check, so `LIMIT 999999999` passed and
+    # rag.max_results decided nothing.
+    assert ensure_limit(f"{READ_QUERY} LIMIT 999999999", max_results=5) == f"{READ_QUERY} LIMIT 5"
+
+
+def test_ensure_limit_clamps_the_limit_the_prompt_asks_for():
+    # The Cypher prompt says "Always add LIMIT 10" and the config says 5. The config wins.
+    assert ensure_limit(READ_QUERY_WITH_LIMIT, max_results=5) == f"{READ_QUERY} LIMIT 5"
+
+
+def test_ensure_limit_leaves_a_smaller_limit_alone():
+    # A model narrowing its own result set is not what the cap is defending against.
+    narrowed = f"{READ_QUERY} LIMIT 3"
+
+    assert ensure_limit(narrowed, max_results=5) == narrowed
+
+
+def test_ensure_limit_leaves_an_intermediate_limit_alone():
+    # `WITH ... LIMIT 100` shapes an intermediate result; rewriting it changes what the query
+    # means, while what reaches the answering model is decided by the trailing clause.
+    query = "MATCH (n:Node) WITH n ORDER BY n.rank DESC LIMIT 100 RETURN n.value"
+
+    assert ensure_limit(query, max_results=5) == f"{query}\nLIMIT 5"
+
+
+def test_ensure_limit_caps_a_query_whose_only_limit_is_intermediate():
+    query = "MATCH (n:Node) WITH n LIMIT 1000 RETURN n.value"
+
+    capped = ensure_limit(query, max_results=5)
+
+    assert capped.endswith("LIMIT 5")
+    assert "LIMIT 1000" in capped
 
 
 def test_ensure_limit_ignores_limit_inside_string_literal():
-    query = "MATCH (n:Node) WHERE n.value CONTAINS 'LIMIT' RETURN n.value"
-    assert ensure_limit(query, max_results=10).endswith("LIMIT 10")
+    query = "MATCH (n:Node) WHERE n.value CONTAINS 'LIMIT 900' RETURN n.value"
+
+    assert ensure_limit(query, max_results=10) == f"{query}\nLIMIT 10"
+
+
+def test_ensure_limit_survives_a_trailing_comment():
+    query = f"{READ_QUERY} // zwroc wszystko"
+
+    capped = ensure_limit(query, max_results=5)
+
+    assert capped.endswith("LIMIT 5")
+    assert capped.splitlines()[0] == query
+
+
+def test_ensure_limit_clamps_past_a_trailing_comment():
+    capped = ensure_limit(f"{READ_QUERY} LIMIT 900 // zwroc wszystko", max_results=5)
+
+    assert capped == f"{READ_QUERY} LIMIT 5"
+
+
+def test_ensure_limit_drops_a_trailing_semicolon():
+    assert ensure_limit(f"{READ_QUERY} LIMIT 900 ;", max_results=5) == f"{READ_QUERY} LIMIT 5"
 
 
 def test_ensure_limit_rejects_non_positive_max_results():

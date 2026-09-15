@@ -42,7 +42,7 @@ def test_retrieve_normalizes_only_string_values_before_database_query() -> None:
     executed_query = (
         "MATCH (wydział:Wydział) "
         "WHERE toLower(wydział.tytuł) CONTAINS toLower('WYDZIAL INFORMATYKI') "
-        "RETURN wydział.tytuł LIMIT 5"
+        "RETURN wydział.tytuł\nLIMIT 5"
     )
     rag.database.query.assert_called_once_with(executed_query)
     assert result == {
@@ -69,7 +69,7 @@ def test_retrieve_preserves_dynamic_property_key_case() -> None:
     executed_query = (
         "MATCH (n:Faculty) "
         "WHERE toLower(n['ExactTitle']) = toLower('WROCLAW') "
-        "RETURN n['ExactTitle'] LIMIT 5"
+        "RETURN n['ExactTitle']\nLIMIT 5"
     )
     rag.database.query.assert_called_once_with(executed_query)
     assert result["generated_cypher"] == executed_query
@@ -83,7 +83,7 @@ def test_retrieve_preserves_case_for_stable_ids() -> None:
         {"generated_cypher": ("MATCH (n:Faculty) WHERE n.id = 'AbC-123' RETURN n.id")}
     )
 
-    executed_query = "MATCH (n:Faculty) WHERE n.id = 'AbC-123' RETURN n.id LIMIT 5"
+    executed_query = "MATCH (n:Faculty) WHERE n.id = 'AbC-123' RETURN n.id\nLIMIT 5"
     rag.database.query.assert_called_once_with(executed_query)
     assert result["generated_cypher"] == executed_query
 
@@ -102,7 +102,7 @@ def test_retrieve_enforces_case_insensitive_fuzzy_matching() -> None:
 
     executed_query = (
         "MATCH (n:Faculty) WHERE toLower(n.title) CONTAINS "
-        "toLower('WYDZIAL ZARZADZANIA') RETURN n.title LIMIT 5"
+        "toLower('WYDZIAL ZARZADZANIA') RETURN n.title\nLIMIT 5"
     )
     rag.database.query.assert_called_once_with(executed_query)
     assert result["generated_cypher"] == executed_query

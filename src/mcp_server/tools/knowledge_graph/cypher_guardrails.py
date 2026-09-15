@@ -35,7 +35,10 @@ CALL_SUBQUERY_RE = re.compile(r"\bCALL\s*\{", re.IGNORECASE)
 STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
 COMMENT_RE = re.compile(r"//.*?$|/\*.*?\*/", re.MULTILINE | re.DOTALL)
 CODE_FENCE_RE = re.compile(r"^\s*```\w*\s*\n?|\n?\s*```\s*$", re.MULTILINE)
-LIMIT_CLAUSE_RE = re.compile(r"\bLIMIT\s+\d+\b", re.IGNORECASE)
+# The cap on what a query may return is the LIMIT it ends on. One further in - `WITH n ORDER BY
+# n.rank DESC LIMIT 100` - shapes an intermediate result, and rewriting it would change what the
+# query means rather than how much of the answer comes back.
+TRAILING_LIMIT_RE = re.compile(r"\bLIMIT\s+(?P<rows>\d+)\s*$", re.IGNORECASE)
 
 
 class UnsafeCypherQueryError(ValueError):
@@ -49,10 +52,19 @@ def strip_code_fences(raw: str) -> str:
     return stripped.strip()
 
 
+def _blank(match: re.Match[str]) -> str:
+    """Replace a match with as many spaces as it had characters."""
+    return " " * len(match.group(0))
+
+
 def _scrub_for_validation(cypher: str) -> str:
-    """Remove comments and string literals before keyword inspection."""
-    without_comments = COMMENT_RE.sub(" ", cypher)
-    return STRING_LITERAL_RE.sub(" ", without_comments)
+    """Blank out comments and string literals before keyword inspection.
+
+    Blanked rather than deleted: ``ensure_limit`` finds the trailing LIMIT in this text and
+    rewrites it in the original, which only works while the two agree on every offset.
+    """
+    without_comments = COMMENT_RE.sub(_blank, cypher)
+    return STRING_LITERAL_RE.sub(_blank, without_comments)
 
 
 def validate_read_only(cypher: str, allowed_procedures: frozenset[str] = frozenset()) -> None:
@@ -92,11 +104,37 @@ def validate_read_only(cypher: str, allowed_procedures: frozenset[str] = frozens
 
 
 def ensure_limit(cypher: str, max_results: int) -> str:
-    """Ensure the query has a LIMIT clause, appending one if missing."""
+    """Cap the rows a query can return at ``max_results``.
+
+    A query with no trailing LIMIT gets one. A query that ends on a LIMIT larger than
+    ``max_results`` has it clamped down - the model asking for 10 rows, or for 999999999, does
+    not get to decide how much of the graph comes back. A smaller one is left alone: a model
+    narrowing its own result set is not the problem this cap exists for.
+
+    Only the trailing LIMIT is read or rewritten, so a `WITH ... LIMIT n` that shapes an
+    intermediate result keeps meaning what it said.
+
+    Args:
+        cypher: Query to cap
+        max_results: Most rows the query may return
+
+    Returns:
+        The query, ending on a LIMIT of at most ``max_results``
+
+    Raises:
+        ValueError: If max_results is not a positive integer
+    """
     if max_results <= 0:
         raise ValueError("max_results must be a positive integer")
-    scrubbed = _scrub_for_validation(cypher)
-    if LIMIT_CLAUSE_RE.search(scrubbed):
-        return cypher.rstrip().rstrip(";")
+
     base = cypher.rstrip().rstrip(";")
-    return f"{base} LIMIT {max_results}"
+    trailing = TRAILING_LIMIT_RE.search(_scrub_for_validation(base))
+
+    if trailing is None:
+        # On its own line, so a query ending in a `//` comment does not swallow the clause.
+        return f"{base}\nLIMIT {max_results}"
+
+    if int(trailing.group("rows")) <= max_results:
+        return base
+
+    return f"{base[: trailing.start()]}LIMIT {max_results}{base[trailing.end() :]}"
