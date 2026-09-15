@@ -41,7 +41,9 @@ SECTION_HEADERS = (
 # enhanced schema, `Course {title: STRING}` without it. Indented lines belong to the entry above
 # them, so only an unindented line can open a new one.
 ENHANCED_ENTRY_RE = re.compile(r"^- \*\*(?P<name>.+?)\*\*\s*$")
-COMPACT_ENTRY_RE = re.compile(r"^(?P<name>[^\s{]+)\s*\{")
+# Everything up to the brace, not up to the first space: a Neo4j label may contain one, and the
+# compact layout writes it unquoted, so `Study Program {title: STRING}` is a single entry.
+COMPACT_ENTRY_RE = re.compile(r"^(?P<name>[^{]+?)\s*\{")
 
 # `(:Professor)-[:TEACHES]->(:Course)`
 RELATIONSHIP_RE = re.compile(
@@ -84,13 +86,25 @@ def _split_sections(schema: str) -> dict[str, list[str]] | None:
 
 
 def _drop_entries(lines: list[str], unwanted: frozenset[str] | set[str]) -> list[str]:
-    """Remove each named entry of a properties section along with the lines it owns."""
+    """
+    Remove each named entry of a properties section along with the lines it owns.
+
+    Only an indented line continues the entry above it. An unindented line that opens no entry
+    the layout accounts for ends the drop and is kept: it is not part of the entry being removed,
+    and swallowing it would take a real label out of the schema with nothing in the log to say so
+    (review of PR #89). With ``COMPACT_ENTRY_RE`` reading the whole label nothing should reach
+    this, which is the reason it has to fail towards keeping the line.
+    """
     kept: list[str] = []
     dropping = False
     for line in lines:
         name = _entry_name(line)
         if name is not None:
             dropping = name in unwanted
+        elif not line[:1].isspace():
+            if dropping and line.strip():
+                logger.warning("Unreadable line in the Neo4j schema, keeping it: %r", line)
+            dropping = False
         if not dropping:
             kept.append(line)
     return kept

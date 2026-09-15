@@ -5,6 +5,8 @@ Neo4j driver calls, so these pin the filter to the layout it will actually meet 
 a hand-written guess at it.
 """
 
+import logging
+
 import pytest
 from neo4j_graphrag.schema import format_schema
 
@@ -26,6 +28,7 @@ def _structured_schema() -> dict:
             "ProcessedDocument": [
                 {"property": "hash", "type": "STRING", "values": ["3f2a"]},
                 {"property": "status", "type": "STRING", "values": ["completed"]},
+                {"property": "claimed_at", "type": "STRING", "values": ["2026-09-15"]},
             ],
             "Source": [
                 {"property": "source_id", "type": "STRING", "values": ["file://a.pdf#page=1"]},
@@ -134,3 +137,56 @@ def test_an_unreadable_layout_is_left_alone():
     not_our_layout = "Labels: Course, Professor\nEdges: TEACHES"
 
     assert hide_system_labels(not_our_layout) == not_our_layout
+
+
+def test_a_label_with_a_space_survives_after_a_bookkeeping_one() -> None:
+    """Review of PR #89: the compact layout writes labels unquoted, spaces and all.
+
+    `Study Program {title: STRING}` did not look like an entry, so it was read as a
+    continuation of the `Source` entry above it and went out with it. The Course/Professor
+    fixture cannot reach this - both names are a single token.
+    """
+    compact = format_schema(
+        schema={
+            "node_props": {
+                "Source": [{"property": "source_id", "type": "STRING", "values": ["a.pdf"]}],
+                "Study Program": [
+                    {"property": "title", "type": "STRING", "values": ["Informatyka"]}
+                ],
+            },
+            "rel_props": {},
+            "relationships": [],
+        },
+        is_enhanced=False,
+    )
+
+    visible = hide_system_labels(compact)
+
+    assert "Study Program" in visible
+    assert "Source" not in visible
+
+
+def test_a_line_the_layout_does_not_account_for_ends_the_drop(caplog) -> None:
+    # Nothing should reach this once the label pattern reads the whole name, which is why it
+    # has to fail towards keeping the line rather than silently swallowing it.
+    schema = "\n".join(
+        [
+            "Node properties:",
+            "- **Source**",
+            "  - `source_id`: STRING",
+            "something the layout does not describe",
+            "- **Course**",
+            "  - `title`: STRING",
+            "Relationship properties:",
+            "The relationships:",
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        visible = hide_system_labels(schema)
+
+    assert "something the layout does not describe" in visible
+    assert "Course" in visible
+    assert "Source" not in visible
+    assert "source_id" not in visible
+    assert "keeping it" in caplog.text
