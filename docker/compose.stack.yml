@@ -27,11 +27,21 @@ services:
       # mounted into the container.
       - NEO4J_dbms_security_procedures_unrestricted=apoc.meta.*,apoc.schema.*,apoc.any.property
       - NEO4J_dbms_security_procedures_allowlist=apoc.meta.*,apoc.schema.*,apoc.any.property,apoc.coll.sort,apoc.refactor.mergeNodes,apoc.create.removeLabels,apoc.export.cypher.all
+      # Sized for the target VM (#85). Left unset, Neo4j picks a heap from whatever the host
+      # reports, which on a shared box is a number nobody chose; the initial size matches the
+      # maximum so the JVM never pauses to resize one.
+      - NEO4J_server_memory_heap_initial__size=1G
+      - NEO4J_server_memory_heap_max__size=1G
+      - NEO4J_server_memory_pagecache_size=512M
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_import:/var/lib/neo4j/import
       - neo4j_plugins:/plugins
+    # heap 1G + page cache 512M + ~1G the JVM needs outside both (metaspace, thread stacks,
+    # native buffers). Without a limit a runaway query is the host's problem rather than this
+    # container's, and the restart policy above cannot help with an OOM it never sees.
+    mem_limit: 2560m
     restart: unless-stopped
     healthcheck:
       test: [ "CMD-SHELL", "cypher-shell -u neo4j -p ${NEO4J_PASSWORD} 'RETURN 1' || exit 1" ]
