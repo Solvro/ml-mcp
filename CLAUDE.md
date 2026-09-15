@@ -575,6 +575,35 @@ leaves alone.
   Cypher; the only reviewed exception is the full-text lookup described below, which passes its
   one procedure through `validate_read_only(..., allowed_procedures=...)`.
 
+### A Generated Query Is Capped and Cannot Write
+
+Two limits sit between the Cypher model and the database, and neither is the prompt.
+
+**The row cap is `rag.max_results`, not what the model asked for.** `ensure_limit` used to
+return early on any `LIMIT` at all, so `LIMIT 999999999` satisfied it and `max_results` decided
+nothing; the prompt's `LIMIT 10` is what ran against a config that says 5 (#85). It now appends
+a `LIMIT` when the query ends without one and clamps a trailing one that asks for more, leaving
+a smaller one alone — a model narrowing its own result set is not what the cap defends against.
+
+Only the **trailing** clause is read or rewritten. A `WITH n ORDER BY n.rank DESC LIMIT 100`
+shapes an intermediate result, and rewriting it would change what the query means rather than
+how much of the answer comes back; what reaches the answering model is decided by the last
+clause alone, so a query whose only `LIMIT` is intermediate gets a cap appended. To make the
+clamp spliceable, `_scrub_for_validation` blanks comments and string literals instead of
+deleting them, so the scrubbed text and the original agree on every offset. An appended `LIMIT`
+goes on its own line, because after a trailing `//` comment a space-separated one landed inside
+the comment and never applied.
+
+**The access mode is the database's own rule.** `RAG._read_query` runs the primary query and
+every retry with `default_access_mode=READ`, so a mutation is refused by Neo4j and not only by a
+regex over text — which matters most for the full-text rescue, the one path where `CALL` is
+allowed at all. `Neo4jGraph.query` exposes no routing argument, so this goes in through
+`session_params`, which takes the driver's implicit-transaction path and gives up the managed
+retry on a transient error. Against the single instance this deploys on that retry has nothing
+to recover, and a retrieval failure already escalates in `retrieve()`. `ping_database` and the
+schema probe deliberately keep the managed path, so the outage bound measured for the health
+signal is unchanged.
+
 ### Text2Cypher Determinism and Empty-Result Escalation
 
 Both pipeline models run at `temperature: 0` (`llm.fast_model`, `llm.accurate_model`). That
@@ -829,6 +858,15 @@ mapping. The cost is that nothing on the host can reach Neo4j or the server eith
 Neo4j browser, `just kg`, `just populate-graph` and `uv run dump-graph`, and it is an override
 on top of the production file rather than a second copy of it.
 
+**Neo4j's memory is chosen, not inherited.** Left unset, Neo4j sizes its heap from whatever the
+host reports, which on a shared VM is a number nobody picked, and the container had no limit at
+all — a runaway query was the host's problem, and `restart: unless-stopped` cannot help with an
+OOM it never sees (#85). `NEO4J_server_memory_heap_max__size=1G` and
+`NEO4J_server_memory_pagecache_size=512M` are what the target VM was sized for; the initial heap
+matches the maximum so the JVM never pauses to resize one. `mem_limit: 2560m` is those two plus
+the ~1G the JVM needs outside both for metaspace, thread stacks and native buffers — sizing the
+container to heap + page cache alone is how a JVM gets OOM-killed while reporting free heap.
+
 **The network is the whole boundary, on purpose.** `/mcp` carries no token and `user_input`
 has no cap here. The server lives only inside the VM, the only thing on its network is
 `ml-mcp-backend`, and every third party reaches it through that backend, which owns
@@ -979,7 +1017,10 @@ fix for that is a second key, not a second attempt.
    The MCP side was fixed in #64; this half was left alone deliberately, since failing the API's
    probe on a dependency hiccup would restart a container that is itself fine.
 
-6. **Cypher LIMIT enforcement** — the RAG pipeline strips and re-adds `LIMIT` to all generated Cypher queries. Do not rely on LLM to add it.
+6. **Cypher LIMIT enforcement** — `ensure_limit` caps every generated query at
+   `rag.max_results`: it appends a `LIMIT` when the query ends without one and clamps a trailing
+   one that asks for more. A smaller one is left alone. Do not rely on the LLM to add it — the
+   prompt says `LIMIT 10` and the config says 5, and the config is what runs.
 
 7. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
 
