@@ -22,3 +22,36 @@ def test_generated_write_literals_are_diacritic_folded(monkeypatch) -> None:
     assert "n.context = 'Znajduje sie we Wroclawiu'" in result
     assert "ł" not in result
     assert "ę" not in result
+
+
+# Review of PR #84: one page of seven failed with "Variable `node13` already declared", from a
+# part that was a bare MERGE (node13) next to the node13 the page had already bound. A page's
+# statements run as one query, so that one part cost every row on the page.
+def test_a_statement_re_declaring_a_bound_variable_is_dropped(monkeypatch) -> None:
+    class FakePipe:
+        def run(self, context: str, schema_context: str = "") -> list[str]:
+            return [
+                "MERGE (node13:CriterionCategory {title: 'Inne wazne osiagniecia', "
+                "context: 'Kategoria'})",
+                "MERGE (node13)",
+                "MERGE (node14:Criterion {title: 'Patenty i wdrozenia', context: 'Rodzaj'})",
+            ]
+
+        def run_missing_rows(self, context: str, rows: list[str]) -> list[str]:
+            return []
+
+    monkeypatch.setattr(cypher_module, "LLMPipe", FakePipe)
+    monkeypatch.setattr(cypher_module, "get_run_logger", MagicMock)
+
+    result = cypher_module.generate_cypher_queries.fn("Kryteria oceny.\n")
+
+    assert result.count("MERGE") == 2
+    assert "'inne wazne osiagniecia'" in result
+    assert "'patenty i wdrozenia'" in result
+
+
+def test_a_bare_merge_nothing_else_binds_is_left_alone() -> None:
+    """There it is the binding, and dropping it would strand the relationships naming it."""
+    parts = ["MERGE (node13)", "MERGE (node13)-[:HAS_CRITERION]->(node14)"]
+
+    assert cypher_module._drop_redeclarations(parts, MagicMock()) == parts

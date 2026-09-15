@@ -5,18 +5,20 @@ nodes for one entity. Fixing generation only helps future runs — everything al
 split until it is repaired, so this pass runs after ingestion:
 
 1. relabel nodes whose label is outside the configured vocabulary;
-2. backfill the canonical key on nodes that predate it;
-3. merge the nodes that end up sharing a label and a key;
-4. fold a node that carries only the fallback label into the node under a real label that
+2. take the page's layout back out of stored titles, and recompute the keys that were derived
+   from it (issue #79);
+3. backfill the canonical key on nodes that predate it;
+4. merge the nodes that end up sharing a label and a key;
+5. fold a node that carries only the fallback label into the node under a real label that
    shares its key (issue #8).
 
 Merging needs APOC. If the plugin is missing the pass reports what it found and changes nothing,
 because a half-finished merge is worse than a duplicate.
 
 Two modes. A pipeline run passes the keys it just wrote and only those groups are examined, so
-the cost tracks what changed rather than how large the graph has grown. Relabelling and key
-backfill repair nodes written before the rules existed, which no later run can reintroduce, so
-they belong to the full pass — run once with ``uv run dedup-graph``.
+the cost tracks what changed rather than how large the graph has grown. Relabelling, title
+repair and key backfill all fix nodes written before the rules existed, which no later run can
+reintroduce, so they belong to the full pass — run once with ``uv run dedup-graph``.
 """
 
 import logging
@@ -29,6 +31,7 @@ from src.config.config import get_config
 from src.config.system_labels import SYSTEM_LABELS
 from src.data_pipeline.canonical_nodes import CONTEXT_SEPARATOR, canonical_entity_key
 from src.data_pipeline.label_vocabulary import LabelVocabulary
+from src.data_pipeline.title_sanity import clean_title, title_rejection_reason
 
 module_logger = logging.getLogger(__name__)
 
@@ -157,6 +160,96 @@ def relabel_off_vocabulary_nodes(graph: Neo4jGraph, vocabulary: LabelVocabulary)
         logger.info("Relabelled stored nodes %s -> %s", stored_label, canonical)
 
     return rewrites
+
+
+def repair_stored_titles(graph: Neo4jGraph) -> dict[str, int]:
+    """
+    Take the page's layout back out of titles that were stored carrying it.
+
+    Issue #79: nodes were stored as "a) doswiadczenie w organizowaniu ..." and "Odbyte
+    szkolenia:", and their key was derived from that spelling. The enumerated copy and the plain
+    one therefore sit under two keys, and the merge below cannot see that they are one entity.
+
+    Title and key are recomputed in Python by the same functions ingestion uses, so a repaired
+    node and a freshly written one cannot disagree. Nodes that have no key yet are left to
+    backfill_entity_keys, which runs next and now derives a clean key of its own.
+
+    Titles that name nothing at all - a fragment such as "zagranicznych" - are reported and left
+    in place. Ingestion refuses to write new ones; deleting what is already stored is a call for
+    whoever knows what else points at it.
+
+    Args:
+        graph: Connected Neo4j graph
+
+    Returns:
+        Counts of the titles rewritten and the keys recomputed
+    """
+    logger = _get_logger()
+    rows = graph.query(
+        """
+        MATCH (node)
+        WHERE node.title IS NOT NULL
+          AND NOT any(label IN labels(node) WHERE label IN $internal_labels)
+        RETURN elementId(node) AS node_id, node.title AS title, node.key AS key
+        """,
+        params={"internal_labels": sorted(INTERNAL_LABELS)},
+    )
+
+    updates: list[dict[str, str | None]] = []
+    titles_cleaned = 0
+    keys_repaired = 0
+    unusable: list[str] = []
+
+    for row in rows:
+        stored_title = row["title"] or ""
+        cleaned = clean_title(stored_title)
+        if not cleaned:
+            continue
+
+        reason = title_rejection_reason(cleaned)
+        if reason is not None:
+            unusable.append(f"{stored_title!r} ({reason})")
+
+        stored_key = row["key"]
+        repaired_key = canonical_entity_key(cleaned) if stored_key is not None else None
+        title_changed = cleaned != stored_title
+        key_changed = bool(repaired_key) and repaired_key != stored_key
+
+        if not title_changed and not key_changed:
+            continue
+
+        titles_cleaned += int(title_changed)
+        keys_repaired += int(key_changed)
+        updates.append(
+            {
+                "node_id": row["node_id"],
+                "title": cleaned,
+                "key": repaired_key if key_changed else stored_key,
+            }
+        )
+
+    for start in range(0, len(updates), KEY_BACKFILL_BATCH_SIZE):
+        graph.query(
+            """
+            UNWIND $updates AS update
+            MATCH (node) WHERE elementId(node) = update.node_id
+            SET node.title = update.title, node.key = update.key
+            """,
+            params={"updates": updates[start : start + KEY_BACKFILL_BATCH_SIZE]},
+        )
+
+    logger.info(
+        "Cleaned %d stored title(s) and recomputed %d key(s)", titles_cleaned, keys_repaired
+    )
+
+    if unusable:
+        logger.warning(
+            "%d stored title(s) name nothing and were left in place: %s",
+            len(unusable),
+            "; ".join(unusable[:10]),
+        )
+
+    return {"titles_cleaned": titles_cleaned, "keys_repaired": keys_repaired}
 
 
 def backfill_entity_keys(graph: Neo4jGraph) -> int:
@@ -311,6 +404,8 @@ def deduplicate_graph(
             logger.warning("Neo4j credentials not set - skipping deduplication")
             return {
                 "relabelled_labels": 0,
+                "titles_cleaned": 0,
+                "keys_repaired": 0,
                 "keys_backfilled": 0,
                 "groups_merged": 0,
                 "fallback_merged": 0,
@@ -325,18 +420,23 @@ def deduplicate_graph(
         groups_merged = merge_duplicate_nodes(graph, keys)
         return {
             "relabelled_labels": 0,
+            "titles_cleaned": 0,
+            "keys_repaired": 0,
             "keys_backfilled": 0,
             "groups_merged": groups_merged,
             "fallback_merged": merge_fallback_nodes(graph, vocabulary.fallback_label, keys),
         }
 
     relabelled = relabel_off_vocabulary_nodes(graph, vocabulary)
+    title_repairs = repair_stored_titles(graph)
     keys_backfilled = backfill_entity_keys(graph)
     groups_merged = merge_duplicate_nodes(graph)
     fallback_merged = merge_fallback_nodes(graph, vocabulary.fallback_label)
 
     return {
         "relabelled_labels": len(relabelled),
+        "titles_cleaned": title_repairs["titles_cleaned"],
+        "keys_repaired": title_repairs["keys_repaired"],
         "keys_backfilled": keys_backfilled,
         "groups_merged": groups_merged,
         "fallback_merged": fallback_merged,

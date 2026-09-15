@@ -1,4 +1,5 @@
 import os
+import re
 import threading
 from typing import List
 
@@ -14,6 +15,7 @@ from src.config.config import get_config
 from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.completeness import extract_list_rows, rows_missing_from_cypher
 from src.data_pipeline.label_vocabulary import LabelVocabulary, render_allowed_labels
+from src.data_pipeline.title_sanity import sanitize_titles
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
 # The second extraction pass is one extra model call per page that lost rows. It only fires on a
@@ -59,6 +61,12 @@ def _claim_missed_row_pass() -> bool:
             return False
         _missed_row_passes += 1
         return True
+
+
+# A node MERGE that binds a variable with a label, which is the shape the prompt asks for, and
+# the degenerate one that binds nothing and can only re-declare what another statement bound.
+LABELLED_NODE_MERGE_RE = re.compile(r"MERGE\s*\(\s*(?P<variable>[A-Za-z_]\w*)\s*:")
+BARE_NODE_MERGE_RE = re.compile(r"^MERGE\s*\(\s*(?P<variable>[A-Za-z_]\w*)\s*\)$", re.IGNORECASE)
 
 
 class PipeState(MessagesState):
@@ -265,6 +273,86 @@ def _canonicalize_labels(parts: List[str], logger) -> List[str]:
     return canonical_parts
 
 
+def _drop_redeclarations(parts: List[str], logger) -> List[str]:
+    """Drop a statement that re-declares a variable another statement already binds.
+
+    ``MERGE (node13)`` with no label and no properties binds nothing new. When the page already
+    binds that variable, Neo4j rejects the statement - and with it the whole page, since a
+    page's statements run as one query, so one degenerate part costs every row on that page.
+    A run on the #79 branch lost a page of seven that way. The part is not in any raw model
+    output the task logged, and no rewrite here reproduces it, so this drops the shape rather
+    than claiming to know who wrote it; every part is now logged at debug so the next one can be
+    attributed.
+
+    A bare MERGE nothing else binds is left alone: there it is the binding, and dropping it
+    would leave the relationships that name the variable pointing at nothing.
+
+    Args:
+        parts: Generated Cypher statements, after every rewrite
+        logger: Prefect run logger
+
+    Returns:
+        The statements with the degenerate re-declarations removed
+    """
+    bound = {
+        match.group("variable") for part in parts for match in LABELLED_NODE_MERGE_RE.finditer(part)
+    }
+
+    kept: List[str] = []
+    dropped: List[str] = []
+    for part in parts:
+        match = BARE_NODE_MERGE_RE.match(part.strip())
+        if match is not None and match.group("variable") in bound:
+            dropped.append(match.group("variable"))
+            continue
+        kept.append(part)
+
+    if dropped:
+        logger.warning(
+            "Dropped %d statement(s) re-declaring an already bound variable: %s",
+            len(dropped),
+            ", ".join(dropped),
+        )
+
+    return kept
+
+
+def _sanitize_titles(parts: List[str], logger) -> List[str]:
+    """Take the page's layout back out of the titles, and drop the nodes left without a name.
+
+    The prompt asks for a title that names the entity, and mostly gets one. What it also
+    produced was the row's enumerator and full stop ("a) ... naukowych."), a heading's colon
+    ("Odbyte szkolenia:") and phrases cut in half ("Udzial w", "zagranicznych"). The first two
+    split one entity across two keys; the third puts something in the graph that no question can
+    reach.
+
+    Args:
+        parts: Generated Cypher statements
+        logger: Prefect run logger
+
+    Returns:
+        The statements with clean titles, minus the nodes whose title named nothing
+    """
+    kept, report = sanitize_titles(parts)
+
+    if report.cleaned:
+        logger.info(
+            "Title sanity: cleaned %d title(s): %s",
+            len(report.cleaned),
+            "; ".join(f"{before!r} -> {after!r}" for before, after in report.cleaned[:10]),
+        )
+
+    if report.rejected:
+        logger.warning(
+            "Title sanity: refused %d title(s), removing %d statement(s): %s",
+            len(report.rejected),
+            report.dropped_statements,
+            "; ".join(f"{title!r} ({reason})" for title, reason in report.rejected[:10]),
+        )
+
+    return kept
+
+
 @task
 def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> str:
     """Generate cypher statements from text using LLMPipe.
@@ -283,12 +371,18 @@ def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> st
     parts = _recover_missed_rows(llm, extracted_text, parts, logger)
     parts = [normalize_cypher_string_literals(part, normalizer=fold_diacritics) for part in parts]
     parts = _canonicalize_labels(parts, logger)
+    parts = _sanitize_titles(parts, logger)
     parts = [rewrite_merge_to_canonical_key(part) for part in parts]
+    parts = _drop_redeclarations(parts, logger)
 
     try:
         logger.info("LLM returned %d parts", len(parts))
         for i, p in enumerate(parts[:10]):
             logger.info("LLM part %d: %s", i, (p[:400] + "...") if len(p) > 400 else p)
+        # Untruncated and complete, so a page Neo4j rejects can be traced to the statement that
+        # did it - the first ten, cut at 400 characters, could not answer that.
+        for i, p in enumerate(parts):
+            logger.debug("Generated part %d: %s", i, p)
     except Exception:
         logger.debug("Failed to log LLM parts")
 

@@ -12,6 +12,7 @@ node it already created rather than sitting next to it.
 
 import re
 
+from src.data_pipeline.title_sanity import clean_title
 from src.text_normalization import CYPHER_STRING_LITERAL_RE, normalize_search_text
 
 # One MERGE of a single node with a property map, which is the shape the extraction prompt asks
@@ -88,12 +89,18 @@ def canonical_entity_key(title: str) -> str:
     entities apart, so "Informatyka (studia I stopnia)" and "Informatyka (studia II stopnia)"
     stay two nodes.
 
+    The enumerator a row carried on the page is dropped first (issue #79). Folding alone left
+    it in the key, so "a) doswiadczenie w organizowaniu ..." and the same criterion written
+    without its letter keyed as two entities - including for a node whose key is backfilled from
+    a title stored before this rule existed.
+
     Args:
         title: Entity title as the extraction model wrote it
 
     Returns:
         Lowercase ASCII key, or an empty string when the title carries no usable characters
     """
+    title = clean_title(title)
     suffix = PARENTHETICAL_SUFFIX_RE.search(title)
     without_abbreviation = title
     if suffix is not None and looks_like_abbreviation(suffix.group("inner")):

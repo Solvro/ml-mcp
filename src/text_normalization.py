@@ -27,6 +27,58 @@ FUZZY_STRING_COMPARISON_RE = re.compile(
 )
 
 
+# Polish words that carry no entity of their own. Retrieval refuses to start or end a search
+# phrase on any of them. Ingestion uses only the first group: a phrase that ends on a
+# preposition or a conjunction was cut in half ("Udzial w"), while one ending on a copula is an
+# ordinary Polish lead-in and a legitimate heading ("... kryteriami doboru kandydata sa:").
+PREPOSITION_AND_CONJUNCTION_SOURCE = (
+    "a",
+    "aby",
+    "albo",
+    "ale",
+    "bez",
+    "dla",
+    "do",
+    "i",
+    "jako",
+    "lub",
+    "między",
+    "na",
+    "nad",
+    "o",
+    "od",
+    "oraz",
+    "po",
+    "pod",
+    "przez",
+    "przy",
+    "u",
+    "w",
+    "we",
+    "za",
+    "z",
+    "ze",
+    "że",
+)
+COPULA_AND_PRONOUN_SOURCE = (
+    "być",
+    "jest",
+    "ma",
+    "mają",
+    "nie",
+    "są",
+    "się",
+    "ta",
+    "te",
+    "tego",
+    "tej",
+    "ten",
+    "to",
+    "tym",
+)
+FUNCTION_WORD_SOURCE = PREPOSITION_AND_CONJUNCTION_SOURCE + COPULA_AND_PRONOUN_SOURCE
+
+
 def fold_diacritics(value: str) -> str:
     """Fold Polish and decomposable Unicode diacritics while preserving case."""
     translated = value.translate(POLISH_DIACRITIC_TRANSLATION)
@@ -37,6 +89,13 @@ def fold_diacritics(value: str) -> str:
 def normalize_search_text(value: str) -> str:
     """Return the canonical case- and diacritic-insensitive search representation."""
     return fold_diacritics(value).casefold()
+
+
+POLISH_FUNCTION_WORDS = frozenset(normalize_search_text(word) for word in FUNCTION_WORD_SOURCE)
+# The subset whose presence at the end of a phrase means the phrase is unfinished.
+POLISH_PHRASE_CUT_WORDS = frozenset(
+    normalize_search_text(word) for word in PREPOSITION_AND_CONJUNCTION_SOURCE
+)
 
 
 def ensure_case_insensitive_fuzzy_matching(cypher: str) -> str:
