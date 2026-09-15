@@ -829,6 +829,27 @@ mapping. The cost is that nothing on the host can reach Neo4j or the server eith
 Neo4j browser, `just kg`, `just populate-graph` and `uv run dump-graph`, and it is an override
 on top of the production file rather than a second copy of it.
 
+**The network is the whole boundary, on purpose.** `/mcp` carries no token and `user_input`
+has no cap here. The server lives only inside the VM, the only thing on its network is
+`ml-mcp-backend`, and every third party reaches it through that backend, which owns
+authentication, `chat_input_max_length`, rate limits and daily quotas. Adding a second layer
+here was considered (#6b/#6c) and dropped: it would duplicate the backend's controls for a
+caller that cannot exist. If that ever changes — another service on the network, or the
+server reachable from outside the VM — that decision has to be revisited.
+
+**APOC is scoped to what the code calls.** `compose.stack.yml` allowlists `apoc.meta.*`,
+`apoc.schema.*` and `apoc.any.property` (the schema refresh), `apoc.coll.sort`,
+`apoc.refactor.mergeNodes` and `apoc.create.removeLabels` (dedup), and `apoc.export.cypher.all`
+plus `apoc.cypher.runFile` (dump/restore). Everything else is not loaded — including
+`apoc.cypher.run*` and the `apoc.cypher.runFirstColumnMany` function that could carry a write
+past the read-only guardrail. `unrestricted` is the separate, smaller list allowed to read
+database internals: `apoc.meta.*`, `apoc.schema.*`, `apoc.any.property` and the two file
+procedures. The first two verification runs found this the hard way — `apoc.meta.data` and
+then `apoc.any.property` each refused to run sandboxed, and a schema refresh that cannot run
+takes the whole server down with it, since `RAG.__init__` reads the schema. Adding an APOC
+call to the code means adding it to the allowlist too, or Neo4j answers "no procedure with the
+name"; if it reads internals it needs `unrestricted` as well.
+
 ### The Health Signal Means "I Can Serve"
 
 `GET /health` on the MCP server (a `@mcp.custom_route`, so it sits next to `/mcp` on port 8005)
