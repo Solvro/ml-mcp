@@ -114,6 +114,13 @@ def ensure_limit(cypher: str, max_results: int) -> str:
     Only the trailing LIMIT is read or rewritten, so a `WITH ... LIMIT n` that shapes an
     intermediate result keeps meaning what it said.
 
+    **A UNION is capped on its last branch only**, so `... LIMIT 100 UNION ... LIMIT 100` with a
+    cap of 5 returns up to 105 rows rather than 5 (review of PR #90). `validate_read_only` does
+    not block UNION, and capping the whole thing would mean wrapping it in a `CALL` subquery,
+    which the guardrail does block. Left as is: before this function clamped anything the case
+    was uncapped entirely, so it is not a regression, and the Cypher prompt does not lead the
+    model towards UNION.
+
     Args:
         cypher: Query to cap
         max_results: Most rows the query may return

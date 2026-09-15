@@ -214,3 +214,17 @@ def test_ensure_limit_drops_a_trailing_semicolon():
 def test_ensure_limit_rejects_non_positive_max_results():
     with pytest.raises(ValueError):
         ensure_limit(READ_QUERY, max_results=0)
+
+
+def test_ensure_limit_caps_only_the_last_branch_of_a_union():
+    """Known and accepted, review of PR #90: capping the whole thing needs a CALL subquery.
+
+    Pinned so the behaviour is a decision someone can find rather than a surprise. It is not a
+    regression - before ensure_limit clamped anything, this case was uncapped entirely.
+    """
+    union = "MATCH (n:A) RETURN n LIMIT 100 UNION MATCH (n:B) RETURN n LIMIT 100"
+
+    capped = ensure_limit(union, max_results=5)
+
+    assert capped == "MATCH (n:A) RETURN n LIMIT 100 UNION MATCH (n:B) RETURN n LIMIT 5"
+    validate_read_only(capped)
