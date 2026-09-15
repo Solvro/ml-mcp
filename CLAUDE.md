@@ -378,11 +378,44 @@ order. Each exists because the prompt alone only gets it right most of the time,
 the time" is what silently corrupts a knowledge graph.
 
 **1. Completeness (`completeness.py`).** The prompt requires every list/table row to become its
-own node. Rows are also counted from the source page and checked against the generated values: a
-row counts as covered when most of its wording appears somewhere in the output, so rephrasing is
-fine but a row the model never read is caught. Missing rows go into one extra extraction pass
-(`prompts.cypher_insert_missing_rows`) whose statements are appended. The pass only runs when
-something is missing, and a failure there leaves the first pass output intact.
+own node. Rows are also counted from the source page and checked against the generated nodes: a
+row counts as covered when one *single* node both carries most of the row's wording and has a
+`title` that lines up with the row — in either direction, since a title may be the row's short
+name (`Święto Niepodległości` for a dated entry) or its fuller form. Rephrasing is therefore
+fine, and two shapes are caught: a row the model never read leaves almost none of its wording
+behind, and a row recited inside the `context` of the node that heads its section has no title
+of its own. Coverage is decided per node for exactly that reason — a check that searched every
+quoted value at once let one category node's `context` cover all sixteen bullets under it.
+Missing rows go into one extra extraction pass (`prompts.cypher_insert_missing_rows`) whose
+statements are appended. The pass only runs when something is missing, and a failure there
+leaves the first pass output intact.
+
+A row is only as good as the line it was read from, and a PDF text layer does not write one.
+PyMuPDF breaks a row in two ways: it puts the bullet and its text on separate lines
+(`•\nprowadzi badania …`), and it wraps a long row at the page width whether or not the marker
+shares the first line. The first left a 168-bullet page with zero rows on it. The second is
+worse, because it produces a row that *looks* extractable: `3. W grupie pracownikow
+dydaktycznych (ktorych podstawowym obowiazkiem jest ksztalcenie` is half a sentence that no node
+will ever carry as a title, so it is reported missing on every run and the missed-row pass mints
+a node out of it every time.
+
+`text_normalization.join_wrapped_list_rows` puts each row back on one line — marker-only lines
+and inline-marked ones alike — and it runs in `ocr_extraction._normalize_text` rather than only
+in the checker, so the extraction model is also shown a list where the page has a list. A row
+ends at a blank line, at the next row, or at sentence-ending punctuation, so the paragraph after
+a list is not swallowed by its last entry, and a cell-separated line always starts a row of its
+own rather than continuing the one above. What counts as a marker (`LIST_MARKER_PATTERN`,
+bullets through `a)` and `iii.`) is defined once and used by both the rejoining and
+`LIST_ROW_RE`, so a row cannot be rebuilt and then go uncounted.
+
+**A row ending in a colon is a heading, not an entry.** `... kryteriami doboru
+kandydatek/kandydatow sa:` introduces the rows beneath it; demanding a node for it is how a
+lead-in sentence became a node titled with half a paragraph. It is skipped, and the entries it
+introduces are counted as the rows they are.
+
+Rejoining changes the extracted page text, so every page's idempotency hash changes once and the
+next run reprocesses the staging dir. Canonical-key MERGE makes that an enrichment of the
+existing nodes rather than a second copy of them.
 
 That extra pass is a second model call for every page that lost rows.
 `DATA_PIPELINE_MAX_MISSED_ROW_PASSES` caps how many a run may spend (0, the default, means
@@ -390,8 +423,10 @@ unlimited); past the cap the miss is still logged with the rows that stay absent
 reports `missed_row_passes` in its summary, so the cost is visible before anyone bounds it.
 
 This exists because the academic-calendar page kept the days off with a proper name and dropped
-`2 XI 2026 r. — dzień wolny od zajęć`. That page is the regression case in
-`tests/data_pipeline/test_completeness.py`.
+`2 XI 2026 r. — dzień wolny od zajęć`, and because the R1–R4 competency page kept R4's sixteen
+competencies as nodes while R1–R3 kept theirs only as text inside a category node, so
+`Jakie są kompetencje pożądane dla naukowca R2?` answered "Nie wiem". Both pages are regression
+cases in `tests/data_pipeline/test_completeness.py`.
 
 **2. Closed label set (`label_vocabulary.py`).** `graph_schema.node_labels` in
 `graph_config.yaml` is the only vocabulary; `graph_schema.label_aliases` maps known drift

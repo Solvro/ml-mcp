@@ -320,6 +320,10 @@ prompts:
          a date and a generic description, such as "2 XI 2026 r. - dzien wolny od zajec", is
          exactly as important as one with a proper name like "Swieto Niepodleglosci".
        - Never merge several rows into one summarising node. Two dates are two nodes.
+       - Every row gets its own node with its own title, taken from that row's wording.
+         Reciting the rows inside the context of the node that heads their section is not
+         extracting them: a row that exists only inside another node's context is a row
+         nobody can find.
        - Keep dates, numbers, room codes and identifiers verbatim in the title as the context
          writes them.
 
@@ -396,6 +400,8 @@ prompts:
     - A row that carries only a date and a generic description is still a row; extract it exactly
       like one that carries a proper name.
     - Include 'title' and 'context' properties; keep dates and numbers verbatim in the title.
+    - The title comes from the row's own wording, never from the heading of the section the
+      row sits under.
     - Replace Polish characters and use ONLY ASCII characters
     - Escape single quotes in text with backslash (')
     - Begin with "MERGE", separate statements with PIPE character (|), use UNIQUE variable names

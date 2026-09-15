@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pymupdf
 
+from src.data_pipeline.completeness import extract_list_rows
 from src.data_pipeline.flows import ocr_extraction as ocr_module
 
 
@@ -134,3 +135,46 @@ def test_invalid_env_value_falls_back_to_default_and_logs_warning(
     assert result[0][0] == "file://text-layer.pdf#page=1"
     assert "Politechnika" in result[0][1]
     assert "Invalid OCR_MIN_TEXT_CHARS='invalid'; using default 50" in caplog.text
+
+
+def test_pdf_bullets_are_rejoined_with_their_text(monkeypatch, tmp_path: Path):
+    """Issue #78: a PDF text layer puts every bullet on a line of its own.
+
+    The page then holds no line that reads as a list row, which left both the extraction model
+    and the completeness check with a page of prose where a list was.
+    """
+    pdf_path = tmp_path / "kompetencje.pdf"
+
+    doc = pymupdf.open()
+    page = doc.new_page()
+    page.insert_text(
+        (72, 72),
+        [
+            "R1 - Naukowiec poczatkujacy",
+            "•",
+            "prowadzi badania naukowe pod nadzorem opiekuna naukowego",
+            "•",
+            "publikuje wyniki swoich badan w czasopismach:",
+            "a)",
+            "o zasiegu krajowym,",
+        ],
+    )
+    doc.save(str(pdf_path))
+    doc.close()
+
+    monkeypatch.setenv("OCR_MIN_TEXT_CHARS", "5")
+
+    result = ocr_module.ocr_extraction.fn(
+        [{"source_id": "file://kompetencje.pdf", "path": str(pdf_path)}]
+    )
+
+    assert extract_list_rows(result[0][1]) == [
+        "prowadzi badania naukowe pod nadzorem opiekuna naukowego",
+        "o zasiegu krajowym,",
+    ]
+
+
+def test_normalization_leaves_a_page_without_orphaned_markers_alone():
+    page = "Dni wolne od zajec\n- 1 XI 2026 r. - Wszystkich Swietych\n- 24 XII 2026 r. - Wigilia"
+
+    assert ocr_module._normalize_text(page) == page

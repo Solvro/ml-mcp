@@ -9,6 +9,8 @@ from docx import Document
 from PIL import Image
 from prefect import get_run_logger, task
 
+from src.text_normalization import join_wrapped_list_rows
+
 MIN_EXTRACTED_TEXT_CHARS = 50
 DEFAULT_PDF_RENDER_SCALE = 2.0
 
@@ -21,9 +23,16 @@ def _get_logger():
 
 
 def _normalize_text(text: str) -> str:
+    """Normalize extracted page text so that one list row reads as one line.
+
+    A PDF text layer emits each bullet on a line of its own, which leaves the page
+    without a single line that a reader, the extraction model, or the completeness
+    check can recognise as a list row (issue #78).
+    """
     collapsed = re.sub(r"[ \t]+", " ", text or "")
     stripped = "\n".join(line.strip() for line in collapsed.split("\n"))
-    return re.sub(r"\n{3,}", "\n\n", stripped).strip()
+    rejoined = join_wrapped_list_rows(stripped)
+    return re.sub(r"\n{3,}", "\n\n", rejoined).strip()
 
 
 def _is_text_sufficient(text: str, min_chars: int) -> bool:
