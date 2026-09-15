@@ -8,9 +8,6 @@ from neo4j import GraphDatabase
 
 logger = logging.getLogger(__name__)
 
-# Relative to Neo4j import dir (e.g. ``/var/lib/neo4j/import`` in Docker).
-NEO4J_IMPORT_REL_PATH = "dumps/graph_export.cypher"
-
 # The three schema shapes ``apoc.export.cypher.all`` writes — ``CREATE RANGE INDEX FOR``,
 # ``CREATE FULLTEXT INDEX entity_search FOR``, ``CREATE CONSTRAINT UNIQUE_IMPORT_NAME FOR`` —
 # none of them idempotent as written. ``IF NOT EXISTS`` is inserted before ``FOR``.
@@ -171,19 +168,38 @@ def _copy_to_drive(out: Path) -> None:
 
 
 def export_graph_to_cypher() -> None:
+    """Write the graph as a cypher-shell dump to ``host_dump_path()``.
+
+    ``apoc.export.cypher.all`` is asked to *stream* the dump back over the driver and the file
+    is written here, on the host. Writing it on the Neo4j side into a bind-mounted directory
+    does not survive a Linux host: the image's entrypoint chowns Neo4j's home to its own user
+    and ``chmod 700``s every directory under it, the mounted one included, so the user who
+    ran ``dump-graph`` could not even ``stat`` the result. It also means the database needs
+    no file access at all, so the export-file setting stays off.
+    """
     uri, username, password = _auth()
     out = host_dump_path()
     with GraphDatabase.driver(uri, auth=(username, password)) as driver:
         with driver.session() as session:
             result = session.run(
-                "CALL apoc.export.cypher.all($file, $config) "
-                "YIELD file, batches, time RETURN file, batches, time",
-                file=NEO4J_IMPORT_REL_PATH,
-                config={"format": "cypher-shell"},
+                "CALL apoc.export.cypher.all(null, $config) "
+                "YIELD nodes, relationships, batches, cypherStatements "
+                "RETURN nodes, relationships, batches, cypherStatements",
+                config={"format": "cypher-shell", "stream": True},
             )
-            rec = result.single()
-            if rec:
-                logger.info("APOC export: %s", rec.data())
-    if not out.is_file():
-        logger.warning("Dump missing on host %s (see compose bind for import/dumps)", out)
+            chunks: list[str] = []
+            summary: dict[str, int] = {}
+            for record in result:
+                chunks.append(record["cypherStatements"])
+                summary = {
+                    "nodes": record["nodes"],
+                    "relationships": record["relationships"],
+                    "batches": record["batches"],
+                }
+    text = "".join(chunks)
+    if not text.endswith("\n"):
+        text += "\n"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    logger.info("APOC export: %s -> %s (%d chars)", summary, out, len(text))
     _copy_to_drive(out)

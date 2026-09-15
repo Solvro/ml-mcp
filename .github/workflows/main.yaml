@@ -207,10 +207,9 @@ jobs:
           cypher "MATCH (a:CiProbe {title:'Probe'}), (b:CiProbe {title:'Probe fuller'}) CALL apoc.refactor.mergeNodes([a,b], {properties:'discard', mergeRels:true, produceSelfRel:false}) YIELD node CALL apoc.create.removeLabels(node, ['CiFallback']) YIELD node AS n RETURN labels(n) AS labels, apoc.coll.sort(['b','a']) AS sorted" | tee /tmp/apoc-smoke.txt
           grep -q '"CiProbe"' /tmp/apoc-smoke.txt && ! grep -q 'CiFallback' /tmp/apoc-smoke.txt && grep -q '\["a", "b"\]' /tmp/apoc-smoke.txt \
             || { echo "::error::mergeNodes / removeLabels / coll.sort did not run as expected"; exit 1; }
-          cypher "CALL apoc.export.cypher.all('dumps/ci-smoke.cypher', {format:'cypher-shell'}) YIELD nodes RETURN nodes" | grep -qE '^[0-9]+$' \
+          cypher "CALL apoc.export.cypher.all(null, {format:'cypher-shell', stream:true}) YIELD nodes RETURN nodes" | grep -qE '^[0-9]+$' \
             || { echo "::error::apoc.export.cypher.all failed under the narrowed config"; exit 1; }
           cypher "MATCH (n:CiProbe) DETACH DELETE n" >/dev/null
-          docker exec ml-mcp-neo4j rm -f /var/lib/neo4j/import/dumps/ci-smoke.cypher
           if cypher "CALL apoc.cypher.runMany('RETURN 1', {})" 2>/dev/null | grep -q .; then
             echo "::error::apoc.cypher.runMany is still loaded"; exit 1
           fi
@@ -239,8 +238,10 @@ jobs:
           echo "dev override publishes on loopback only"
 
       - name: "Smoke: dump-graph and restore-graph round-trip over the driver"
-        # restore reads the dump host-side and sends it over Bolt (graph_dump.py, #21): no
-        # apoc.cypher.* is loaded, so this is the only thing that proves a dump can come back.
+        # Both directions go over Bolt (graph_dump.py, #21): the export is streamed back and
+        # written on this side, the restore sends the file's statements. No apoc.cypher.* is
+        # loaded and no directory is shared with the container — the first run of this step
+        # found the bind-mounted dumps/ chmod 700 by the Neo4j entrypoint, unreadable here.
         # Uses the dev override's 127.0.0.1:7687; the CI .env points NEO4J_URI at the container.
         # A value with a ';' and a relationship are in the probe on purpose — those are the two
         # shapes a naive line splitter gets wrong.
@@ -259,7 +260,7 @@ jobs:
           leftover=$(cypher 'MATCH (n:`UNIQUE IMPORT LABEL`) RETURN count(n)' | tail -1)
           [ "$leftover" = "0" ] || { echo "::error::restore left $leftover UNIQUE IMPORT LABEL nodes behind"; exit 1; }
           cypher "MATCH (n:CiProbe) DETACH DELETE n" >/dev/null
-          docker exec ml-mcp-neo4j rm -f /var/lib/neo4j/import/dumps/graph_export.cypher
+          rm -f dumps/graph_export.cypher
           echo "dump-graph / restore-graph round-trip over the driver works"
 
       # ── Cleanup ──────────────────────────────────────────────────────────────

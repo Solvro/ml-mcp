@@ -118,8 +118,14 @@ def test_a_file_that_is_not_a_cypher_shell_dump_is_refused(text: str, message: s
 
 
 class _Result:
+    def __init__(self, records: list[dict] | None = None) -> None:
+        self.records = records or []
+
     def consume(self) -> None:
         return None
+
+    def __iter__(self):
+        return iter(self.records)
 
 
 class _Tx:
@@ -155,6 +161,15 @@ class _Session:
 
     def begin_transaction(self) -> _Tx:
         return _Tx(self.log)
+
+    def run(self, statement: str, **params: object) -> _Result:
+        self.log.append(("run", statement, params))
+        return _Result(
+            [
+                {"nodes": 2, "relationships": 1, "batches": 2, "cypherStatements": ":begin\nA;\n"},
+                {"nodes": 2, "relationships": 1, "batches": 2, "cypherStatements": ":commit"},
+            ]
+        )
 
 
 class _Driver:
@@ -243,3 +258,14 @@ def test_import_reads_the_dump_as_utf8_whatever_the_locale(driver_log, tmp_path)
     graph_dump.import_graph_from_cypher_dump()
 
     assert driver_log[1] == ("run", 'CREATE (n:Course {title:"Analiza matematyczna – ćwiczenia"})')
+
+
+def test_export_streams_the_dump_over_the_driver_and_writes_it_on_the_host(
+    driver_log, tmp_path
+) -> None:
+    graph_dump.export_graph_to_cypher()
+
+    (_, statement, params) = driver_log[0]
+    assert "apoc.export.cypher.all(null, $config)" in statement
+    assert params["config"] == {"format": "cypher-shell", "stream": True}
+    assert (tmp_path / "graph_export.cypher").read_text(encoding="utf-8") == ":begin\nA;\n:commit\n"
