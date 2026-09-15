@@ -56,7 +56,10 @@ class ScriptedDatabase:
         self.schema_calls: list[str] = []
 
     def query(
-        self, cypher_query: str, params: dict[str, Any] | None = None
+        self,
+        cypher_query: str,
+        params: dict[str, Any] | None = None,
+        session_params: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         if (
             "db.labels()" in cypher_query

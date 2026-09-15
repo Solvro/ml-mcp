@@ -41,7 +41,12 @@ class FakeGraphDatabase:
             raise self.refresh_error
         self.get_schema = self.live_schema
 
-    def query(self, cypher_query: str, params: dict[str, Any] | None = None):
+    def query(
+        self,
+        cypher_query: str,
+        params: dict[str, Any] | None = None,
+        session_params: dict[str, Any] | None = None,
+    ):
         self.queries.append(cypher_query)
         if "PipelineRun" in cypher_query:
             self.version_calls += 1

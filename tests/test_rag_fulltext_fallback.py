@@ -9,6 +9,7 @@ a full scan.
 from typing import Any
 
 import pytest
+from neo4j import READ_ACCESS
 from neo4j.exceptions import ClientError, ServiceUnavailable
 
 import src.mcp_server.tools.knowledge_graph.rag as rag_module
@@ -46,11 +47,16 @@ class ScriptedDatabase:
         self.labels_error = labels_error
         self.index_error = index_error
         self.calls: list[tuple[str, dict[str, Any] | None]] = []
+        self.session_params: list[dict[str, Any] | None] = []
 
     def query(
-        self, cypher_query: str, params: dict[str, Any] | None = None
+        self,
+        cypher_query: str,
+        params: dict[str, Any] | None = None,
+        session_params: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         self.calls.append((cypher_query, params))
+        self.session_params.append(session_params)
 
         if "db.labels()" in cypher_query:
             if self.labels_error is not None:
@@ -141,6 +147,25 @@ def test_fallback_search_is_index_backed_not_a_scan() -> None:
     assert "db.index.fulltext.queryNodes" in FALLBACK_SEARCH_CYPHER
     assert "CONTAINS" not in FALLBACK_SEARCH_CYPHER
     assert "MATCH (node)\n" not in FALLBACK_SEARCH_CYPHER
+
+
+def test_the_fallback_search_also_asks_for_a_read_transaction() -> None:
+    # Issue #85 covers the fallback too: it calls a procedure the guardrail had to be opened up
+    # for, so the database's own read mode is the check that does not depend on a regex.
+    rag, database = _rag_stub(
+        [[{"title": "Analiza", "context": "", "score": 3.0}]],
+        existing_index=[{"labels": ["Course"]}],
+        labels=["Course"],
+    )
+
+    rag._search_every_label(QUESTION)
+
+    search_calls = [
+        params
+        for (query, _), params in zip(database.calls, database.session_params, strict=True)
+        if "db.index.fulltext.queryNodes" in query
+    ]
+    assert search_calls == [{"default_access_mode": READ_ACCESS}]
 
 
 def test_fallback_search_returns_nothing_when_every_hit_scores_low() -> None:

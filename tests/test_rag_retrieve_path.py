@@ -1,6 +1,7 @@
 from typing import Any
 
 import pytest
+from neo4j import READ_ACCESS
 from neo4j.exceptions import ClientError, ServiceUnavailable
 
 from src.mcp_server.tools.knowledge_graph.rag import (
@@ -27,9 +28,16 @@ class FakeDatabase:
         self.response = [] if response is None else response
         self.error = error
         self.calls: list[str] = []
+        self.session_params: list[dict[str, Any] | None] = []
 
-    def query(self, cypher_query: str) -> list[dict[str, Any]]:
+    def query(
+        self,
+        cypher_query: str,
+        params: dict[str, Any] | None = None,
+        session_params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         self.calls.append(cypher_query)
+        self.session_params.append(session_params)
         if self.error is not None:
             raise self.error
         return self.response
@@ -132,6 +140,24 @@ def test_retrieve_executes_safe_query_with_enforced_limit():
     assert len(fake_db.calls) == 1
     assert fake_db.calls[0].strip().endswith("LIMIT 5")
     assert result["context"] == [{"id": 1}]
+
+
+def test_retrieve_asks_the_database_for_a_read_transaction():
+    # Issue #85: generated Cypher ran in the driver's default write routing, leaving the
+    # guardrail regex as the only thing between the model and a mutation.
+    rag, fake_db = _build_rag_for_test(max_results=5, db_response=[{"id": 1}])
+
+    rag.retrieve({"generated_cypher": READ_QUERY})
+
+    assert fake_db.session_params == [{"default_access_mode": READ_ACCESS}]
+
+
+def test_retrieve_clamps_a_limit_larger_than_max_results():
+    rag, fake_db = _build_rag_for_test(max_results=5, db_response=[{"id": 1}])
+
+    rag.retrieve({"generated_cypher": f"{READ_QUERY} LIMIT 999999999"})
+
+    assert fake_db.calls[0].strip().endswith("LIMIT 5")
 
 
 def test_retrieve_preserves_existing_limit():
