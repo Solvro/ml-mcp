@@ -829,6 +829,49 @@ mapping. The cost is that nothing on the host can reach Neo4j or the server eith
 Neo4j browser, `just kg`, `just populate-graph` and `uv run dump-graph`, and it is an override
 on top of the production file rather than a second copy of it.
 
+**The network is the whole boundary, on purpose.** `/mcp` carries no token and `user_input`
+has no cap here. The server lives only inside the VM, the only thing on its network is
+`ml-mcp-backend`, and every third party reaches it through that backend, which owns
+authentication, `chat_input_max_length`, rate limits and daily quotas. Adding a second layer
+here was considered (#6b/#6c) and dropped: it would duplicate the backend's controls for a
+caller that cannot exist. If that ever changes — another service on the network, or the
+server reachable from outside the VM — that decision has to be revisited.
+
+**APOC is scoped to what the code calls.** `compose.stack.yml` allowlists `apoc.meta.*`,
+`apoc.schema.*` and `apoc.any.property` (the schema refresh), `apoc.coll.sort`,
+`apoc.refactor.mergeNodes` and `apoc.create.removeLabels` (dedup), and `apoc.export.cypher.all`
+(`dump-graph`). Everything else is not loaded — all of `apoc.cypher.*` included, and with it
+the `apoc.cypher.runFirstColumnMany` function that could carry a write past the read-only
+guardrail. `unrestricted` is the separate, smaller list allowed to read database internals:
+`apoc.meta.*`, `apoc.schema.*` and `apoc.any.property`. The first two
+verification runs found this the hard way — `apoc.meta.data` and then `apoc.any.property`
+each refused to run sandboxed, and a schema refresh that cannot run takes the whole server
+down with it, since `RAG.__init__` reads the schema. Adding an APOC call to the code means
+adding it to the allowlist too, or Neo4j answers "no procedure with the name"; if it reads
+internals it needs `unrestricted` as well. `tests/test_apoc_allowlist.py` reads both lists
+against every `apoc.*` name in `src/`, so the mismatch fails in CI rather than at runtime.
+
+**Dump and restore share no files with the container.** `restore-graph` used to call
+`apoc.cypher.runFile`, which ships in APOC Extended and not in the `apoc` plugin the image
+installs, so it had never once loaded a dump on this stack (#21). Both directions now go over
+Bolt. `export_graph_to_cypher` asks `apoc.export.cypher.all` to *stream* the dump back
+(`stream: true`, no file name) and writes `dumps/graph_export.cypher` on the host itself;
+`import_graph_from_cypher_dump` reads that file and sends its statements:
+`parse_cypher_shell_dump` splits the `cypher-shell` format at a line-final `;` with every
+string literal closed (a value may contain `;`, and a relationship batch spans four lines),
+keeps each `:begin`/`:commit` group as one transaction, and rewrites the schema `CREATE`s with
+`IF NOT EXISTS`, since the pipeline's key indexes and the server's `entity_search` index are
+usually there already. The pipeline's bootstrap-from-dump path calls the same function.
+
+The export used to be written by Neo4j into a bind-mounted `dumps/`, and the first CI run of
+the round trip showed why that cannot work on a Linux host: the image's entrypoint chowns
+Neo4j's home to its own user and `chmod 700`s every directory under it, the mounted one
+included, so the user who ran `dump-graph` got `PermissionError` on `stat`. Docker Desktop on
+macOS maps the owner back to you, which is why it looked fine locally. With nothing mounted,
+neither `apoc.export.file.enabled` nor `apoc.import.file.enabled` is set, and the export
+procedure needs no `unrestricted` entry. The CI integration job proves the round trip: export,
+wipe, restore, and the probe relationship is back.
+
 ### The Health Signal Means "I Can Serve"
 
 `GET /health` on the MCP server (a `@mcp.custom_route`, so it sits next to `/mcp` on port 8005)

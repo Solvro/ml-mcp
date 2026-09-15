@@ -20,15 +20,17 @@ services:
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}
       - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
-      - NEO4J_dbms_security_procedures_allowlist=apoc.*
-      - NEO4J_apoc_export_file_enabled=true
-      - NEO4J_apoc_import_file_enabled=true
+      # Only what src/ calls (tests/test_apoc_allowlist.py pins it). No apoc.cypher.* at all,
+      # and no file access in either direction: dump-graph streams the export back over Bolt
+      # and restore-graph sends the dump the same way (graph_dump.py), so neither
+      # apoc.export.file.enabled nor apoc.import.file.enabled is set and no host directory is
+      # mounted into the container.
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.meta.*,apoc.schema.*,apoc.any.property
+      - NEO4J_dbms_security_procedures_allowlist=apoc.meta.*,apoc.schema.*,apoc.any.property,apoc.coll.sort,apoc.refactor.mergeNodes,apoc.create.removeLabels,apoc.export.cypher.all
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs
       - neo4j_import:/var/lib/neo4j/import
-      - ../dumps:/var/lib/neo4j/import/dumps
       - neo4j_plugins:/plugins
     restart: unless-stopped
     healthcheck:

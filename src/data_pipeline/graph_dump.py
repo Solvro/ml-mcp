@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import shutil
 from pathlib import Path
 
@@ -7,8 +8,13 @@ from neo4j import GraphDatabase
 
 logger = logging.getLogger(__name__)
 
-# Relative to Neo4j import dir (e.g. ``/var/lib/neo4j/import`` in Docker).
-NEO4J_IMPORT_REL_PATH = "dumps/graph_export.cypher"
+# The three schema shapes ``apoc.export.cypher.all`` writes — ``CREATE RANGE INDEX FOR``,
+# ``CREATE FULLTEXT INDEX entity_search FOR``, ``CREATE CONSTRAINT UNIQUE_IMPORT_NAME FOR`` —
+# none of them idempotent as written. ``IF NOT EXISTS`` is inserted before ``FOR``.
+_SCHEMA_CREATE_RE = re.compile(
+    r"^(CREATE\s+(?:\w+\s+)?(?:INDEX|CONSTRAINT)(?:\s+`?[\w.]+`?)?)\s+FOR\b",
+    re.IGNORECASE,
+)
 
 
 def _auth() -> tuple[str, str, str]:
@@ -30,16 +36,121 @@ def ensure_host_dump_dir() -> Path:
     return p
 
 
+def _quotes_balanced(text: str) -> bool:
+    """True when every double-quoted string literal in ``text`` is closed.
+
+    APOC writes string values in double quotes and escapes with a backslash, so this is what
+    tells a ``;`` that ends a statement from one that ends a line inside a value.
+    """
+    inside = False
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == '"':
+            inside = not inside
+    return not inside
+
+
+def _make_schema_statement_idempotent(statement: str) -> str:
+    if re.search(r"\bIF\s+NOT\s+EXISTS\b", statement, re.IGNORECASE):
+        return statement
+    return _SCHEMA_CREATE_RE.sub(r"\1 IF NOT EXISTS FOR", statement, count=1)
+
+
+def parse_cypher_shell_dump(text: str) -> list[list[str]]:
+    """Split a ``cypher-shell`` format dump into transactions of Cypher statements.
+
+    ``apoc.export.cypher.all(..., {format: 'cypher-shell'})`` writes statements terminated by
+    ``;`` at the end of a line, grouped by ``:begin`` / ``:commit`` into transactions, with a
+    few (``CALL db.awaitIndexes``) outside any group. A statement may span several lines (the
+    ``UNWIND`` / ``MATCH`` / ``CREATE`` relationship batches do) and a value may contain ``;``,
+    so a statement ends only at a line-final ``;`` with every string literal closed.
+
+    Args:
+        text: The dump file's content
+
+    Returns:
+        One list of statements per transaction, in file order. A statement outside any
+        ``:begin`` / ``:commit`` pair becomes a transaction of its own. Schema ``CREATE``
+        statements are rewritten with ``IF NOT EXISTS`` so a dump loads over indexes the
+        pipeline and the server already created.
+
+    Raises:
+        ValueError: On a cypher-shell command other than ``:begin`` / ``:commit``, an unclosed
+            transaction, or a statement the file ends in the middle of
+    """
+    batches: list[list[str]] = []
+    block: list[str] | None = None
+    pending: list[str] = []
+
+    for lineno, raw in enumerate(text.splitlines(), start=1):
+        line = raw.rstrip()
+        if not pending:
+            if not line.strip():
+                continue
+            if line.startswith(":"):
+                command = line.strip().lower()
+                if command == ":begin":
+                    if block is not None:
+                        raise ValueError(f"line {lineno}: ':begin' inside an open transaction")
+                    block = []
+                elif command == ":commit":
+                    if block is None:
+                        raise ValueError(f"line {lineno}: ':commit' without ':begin'")
+                    if block:
+                        batches.append(block)
+                    block = None
+                else:
+                    raise ValueError(f"line {lineno}: unsupported cypher-shell command {line!r}")
+                continue
+        pending.append(line)
+        joined = "\n".join(pending)
+        if joined.endswith(";") and _quotes_balanced(joined):
+            statement = _make_schema_statement_idempotent(joined[:-1].strip())
+            if block is not None:
+                block.append(statement)
+            else:
+                batches.append([statement])
+            pending = []
+
+    if pending:
+        raise ValueError("the dump ends in the middle of a statement (no closing ';')")
+    if block is not None:
+        raise ValueError("the dump ends inside a transaction (':begin' without ':commit')")
+    return batches
+
+
 def import_graph_from_cypher_dump() -> None:
-    """Import ``NEO4J_IMPORT_REL_PATH`` with ``apoc.cypher.runFile`` (caller checks host file)."""
+    """Load the dump at ``host_dump_path()`` into Neo4j through the driver.
+
+    The file is read here and its statements are sent over Bolt, one transaction per
+    ``:begin`` / ``:commit`` group, so restore needs no file access on the Neo4j side and no
+    APOC procedure: the ``runFile`` procedure this used to call ships in APOC Extended, not
+    in the ``apoc`` plugin the image installs (#21). A failing statement rolls back its own
+    transaction and raises; the transactions before it stay applied, as they would under
+    ``cypher-shell``.
+
+    Raises:
+        ValueError: When the file is not a cypher-shell format dump, or the connection settings
+            are missing
+        neo4j.exceptions.Neo4jError: When Neo4j rejects a statement
+    """
+    path = host_dump_path()
+    batches = parse_cypher_shell_dump(path.read_text(encoding="utf-8"))
     uri, username, password = _auth()
+    statements = 0
     with GraphDatabase.driver(uri, auth=(username, password)) as driver:
         with driver.session() as session:
-            session.run(
-                "CALL apoc.cypher.runFile($file, $config)",
-                file=NEO4J_IMPORT_REL_PATH,
-                config={"timeout": 600},
-            ).consume()
+            for batch in batches:
+                with session.begin_transaction() as tx:
+                    for statement in batch:
+                        tx.run(statement).consume()
+                    tx.commit()
+                statements += len(batch)
+    logger.info("Restored %d statements in %d transactions from %s", statements, len(batches), path)
 
 
 def _copy_to_drive(out: Path) -> None:
@@ -57,19 +168,38 @@ def _copy_to_drive(out: Path) -> None:
 
 
 def export_graph_to_cypher() -> None:
+    """Write the graph as a cypher-shell dump to ``host_dump_path()``.
+
+    ``apoc.export.cypher.all`` is asked to *stream* the dump back over the driver and the file
+    is written here, on the host. Writing it on the Neo4j side into a bind-mounted directory
+    does not survive a Linux host: the image's entrypoint chowns Neo4j's home to its own user
+    and ``chmod 700``s every directory under it, the mounted one included, so the user who
+    ran ``dump-graph`` could not even ``stat`` the result. It also means the database needs
+    no file access at all, so the export-file setting stays off.
+    """
     uri, username, password = _auth()
     out = host_dump_path()
     with GraphDatabase.driver(uri, auth=(username, password)) as driver:
         with driver.session() as session:
             result = session.run(
-                "CALL apoc.export.cypher.all($file, $config) "
-                "YIELD file, batches, time RETURN file, batches, time",
-                file=NEO4J_IMPORT_REL_PATH,
-                config={"format": "cypher-shell"},
+                "CALL apoc.export.cypher.all(null, $config) "
+                "YIELD nodes, relationships, batches, cypherStatements "
+                "RETURN nodes, relationships, batches, cypherStatements",
+                config={"format": "cypher-shell", "stream": True},
             )
-            rec = result.single()
-            if rec:
-                logger.info("APOC export: %s", rec.data())
-    if not out.is_file():
-        logger.warning("Dump missing on host %s (see compose bind for import/dumps)", out)
+            chunks: list[str] = []
+            summary: dict[str, int] = {}
+            for record in result:
+                chunks.append(record["cypherStatements"])
+                summary = {
+                    "nodes": record["nodes"],
+                    "relationships": record["relationships"],
+                    "batches": record["batches"],
+                }
+    text = "".join(chunks)
+    if not text.endswith("\n"):
+        text += "\n"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(text, encoding="utf-8")
+    logger.info("APOC export: %s -> %s (%d chars)", summary, out, len(text))
     _copy_to_drive(out)
