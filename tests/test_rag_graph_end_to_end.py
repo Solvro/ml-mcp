@@ -12,7 +12,7 @@ from src.mcp_server.tools.knowledge_graph.rag import RAG
 QUESTION = "test question"
 SCHEMA_TEXT = "Node properties: X\nRelationship properties: Y\nThe relationships: Z"
 SAFE_CYPHER = "MATCH (n) RETURN n"
-EXECUTED_CYPHER = f"{SAFE_CYPHER} LIMIT 5"
+EXECUTED_CYPHER = f"{SAFE_CYPHER}\nLIMIT 5"
 EMPTY_ANSWER = OFF_TOPIC_MESSAGE
 TIMEOUT_MESSAGE = "exceeded the maximum allowed wait time"
 
@@ -31,7 +31,12 @@ class FakeDatabase:
         """Neo4jGraph re-reads the graph here; the fake's schema is already current."""
         self.refresh_calls += 1
 
-    def query(self, cypher_query: str) -> list[dict[str, Any]]:
+    def query(
+        self,
+        cypher_query: str,
+        params: dict[str, Any] | None = None,
+        session_params: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         if "PipelineRun" in cypher_query:
             # Schema-cache bookkeeping, not retrieval: kept out of `queries` so the counts
             # below still say how many queries the retrieval path itself ran.

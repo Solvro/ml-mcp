@@ -23,7 +23,7 @@ class FakeDatabase:
         self.queries: list[str] = []
         self.close_calls = 0
 
-    def query(self, query: str, params: dict | None = None):
+    def query(self, query: str, params: dict | None = None, session_params: dict | None = None):
         self.queries.append(query)
         if self.error:
             raise self.error

@@ -17,6 +17,7 @@ from langchain_neo4j import Neo4jGraph
 from langchain_openai.chat_models.base import BaseChatOpenAI
 from langfuse.langchain import CallbackHandler
 from langgraph.graph import END, START, StateGraph
+from neo4j import READ_ACCESS
 from neo4j.exceptions import (
     AuthError,
     ClientError,
@@ -1001,7 +1002,7 @@ class RAG:
             validate_read_only(cypher_query)
             cypher_query = ensure_limit(cypher_query, self.max_results)
 
-            response = self.database.query(cypher_query)
+            response = self._read_query(cypher_query)
             if response:
                 return {
                     "context": response,
@@ -1102,6 +1103,40 @@ class RAG:
             "retrieval_strategy": RetrievalStrategy.EMPTY.value,
         }
 
+    def _read_query(
+        self, cypher_query: str, params: Dict[str, Any] | None = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Run a retrieval query in a transaction the database will not let write.
+
+        Every query that reaches here was written by the Cypher model or is aimed at the
+        question the model was given, and ``validate_read_only`` has already refused the write
+        keywords. This is the second line: the guardrail is a regex over text, while the access
+        mode is the database's own rule, and only the database knows what a statement really
+        does once a procedure is involved (issue #85).
+
+        ``Neo4jGraph.query`` exposes no routing argument, so the access mode goes in through
+        ``session_params``. That takes the driver's implicit-transaction path, which trades the
+        managed transaction's retry on a transient error for the explicit read mode. Against the
+        single instance this deploys on the retry has nothing to recover - a leader switch is
+        what it is for - and a retrieval failure already escalates through ``retrieve`` rather
+        than being repeated here. ``ping_database`` and the schema probe keep the managed path,
+        so the outage bound measured for the health signal is unchanged.
+
+        Args:
+            cypher_query: Query to execute
+            params: Optional Cypher parameters
+
+        Returns:
+            The rows the query returned
+        """
+        # A fresh dict per call: Neo4jGraph.query writes the database name into whatever it is
+        # handed.
+        session_params = {"default_access_mode": READ_ACCESS}
+        if params is None:
+            return self.database.query(cypher_query, session_params=session_params)
+        return self.database.query(cypher_query, params=params, session_params=session_params)
+
     def _run_recovery_query(
         self, cypher_query: str, description: str, params: Dict[str, Any] | None = None
     ) -> List[Dict[str, Any]]:
@@ -1122,9 +1157,7 @@ class RAG:
         """
         try:
             validate_read_only(cypher_query, allowed_procedures=ALLOWED_RETRIEVAL_PROCEDURES)
-            if params is None:
-                return self.database.query(cypher_query)
-            return self.database.query(cypher_query, params=params)
+            return self._read_query(cypher_query, params)
         except NEO4J_INFRASTRUCTURE_EXCEPTIONS as exc:
             raise KnowledgeGraphUnavailableError(str(exc)) from exc
 

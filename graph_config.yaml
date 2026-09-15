@@ -10,7 +10,15 @@ servers:
     cors_origins: "*"
 
 rag:
-  max_results: 5
+  # The cap `ensure_limit` clamps every generated query to, and the number of nodes the
+  # label-agnostic search takes from the index. It must match the `LIMIT` the Cypher prompt asks
+  # for (`prompts.cypher_search`), or the model is told to ask for something the code silently
+  # overrides — `tests/test_llm_determinism_config.py` fails if the two drift apart.
+  #
+  # 10 rather than the 5 this used to say: until #85 the clamp did not run at all, so the
+  # prompt's LIMIT 10 is what production has been answering from. Dropping to 5 would have cut
+  # a list question ("jakie kursy prowadzi X") in half as a side effect of enforcing the cap.
+  max_results: 10
   enable_debug: false
   llm_timeout_seconds: 30
   graph_timeout_seconds: 90

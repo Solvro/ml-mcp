@@ -6,6 +6,7 @@ run. Both models are therefore pinned to temperature 0 in graph_config.yaml, and
 a future config edit from quietly reintroducing the sampling.
 """
 
+import re
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -42,3 +43,22 @@ def test_openai_client_is_built_with_the_configured_temperature(
         rag._build_chat_model(LLMProvider.OPENAI, use_accurate=use_accurate)
 
     assert chat_openai.call_args.kwargs["temperature"] == 0.0
+
+
+def test_the_cypher_prompt_asks_for_the_limit_the_code_enforces() -> None:
+    """Review of PR #90: a prompt asking for more rows than the clamp allows is a trap.
+
+    `ensure_limit` rewrites a larger trailing LIMIT down to `rag.max_results`, so a prompt naming
+    a different number does not produce more rows - it just means the model is told to ask for
+    something the code silently overrides, and whoever reads the prompt is misled about how many
+    rows an answer is built from.
+    """
+    config = get_config()
+
+    limit_lines = [
+        line for line in config.prompts.cypher_search.splitlines() if "LIMIT" in line.upper()
+    ]
+    assert limit_lines, "the Cypher prompt no longer names a LIMIT; this test needs updating"
+
+    asked_for = [int(number) for line in limit_lines for number in re.findall(r"\d+", line)]
+    assert asked_for == [config.rag.max_results] * len(asked_for)
