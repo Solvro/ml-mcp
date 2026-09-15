@@ -25,7 +25,7 @@ def dump_graph_main() -> None:
 
 
 def restore_graph_main() -> None:
-    """Import graph dump into Neo4j (APOC)."""
+    """Load the graph dump into Neo4j through the driver."""
     load_dotenv()
     configure_logging()
     path = host_dump_path()

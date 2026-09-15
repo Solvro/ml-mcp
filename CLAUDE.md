@@ -840,18 +840,27 @@ server reachable from outside the VM — that decision has to be revisited.
 **APOC is scoped to what the code calls.** `compose.stack.yml` allowlists `apoc.meta.*`,
 `apoc.schema.*` and `apoc.any.property` (the schema refresh), `apoc.coll.sort`,
 `apoc.refactor.mergeNodes` and `apoc.create.removeLabels` (dedup), and `apoc.export.cypher.all`
-plus `apoc.cypher.runFile` (dump/restore). Everything else is not loaded: the rest of
-`apoc.cypher.*` (`run`, `runMany`, `runWrite`, …) and the `apoc.cypher.runFirstColumnMany`
-function that could carry a write past the read-only guardrail are gone. `runFile` is the one
-`apoc.cypher` entry kept, for `restore-graph`; it runs arbitrary Cypher from the import
-directory, which only the pipeline's own dumps reach, and this APOC build does not even ship
-it. `unrestricted` is the separate, smaller list allowed to read
-database internals: `apoc.meta.*`, `apoc.schema.*`, `apoc.any.property` and the two file
-procedures. The first two verification runs found this the hard way — `apoc.meta.data` and
-then `apoc.any.property` each refused to run sandboxed, and a schema refresh that cannot run
-takes the whole server down with it, since `RAG.__init__` reads the schema. Adding an APOC
-call to the code means adding it to the allowlist too, or Neo4j answers "no procedure with the
-name"; if it reads internals it needs `unrestricted` as well.
+(`dump-graph`). Everything else is not loaded — all of `apoc.cypher.*` included, and with it
+the `apoc.cypher.runFirstColumnMany` function that could carry a write past the read-only
+guardrail. `unrestricted` is the separate, smaller list allowed to read database internals:
+`apoc.meta.*`, `apoc.schema.*`, `apoc.any.property` and the export procedure. The first two
+verification runs found this the hard way — `apoc.meta.data` and then `apoc.any.property`
+each refused to run sandboxed, and a schema refresh that cannot run takes the whole server
+down with it, since `RAG.__init__` reads the schema. Adding an APOC call to the code means
+adding it to the allowlist too, or Neo4j answers "no procedure with the name"; if it reads
+internals it needs `unrestricted` as well. `tests/test_apoc_allowlist.py` reads both lists
+against every `apoc.*` name in `src/`, so the mismatch fails in CI rather than at runtime.
+
+**Restore needs no APOC.** `restore-graph` used to call `apoc.cypher.runFile`, which ships in
+APOC Extended and not in the `apoc` plugin the image installs, so it had never once loaded a
+dump on this stack. `graph_dump.import_graph_from_cypher_dump` now reads the dump on the
+host and sends its statements over Bolt: `parse_cypher_shell_dump` splits the `cypher-shell`
+format at a line-final `;` with every string literal closed (a value may contain `;`, and a
+relationship batch spans four lines), keeps each `:begin`/`:commit` group as one transaction,
+and rewrites the schema `CREATE`s with `IF NOT EXISTS`, since the pipeline's key indexes and
+the server's `entity_search` index are usually there already. The pipeline's
+bootstrap-from-dump path calls the same function. The CI integration job proves the round
+trip: export, wipe, restore, and the probe relationship is back.
 
 ### The Health Signal Means "I Can Serve"
 

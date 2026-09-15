@@ -20,10 +20,12 @@ services:
     environment:
       - NEO4J_AUTH=neo4j/${NEO4J_PASSWORD:?Set NEO4J_PASSWORD in .env}
       - NEO4J_PLUGINS=["apoc"]
-      - NEO4J_dbms_security_procedures_unrestricted=apoc.meta.*,apoc.schema.*,apoc.any.property,apoc.export.cypher.all,apoc.cypher.runFile
-      - NEO4J_dbms_security_procedures_allowlist=apoc.meta.*,apoc.schema.*,apoc.any.property,apoc.coll.sort,apoc.refactor.mergeNodes,apoc.create.removeLabels,apoc.export.cypher.all,apoc.cypher.runFile
+      # Only what src/ calls (tests/test_apoc_allowlist.py pins it). No apoc.cypher.* at all:
+      # restore reads the dump host-side and sends it over Bolt (graph_dump.py), so the
+      # import-file switch and the file-running procedure it would have needed are gone too.
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.meta.*,apoc.schema.*,apoc.any.property,apoc.export.cypher.all
+      - NEO4J_dbms_security_procedures_allowlist=apoc.meta.*,apoc.schema.*,apoc.any.property,apoc.coll.sort,apoc.refactor.mergeNodes,apoc.create.removeLabels,apoc.export.cypher.all
       - NEO4J_apoc_export_file_enabled=true
-      - NEO4J_apoc_import_file_enabled=true
     volumes:
       - neo4j_data:/data
       - neo4j_logs:/logs

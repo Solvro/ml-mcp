@@ -17,7 +17,9 @@ DRIVER_SCHEMA_CALLS = {
 
 
 def _setting(name: str) -> list[str]:
-    match = re.search(rf"NEO4J_dbms_security_procedures_{name}=(\S+)", COMPOSE.read_text())
+    match = re.search(
+        rf"NEO4J_dbms_security_procedures_{name}=(\S+)", COMPOSE.read_text(encoding="utf-8")
+    )
     assert match, f"{name} is not set in compose.stack.yml"
     return match.group(1).split(",")
 
@@ -34,7 +36,7 @@ def _covered(name: str, entries: list[str]) -> bool:
 def _names_in_src() -> set[str]:
     names: set[str] = set()
     for path in (REPO / "src").rglob("*.py"):
-        names.update(APOC_NAME_RE.findall(path.read_text()))
+        names.update(APOC_NAME_RE.findall(path.read_text(encoding="utf-8")))
     return names
 
 
@@ -60,7 +62,10 @@ def test_unrestricted_is_a_subset_of_the_allowlist() -> None:
         assert entry in allowlist, f"{entry} is unrestricted but not allowlisted"
 
 
-def test_the_write_vector_is_not_loaded() -> None:
-    """apoc.cypher.runFirstColumnMany could carry a MERGE past the read-only guardrail (#7)."""
+def test_no_apoc_cypher_procedure_is_loaded() -> None:
+    for setting in ("allowlist", "unrestricted"):
+        entries = [e for e in _setting(setting) if e.startswith("apoc.cypher")]
+        assert entries == [], f"apoc.cypher.* is back in {setting}: {entries}"
     assert not _covered("apoc.cypher.runFirstColumnMany", _setting("allowlist"))
-    assert not _covered("apoc.cypher.runMany", _setting("allowlist"))
+    assert not _covered("apoc.cypher.runFile", _setting("allowlist"))
+    assert "apoc.cypher.runFile" not in _names_in_src()

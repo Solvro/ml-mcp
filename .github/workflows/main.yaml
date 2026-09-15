@@ -138,6 +138,17 @@ jobs:
       - uses: actions/checkout@v4
       - uses: extractions/setup-just@v2
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (for the dump/restore CLIs)
+        run: uv sync
+
       - name: Create CI .env
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY || 'sk-ci-placeholder-for-startup-testing' }}
@@ -226,6 +237,30 @@ jobs:
             fi
           done
           echo "dev override publishes on loopback only"
+
+      - name: "Smoke: dump-graph and restore-graph round-trip over the driver"
+        # restore reads the dump host-side and sends it over Bolt (graph_dump.py, #21): no
+        # apoc.cypher.* is loaded, so this is the only thing that proves a dump can come back.
+        # Uses the dev override's 127.0.0.1:7687; the CI .env points NEO4J_URI at the container.
+        # A value with a ';' and a relationship are in the probe on purpose — those are the two
+        # shapes a naive line splitter gets wrong.
+        env:
+          NEO4J_URI: bolt://127.0.0.1:7687
+        run: |
+          cypher() { docker exec ml-mcp-neo4j sh -c 'cypher-shell -u neo4j -p "${NEO4J_AUTH#neo4j/}" --format plain "$1"' _ "$1"; }
+          cypher "CREATE (a:CiProbe {key:'r1', title:'Restore me'})-[:CI_REL]->(b:CiProbe {key:'r2', title:'And me; too'})"
+          uv run dump-graph
+          test -s dumps/graph_export.cypher || { echo "::error::dump-graph wrote nothing to dumps/"; exit 1; }
+          cypher "MATCH (n) DETACH DELETE n"
+          uv run restore-graph
+          cypher "MATCH (a:CiProbe)-[:CI_REL]->(b:CiProbe) RETURN a.title + ' -> ' + b.title AS pair" | tee /tmp/restore-smoke.txt
+          grep -q '"Restore me -> And me; too"' /tmp/restore-smoke.txt \
+            || { echo "::error::restore-graph did not bring the graph back"; exit 1; }
+          leftover=$(cypher 'MATCH (n:`UNIQUE IMPORT LABEL`) RETURN count(n)' | tail -1)
+          [ "$leftover" = "0" ] || { echo "::error::restore left $leftover UNIQUE IMPORT LABEL nodes behind"; exit 1; }
+          cypher "MATCH (n:CiProbe) DETACH DELETE n" >/dev/null
+          docker exec ml-mcp-neo4j rm -f /var/lib/neo4j/import/dumps/graph_export.cypher
+          echo "dump-graph / restore-graph round-trip over the driver works"
 
       # ── Cleanup ──────────────────────────────────────────────────────────────
 
