@@ -61,6 +61,7 @@ from .question_analysis import (
     extract_search_phrases,
     strip_question_literal_filters,
 )
+from .schema_visibility import hide_system_labels
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -652,6 +653,10 @@ class RAG:
         A failed refresh keeps the last good schema. Serving a slightly stale schema is a far
         smaller problem than generating Cypher against nothing.
 
+        What comes back describes every label the database holds, including the ones the
+        pipeline keeps its own books in, so ``hide_system_labels`` takes those out before
+        anything caches or reads the text.
+
         Raises:
             KnowledgeGraphUnavailableError: The refresh failed and there is no cached schema to
                 fall back on, so nothing is known about the graph.
@@ -673,7 +678,10 @@ class RAG:
             logger.error("Neo4j could not be consulted while refreshing schema: %s", exc)
             raise KnowledgeGraphUnavailableError(str(exc)) from exc
 
-        db_schema = self.database.get_schema
+        # Filtered before the emptiness check, not after: a graph holding nothing but the
+        # pipeline's own bookkeeping has nothing to answer a question with, and reading as
+        # empty is what makes the run abstain instead of querying provenance rows.
+        db_schema = hide_system_labels(self.database.get_schema)
 
         if self._schema_is_empty(db_schema):
             # Not cached, and no timestamp written, so the next question tries again rather
