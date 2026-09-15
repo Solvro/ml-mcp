@@ -23,7 +23,9 @@ class FakeGraph:
         titled_nodes: list[dict[str, Any]] | None = None,
         merge_result: list[dict[str, Any]] | Exception | None = None,
         fallback_merge_result: list[dict[str, Any]] | Exception | None = None,
+        self_relationships: int = 0,
     ) -> None:
+        self.self_relationships = self_relationships
         self.labels = labels or []
         self.unkeyed_nodes = unkeyed_nodes or []
         self.titled_nodes = titled_nodes or []
@@ -36,6 +38,8 @@ class FakeGraph:
 
         if "db.labels()" in cypher:
             return [{"label": label} for label in self.labels]
+        if "(node)-[rel]->(node)" in cypher:
+            return [{"deleted": self.self_relationships}]
         if "node.key IS NULL" in cypher:
             return self.unkeyed_nodes
         if "node.key AS key" in cypher:
@@ -159,6 +163,7 @@ def test_deduplicate_graph_reports_every_stage() -> None:
         labels=["Program"],
         unkeyed_nodes=[{"node_id": "4:a:1", "title": "Kryptografia"}],
         merge_result=[{"merged_groups": 2}],
+        self_relationships=3,
     )
 
     stats = graph_dedup.deduplicate_graph.fn(graph)
@@ -168,6 +173,7 @@ def test_deduplicate_graph_reports_every_stage() -> None:
         "titles_cleaned": 0,
         "keys_repaired": 0,
         "keys_backfilled": 1,
+        "self_relationships_deleted": 3,
         "groups_merged": 2,
         "fallback_merged": 0,
     }
@@ -185,6 +191,7 @@ def test_a_run_scoped_pass_only_examines_the_keys_it_wrote() -> None:
         "titles_cleaned": 0,
         "keys_repaired": 0,
         "keys_backfilled": 0,
+        "self_relationships_deleted": 0,
         "groups_merged": 1,
         "fallback_merged": 0,
     }
@@ -226,6 +233,7 @@ def test_the_full_pass_still_walks_everything() -> None:
         "titles_cleaned": 0,
         "keys_repaired": 0,
         "keys_backfilled": 1,
+        "self_relationships_deleted": 0,
         "groups_merged": 2,
         "fallback_merged": 0,
     }
@@ -381,3 +389,40 @@ def test_the_full_pass_repairs_titles_before_it_merges() -> None:
         index for index, call in enumerate(graph.calls) if "apoc.refactor.mergeNodes" in call[0]
     )
     assert repair_index < merge_index
+
+
+def test_stored_self_relationships_are_deleted() -> None:
+    """Issue #87: ingestion refuses to write new ones, this clears what is already there."""
+    graph = FakeGraph(self_relationships=3)
+
+    assert graph_dedup.delete_self_relationships(graph) == 3
+
+    (call,) = [c for c in graph.calls if "(node)-[rel]->(node)" in c[0]]
+    assert "DELETE rel" in call[0]
+    assert call[1]["internal_labels"] == ["PipelineRun", "ProcessedDocument", "Source"]
+
+
+def test_self_relationship_deletion_runs_before_the_merges() -> None:
+    # Merging moves the relationships of the node it absorbs, so a loop left in place would be
+    # carried onto the survivor.
+    graph = FakeGraph(merge_result=[{"merged_groups": 1}], self_relationships=1)
+
+    graph_dedup.deduplicate_graph.fn(graph)
+
+    loop_index = next(
+        index for index, call in enumerate(graph.calls) if "(node)-[rel]->(node)" in call[0]
+    )
+    merge_index = next(
+        index for index, call in enumerate(graph.calls) if "apoc.refactor.mergeNodes" in call[0]
+    )
+    assert loop_index < merge_index
+
+
+def test_a_run_scoped_pass_does_not_hunt_for_self_relationships() -> None:
+    """Ingestion drops them now, so a run has none to find; the full walk clears the legacy."""
+    graph = FakeGraph(merge_result=[{"merged_groups": 1}], self_relationships=4)
+
+    stats = graph_dedup.deduplicate_graph.fn(graph, ["kurs"])
+
+    assert stats["self_relationships_deleted"] == 0
+    assert not [call for call in graph.calls if "(node)-[rel]->(node)" in call[0]]
