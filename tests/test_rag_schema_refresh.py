@@ -17,6 +17,32 @@ EMPTY_SCHEMA = "Node properties:\nRelationship properties:\nThe relationships:"
 POPULATED_SCHEMA = "Node properties: Course\nRelationship properties: TEACHES\nThe relationships: X"
 INGESTED_SCHEMA = f"{POPULATED_SCHEMA}\nNode properties: Professor"
 
+# The layout format_schema actually produces, so the bookkeeping filter has something real to
+# bite on; tests/test_schema_visibility.py pins that layout against the library itself.
+BOOKKEEPING_SCHEMA = "\n".join(
+    [
+        "Node properties:",
+        "- **Course**",
+        '  - `title`: STRING Example: "Analiza matematyczna"',
+        "- **ProcessedDocument**",
+        '  - `hash`: STRING Example: "3f2a"',
+        "- **Source**",
+        '  - `source_id`: STRING Example: "file://a.pdf#page=1"',
+        "Relationship properties:",
+        "The relationships:",
+        "(:Course)-[:FROM_SOURCE]->(:Source)",
+    ]
+)
+BOOKKEEPING_ONLY_SCHEMA = "\n".join(
+    [
+        "Node properties:",
+        "- **PipelineRun**",
+        '  - `run_at`: STRING Example: "2026-09-15T03:00:00Z"',
+        "Relationship properties:",
+        "The relationships:",
+    ]
+)
+
 
 class FakeGraphDatabase:
     def __init__(self, schema: str = POPULATED_SCHEMA, *, refresh_error: Exception | None = None):
@@ -294,3 +320,30 @@ def test_a_run_against_a_populated_graph_still_reaches_retrieval():
 
     assert len(cypher_prompts) == 1
     assert POPULATED_SCHEMA in cypher_prompts[0]
+
+
+def test_the_served_schema_does_not_describe_the_pipelines_bookkeeping():
+    # Issue #86: refresh_schema() describes every label the database holds, so the provenance
+    # the pipeline writes about its own runs reached the Cypher prompt looking answerable.
+    database = FakeGraphDatabase(schema=BOOKKEEPING_SCHEMA)
+    rag = _rag_stub(database)
+
+    served = rag.schema
+
+    assert "Course" in served
+    assert "ProcessedDocument" not in served
+    assert "Source" not in served
+    assert "FROM_SOURCE" not in served
+
+
+def test_a_graph_holding_only_bookkeeping_reads_as_empty():
+    database = FakeGraphDatabase(schema=BOOKKEEPING_ONLY_SCHEMA)
+    rag = _rag_stub(database)
+
+    assert rag.schema == ""
+
+    # Nothing answerable was found, so nothing is cached and the next question asks again.
+    database.ingest(BOOKKEEPING_SCHEMA)
+
+    assert "Course" in rag.schema
+    assert database.refresh_calls == 2
