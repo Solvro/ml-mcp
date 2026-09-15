@@ -11,6 +11,7 @@ import pytest
 
 from src.data_pipeline.canonical_nodes import (
     canonical_entity_key,
+    drop_self_relationships,
     extract_entity_keys,
     looks_like_abbreviation,
     rewrite_merge_to_canonical_key,
@@ -278,3 +279,117 @@ def test_repeated_keys_are_reported_once() -> None:
 def test_statements_without_a_canonical_merge_yield_no_keys() -> None:
     assert extract_entity_keys("MERGE (n1)-[:PART_OF]->(n2)") == []
     assert extract_entity_keys("") == []
+
+
+def _merged(variable: str, label: str, title: str) -> str:
+    return rewrite_merge_to_canonical_key(f"MERGE ({variable}:{label} {{title: '{title}'}})")
+
+
+def test_a_relationship_between_two_spellings_of_one_entity_is_dropped() -> None:
+    # Issue #87: the graph held Topic "inne wazne osiagniecia" -[:HAS_SUBCOMPETENCY]-> itself.
+    # Both ends MERGE on the same key, so both bind the same node.
+    statements = [
+        _merged("n1", "Topic", "Inne wazne osiagniecia"),
+        _merged("n2", "Topic", "inne wazne osiagniecia."),
+        "MERGE (n1)-[:HAS_SUBCOMPETENCY]->(n2)",
+    ]
+
+    kept, dropped = drop_self_relationships(statements)
+
+    assert dropped == ["MERGE (n1)-[:HAS_SUBCOMPETENCY]->(n2)"]
+    assert kept == statements[:2]
+
+
+def test_a_variable_related_to_itself_is_dropped_without_knowing_its_key() -> None:
+    statements = ["MERGE (n1)-[:HAS_CRITERION]->(n1)"]
+
+    kept, dropped = drop_self_relationships(statements)
+
+    assert kept == []
+    assert dropped == statements
+
+
+def test_a_relationship_between_two_real_entities_survives() -> None:
+    statements = [
+        _merged("n1", "Course", "Analiza matematyczna"),
+        _merged("n2", "Semester", "Semestr zimowy"),
+        "MERGE (n1)-[:PART_OF]->(n2)",
+    ]
+
+    assert drop_self_relationships(statements) == (statements, [])
+
+
+def test_the_same_key_under_two_labels_is_two_nodes() -> None:
+    # A key is unique per label, not across the graph, so this relationship is real.
+    statements = [
+        _merged("n1", "CriterionCategory", "Dorobek naukowy"),
+        _merged("n2", "Criterion", "Dorobek naukowy"),
+        "MERGE (n1)-[:HAS_CRITERION]->(n2)",
+    ]
+
+    assert drop_self_relationships(statements) == (statements, [])
+
+
+def test_an_incoming_direction_is_read_the_same_way() -> None:
+    statements = [
+        _merged("n1", "Topic", "Patenty"),
+        _merged("n2", "Topic", "patenty"),
+        "MERGE (n1)<-[:HAS_SUBCOMPETENCY]-(n2)",
+    ]
+
+    _, dropped = drop_self_relationships(statements)
+
+    assert dropped == ["MERGE (n1)<-[:HAS_SUBCOMPETENCY]-(n2)"]
+
+
+def test_a_statement_that_binds_a_node_is_never_dropped() -> None:
+    # The page runs as one query. Removing a binding would leave every later clause naming an
+    # unbound variable and fail the whole page for the sake of one row.
+    combined = "MERGE (n1:Topic {key: 'patenty'})-[:HAS_SUBCOMPETENCY]->(n1)"
+
+    kept, dropped = drop_self_relationships([combined])
+
+    assert kept == [combined]
+    assert dropped == []
+
+
+def test_nothing_is_dropped_from_a_page_with_no_relationships() -> None:
+    statements = [_merged("n1", "Course", "Analiza matematyczna")]
+
+    assert drop_self_relationships(statements) == (statements, [])
+
+
+def test_an_empty_page_is_handled() -> None:
+    assert drop_self_relationships([]) == ([], [])
+
+
+def test_a_loop_on_the_second_hop_of_a_chain_is_seen() -> None:
+    """Review of PR #91: matching the right end consumed the node between two hops.
+
+    `(c)-[:R]->(a)-[:S]->(b)` reported only `c -> a`, so the loop between `a` and `b` survived
+    while the same loop written as its own statement was dropped.
+    """
+    chain = "MERGE (n1)-[:HAS_CATEGORY]->(n2)-[:HAS_SUBCOMPETENCY]->(n3)"
+    statements = [
+        _merged("n1", "CompetencyCategory", "R4"),
+        _merged("n2", "Topic", "Patenty"),
+        _merged("n3", "Topic", "patenty."),
+        chain,
+    ]
+
+    kept, dropped = drop_self_relationships(statements)
+
+    assert dropped == [chain]
+    assert kept == statements[:3]
+
+
+def test_a_chain_of_distinct_entities_survives() -> None:
+    chain = "MERGE (n1)-[:HAS_CATEGORY]->(n2)-[:HAS_SUBCOMPETENCY]->(n3)"
+    statements = [
+        _merged("n1", "CompetencyCategory", "R4"),
+        _merged("n2", "Topic", "Patenty"),
+        _merged("n3", "Topic", "Wynalazki"),
+        chain,
+    ]
+
+    assert drop_self_relationships(statements) == (statements, [])

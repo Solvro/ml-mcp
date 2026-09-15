@@ -296,6 +296,44 @@ def backfill_entity_keys(graph: Neo4jGraph) -> int:
     return len(updates)
 
 
+def delete_self_relationships(graph: Neo4jGraph) -> int:
+    """
+    Remove relationships that already point from a node back to itself.
+
+    Issue #87: the model related a category to a sub-item whose titles canonicalise to the same
+    key, so the MERGE collapsed both ends onto one node and the page wrote a loop. Ingestion now
+    drops that statement before it runs and the merge pass refuses to create one, but neither
+    reaches a loop already in the database - this is what clears those.
+
+    A relationship from a node to itself carries nothing: whatever it was meant to say about two
+    entities is lost the moment they turn out to be one, and no traversal can use it.
+
+    Internal labels are excluded like everywhere else in this pass, so it never writes anywhere
+    near the pipeline's own records.
+
+    Args:
+        graph: Connected Neo4j graph
+
+    Returns:
+        Number of self-relationships deleted
+    """
+    logger = _get_logger()
+    rows = graph.query(
+        """
+        MATCH (node)-[rel]->(node)
+        WHERE NOT any(label IN labels(node) WHERE label IN $internal_labels)
+        WITH collect(rel) AS loops
+        FOREACH (rel IN loops | DELETE rel)
+        RETURN size(loops) AS deleted
+        """,
+        params={"internal_labels": sorted(INTERNAL_LABELS)},
+    )
+
+    deleted = int(rows[0]["deleted"]) if rows else 0
+    logger.info("Deleted %d self-relationship(s)", deleted)
+    return deleted
+
+
 def merge_duplicate_nodes(graph: Neo4jGraph, keys: list[str] | None = None) -> int:
     """
     Merge nodes that share a label set and a canonical key into one.
@@ -407,6 +445,7 @@ def deduplicate_graph(
                 "titles_cleaned": 0,
                 "keys_repaired": 0,
                 "keys_backfilled": 0,
+                "self_relationships_deleted": 0,
                 "groups_merged": 0,
                 "fallback_merged": 0,
             }
@@ -423,6 +462,10 @@ def deduplicate_graph(
             "titles_cleaned": 0,
             "keys_repaired": 0,
             "keys_backfilled": 0,
+            # Ingestion drops a self-relationship before it is written and the merges refuse to
+            # create one, so a run has none to find. Clearing what predates those rules is the
+            # full walk's job, like the other legacy repairs.
+            "self_relationships_deleted": 0,
             "groups_merged": groups_merged,
             "fallback_merged": merge_fallback_nodes(graph, vocabulary.fallback_label, keys),
         }
@@ -430,6 +473,9 @@ def deduplicate_graph(
     relabelled = relabel_off_vocabulary_nodes(graph, vocabulary)
     title_repairs = repair_stored_titles(graph)
     keys_backfilled = backfill_entity_keys(graph)
+    # Before the merges, not after: merging two nodes moves the relationships of the one it
+    # absorbs, so a loop left in place would be carried onto the survivor and counted again.
+    self_relationships_deleted = delete_self_relationships(graph)
     groups_merged = merge_duplicate_nodes(graph)
     fallback_merged = merge_fallback_nodes(graph, vocabulary.fallback_label)
 
@@ -438,6 +484,7 @@ def deduplicate_graph(
         "titles_cleaned": title_repairs["titles_cleaned"],
         "keys_repaired": title_repairs["keys_repaired"],
         "keys_backfilled": keys_backfilled,
+        "self_relationships_deleted": self_relationships_deleted,
         "groups_merged": groups_merged,
         "fallback_merged": fallback_merged,
     }

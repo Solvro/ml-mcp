@@ -43,6 +43,29 @@ MERGE_KEY_RE = re.compile(r"\{\s*key\s*:\s*'(?P<key>[^']*)'\s*\}")
 TITLE_PROPERTY = "title"
 CONTEXT_PROPERTY = "context"
 
+# Reads back which entity a variable was bound to by a rewritten node MERGE. Same shape as
+# MERGE_KEY_RE but carrying the variable and the labels, because a key alone does not identify a
+# node: `(:Topic {key: 'x'})` and `(:Criterion {key: 'x'})` are two nodes.
+CANONICAL_MERGE_RE = re.compile(
+    r"MERGE\s*\(\s*(?P<variable>[A-Za-z_]\w*)\s*"
+    r"(?P<labels>(?::\s*(?:`[^`]+`|[A-Za-z_]\w*)\s*)+)"
+    r"\{\s*key\s*:\s*'(?P<key>[^']*)'\s*\}\s*\)",
+    re.IGNORECASE,
+)
+LABEL_RE = re.compile(r":\s*(?:`(?P<quoted>[^`]+)`|(?P<plain>[A-Za-z_]\w*))")
+
+# `(a)-[:R]->(b)`, either direction. Both ends are bare variables: a pattern carrying its own
+# labels or properties is binding nodes of its own, and this rule has nothing to say about it.
+#
+# The right end is a lookahead so the node between two hops is not consumed. Matching it left a
+# chain's second hop invisible - `(c)-[:R]->(a)-[:S]->(b)` reported only `c -> a`, so the loop
+# between `a` and `b` survived while the same loop written as its own statement was dropped
+# (review of PR #91).
+RELATIONSHIP_PATTERN_RE = re.compile(
+    r"\(\s*(?P<left>[A-Za-z_]\w*)\s*\)\s*<?-\s*\[[^\]]*\]\s*->?"
+    r"(?=\s*\(\s*(?P<right>[A-Za-z_]\w*)\s*\))"
+)
+
 # Guards the appended context against unbounded growth as more pages mention the same entity.
 MAX_CONTEXT_LENGTH = 2000
 # Separates appended contexts. Must not contain a pipe: the whole ingestion path splits
@@ -251,3 +274,63 @@ def extract_entity_keys(cypher: str) -> list[str]:
             keys.append(key)
 
     return keys
+
+
+def _bound_entity(merge_match: re.Match[str]) -> tuple[str, ...]:
+    """Identify the node a rewritten MERGE binds: its labels and its canonical key."""
+    labels = sorted(
+        match.group("quoted") or match.group("plain")
+        for match in LABEL_RE.finditer(merge_match.group("labels"))
+    )
+    return (*labels, merge_match.group("key"))
+
+
+def _relates_an_entity_to_itself(statement: str, entities: dict[str, tuple[str, ...]]) -> bool:
+    """Report whether a statement relates a node to the node it already is."""
+    for pattern in RELATIONSHIP_PATTERN_RE.finditer(statement):
+        left, right = pattern.group("left"), pattern.group("right")
+        if left == right:
+            return True
+        both = entities.get(left), entities.get(right)
+        if both[0] is not None and both[0] == both[1]:
+            return True
+    return False
+
+
+def drop_self_relationships(statements: list[str]) -> tuple[list[str], list[str]]:
+    """
+    Drop relationship statements whose two ends are the same node.
+
+    Issue #87: the model relates a category to a sub-item whose titles canonicalise to the same
+    key, and because both ends MERGE on that key they bind the same node - the page writes
+    ``Topic "inne wazne osiagniecia" -[:HAS_SUBCOMPETENCY]-> itself``. A self-relationship on a
+    collapsed duplicate says nothing that the node does not already say, and it survives every
+    later pass: the dedup merge refuses to *create* one (``produceSelfRel: false``) but leaves a
+    stored one alone.
+
+    Two nodes count as one only when their labels *and* their key agree, since a key is unique
+    per label rather than across the graph. A statement that binds a node of its own is never
+    dropped - the page runs as a single query, so removing a binding would leave every later
+    clause naming an unbound variable and fail the whole page for the sake of one row.
+
+    Args:
+        statements: The page's generated statements, after every other rewrite
+
+    Returns:
+        The statements to run, and the ones removed, so the caller can log what it lost
+    """
+    entities: dict[str, tuple[str, ...]] = {}
+    for statement in statements:
+        for merge in CANONICAL_MERGE_RE.finditer(statement):
+            entities[merge.group("variable")] = _bound_entity(merge)
+
+    kept: list[str] = []
+    dropped: list[str] = []
+    for statement in statements:
+        binds_a_node = CANONICAL_MERGE_RE.search(statement) is not None
+        if not binds_a_node and _relates_an_entity_to_itself(statement, entities):
+            dropped.append(statement)
+        else:
+            kept.append(statement)
+
+    return kept, dropped

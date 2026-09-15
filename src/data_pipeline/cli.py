@@ -47,11 +47,12 @@ def dedup_graph_main() -> None:
     stats = deduplicate_graph.fn()
     logger.info(
         "Deduplication finished: relabelled=%s titles_cleaned=%s keys_repaired=%s "
-        "backfilled=%s merged=%s fallback_folded=%s",
+        "backfilled=%s self_relationships_deleted=%s merged=%s fallback_folded=%s",
         stats["relabelled_labels"],
         stats["titles_cleaned"],
         stats["keys_repaired"],
         stats["keys_backfilled"],
+        stats["self_relationships_deleted"],
         stats["groups_merged"],
         stats["fallback_merged"],
     )

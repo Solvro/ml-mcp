@@ -10,7 +10,7 @@ from prefect.exceptions import MissingContextError
 
 from src.config.config import get_config
 from src.config.system_labels import SYSTEM_LABELS
-from src.data_pipeline.canonical_nodes import extract_entity_keys
+from src.data_pipeline.canonical_nodes import drop_self_relationships, extract_entity_keys
 
 module_logger = logging.getLogger(__name__)
 
@@ -439,6 +439,15 @@ def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -
         source_id or "<unknown>",
     )
     statements = [part.strip() for part in (cypher_query or "").split("|") if part.strip()]
+
+    statements, self_relationships = drop_self_relationships(statements)
+    for statement in self_relationships:
+        logger.warning(
+            "Dropped a relationship whose two ends are the same node for source %s: %s",
+            source_id or "<unknown>",
+            statement,
+        )
+
     query_to_execute, query_params = _build_query_with_provenance(
         statements,
         source_id,

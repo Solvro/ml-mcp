@@ -1,5 +1,8 @@
+import logging
+
 import pytest
 
+from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.flows import graph_populating
 
 
@@ -200,3 +203,40 @@ def test_mirror_entity_provenance_for_duplicate_hash_skips_empty_inputs():
 
     assert pop.mirror_entity_provenance_for_duplicate_hash("", "file://docs/b.pdf#page=1") == 0
     assert pop.mirror_entity_provenance_for_duplicate_hash("hash-a", "") == 0
+
+
+def test_populate_graph_drops_a_relationship_with_one_node_at_both_ends(fake_populator, caplog):
+    """Issue #87: both ends MERGE on the same key, so both bind the same node."""
+    page = "|".join(
+        [
+            rewrite_merge_to_canonical_key("MERGE (n1:Topic {title: 'Inne wazne osiagniecia'})"),
+            rewrite_merge_to_canonical_key("MERGE (n2:Topic {title: 'inne wazne osiagniecia.'})"),
+            "MERGE (n1)-[:HAS_SUBCOMPETENCY]->(n2)",
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        graph_populating.populate_graph.fn(page, "hash-loop", "file://docs/a.pdf#page=1")
+
+    executed, _ = fake_populator.executed[0]
+    assert "HAS_SUBCOMPETENCY" not in executed
+    # The nodes and their provenance are untouched; only the relationship went.
+    assert "MERGE (n1)-[:FROM_SOURCE]->(prov_source)" in executed
+    assert "MERGE (n2)-[:FROM_SOURCE]->(prov_source)" in executed
+    assert fake_populator.processed == ["hash-loop"]
+    assert "HAS_SUBCOMPETENCY" in caplog.text
+
+
+def test_populate_graph_keeps_a_relationship_between_two_entities(fake_populator):
+    page = "|".join(
+        [
+            rewrite_merge_to_canonical_key("MERGE (n1:Course {title: 'Analiza matematyczna'})"),
+            rewrite_merge_to_canonical_key("MERGE (n2:Semester {title: 'Semestr zimowy'})"),
+            "MERGE (n1)-[:PART_OF]->(n2)",
+        ]
+    )
+
+    graph_populating.populate_graph.fn(page, "hash-ok", "file://docs/a.pdf#page=1")
+
+    executed, _ = fake_populator.executed[0]
+    assert "MERGE (n1)-[:PART_OF]->(n2)" in executed
