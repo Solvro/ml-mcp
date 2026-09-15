@@ -185,6 +185,26 @@ jobs:
           fi
           echo "neo4j is not reachable from the shared network"
 
+      - name: "Smoke: the APOC procedures dedup and export call run under the narrowed allowlist"
+        # /health already proves the schema procedures (RAG.__init__ dies without them). The
+        # other five are only reached by `dedup-graph` and `dump-graph`, which CI never runs, so
+        # call them directly on scratch nodes. Both earlier attempts at this config failed on
+        # "this one also needs `unrestricted`", and that only ever surfaced by running it.
+        run: |
+          cypher() { docker exec ml-mcp-neo4j sh -c 'cypher-shell -u neo4j -p "${NEO4J_AUTH#neo4j/}" --format plain "$1"' _ "$1"; }
+          cypher "CREATE (a:CiProbe {key:'p', title:'Probe'}), (b:CiProbe:CiFallback {key:'p', title:'Probe fuller'}), (c:CiProbe {name:'c'}) CREATE (b)-[:CI_REL]->(c)"
+          cypher "MATCH (a:CiProbe {title:'Probe'}), (b:CiProbe {title:'Probe fuller'}) CALL apoc.refactor.mergeNodes([a,b], {properties:'discard', mergeRels:true, produceSelfRel:false}) YIELD node CALL apoc.create.removeLabels(node, ['CiFallback']) YIELD node AS n RETURN labels(n) AS labels, apoc.coll.sort(['b','a']) AS sorted" | tee /tmp/apoc-smoke.txt
+          grep -q '"CiProbe"' /tmp/apoc-smoke.txt && ! grep -q 'CiFallback' /tmp/apoc-smoke.txt && grep -q '\["a", "b"\]' /tmp/apoc-smoke.txt \
+            || { echo "::error::mergeNodes / removeLabels / coll.sort did not run as expected"; exit 1; }
+          cypher "CALL apoc.export.cypher.all('dumps/ci-smoke.cypher', {format:'cypher-shell'}) YIELD nodes RETURN nodes" | grep -qE '^[0-9]+$' \
+            || { echo "::error::apoc.export.cypher.all failed under the narrowed config"; exit 1; }
+          cypher "MATCH (n:CiProbe) DETACH DELETE n" >/dev/null
+          docker exec ml-mcp-neo4j rm -f /var/lib/neo4j/import/dumps/ci-smoke.cypher
+          if cypher "CALL apoc.cypher.runMany('RETURN 1', {})" 2>/dev/null | grep -q .; then
+            echo "::error::apoc.cypher.runMany is still loaded"; exit 1
+          fi
+          echo "dedup and export procedures run; apoc.cypher.* is not loaded"
+
       - name: "Smoke: the shared network has no route out"
         run: |
           if docker run --rm --network solvro-mcp-internal curlimages/curl:8.10.1 \

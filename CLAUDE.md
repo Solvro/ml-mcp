@@ -840,9 +840,12 @@ server reachable from outside the VM — that decision has to be revisited.
 **APOC is scoped to what the code calls.** `compose.stack.yml` allowlists `apoc.meta.*`,
 `apoc.schema.*` and `apoc.any.property` (the schema refresh), `apoc.coll.sort`,
 `apoc.refactor.mergeNodes` and `apoc.create.removeLabels` (dedup), and `apoc.export.cypher.all`
-plus `apoc.cypher.runFile` (dump/restore). Everything else is not loaded — including
-`apoc.cypher.run*` and the `apoc.cypher.runFirstColumnMany` function that could carry a write
-past the read-only guardrail. `unrestricted` is the separate, smaller list allowed to read
+plus `apoc.cypher.runFile` (dump/restore). Everything else is not loaded: the rest of
+`apoc.cypher.*` (`run`, `runMany`, `runWrite`, …) and the `apoc.cypher.runFirstColumnMany`
+function that could carry a write past the read-only guardrail are gone. `runFile` is the one
+`apoc.cypher` entry kept, for `restore-graph`; it runs arbitrary Cypher from the import
+directory, which only the pipeline's own dumps reach, and this APOC build does not even ship
+it. `unrestricted` is the separate, smaller list allowed to read
 database internals: `apoc.meta.*`, `apoc.schema.*`, `apoc.any.property` and the two file
 procedures. The first two verification runs found this the hard way — `apoc.meta.data` and
 then `apoc.any.property` each refused to run sandboxed, and a schema refresh that cannot run
