@@ -454,6 +454,26 @@ there. Relationship MERGEs and combined patterns are left alone — only a lone 
 `data_pipeline_flow` creates a `key` index per configured label before extracting, because MERGE
 on an unindexed property scans the whole label.
 
+**When the key collapse makes a relationship meaningless, the relationship goes.** The model
+relates a category to a sub-item whose titles canonicalise to the same key; both ends MERGE on
+that key, so both bind the same node and the page writes `Topic "inne wazne osiagniecia"
+-[:HAS_SUBCOMPETENCY]-> itself` (issue #87). A relationship from a node to itself carries
+nothing — whatever it meant to say about two entities is lost the moment they turn out to be
+one, and no traversal can use it. `canonical_nodes.drop_self_relationships` reads back which
+entity each variable was bound to, and `populate_graph` drops those statements and logs each
+one, so the loss shows up in the run rather than only in the graph.
+
+It compares **labels and key**, not the key alone: a key is unique per label rather than across
+the graph, so `CriterionCategory` and `Criterion` may legitimately share one and the
+relationship between them is real. And a statement that binds a node of its own is never
+dropped — the page runs as a single query, so removing a binding would leave every later clause
+naming an unbound variable and fail the whole page for the sake of one row. That leaves a
+combined pattern like `MERGE (n:Topic {key: 'x'})-[:R]->(n)` for the dedup pass rather than
+risking the page, which is the same trade `sanitize_titles` makes.
+
+The filter sits in `populate_graph` rather than beside the generation rewrites so a page
+replayed from stored Cypher, which never goes through generation again, is covered too.
+
 **4. Title sanity (`title_sanity.py`).** A title is the entity's name. What extraction kept
 writing was the line the name was copied from: `a) doswiadczenie w kierowaniu i pracy w
 zespolach naukowych.`, `Odbyte szkolenia:`, `Udzial w`, `zagranicznych` (issue #79).
@@ -524,12 +544,13 @@ database. It additionally:
 
 1. moves nodes under an off-vocabulary label to their canonical label;
 2. takes the page's layout back out of stored titles and recomputes the keys derived from it,
-   so the enumerated copy of a criterion can finally meet the plain one in step 4 (issue #79);
+   so the enumerated copy of a criterion can finally meet the plain one in step 5 (issue #79);
 3. backfills `key` on titled nodes that predate it — computed in Python, so a backfilled node
    and a freshly extracted one can never disagree about the key for a title;
-4. merges every group sharing a label and a key across the whole graph.
+4. deletes relationships that already point from a node back to itself (issue #87);
+5. merges every group sharing a label and a key across the whole graph.
 
-Steps 1 to 3 are deliberately absent from the per-run path: they repair nodes written before
+Steps 1 to 4 are deliberately absent from the per-run path: they repair nodes written before
 the rules existed, and no later run can reintroduce any of them, so paying for them every time
 buys nothing.
 
@@ -558,9 +579,14 @@ pass can tell which one the fallback node meant. The count is reported as `fallb
 Both merges pass `produceSelfRel: false`. APOC would otherwise turn a relationship *between*
 the two nodes being merged into a self-loop on the survivor, and the model has been seen
 relating a category to a sub-item whose titles canonicalise to the same key, so a `Topic` copy
-linked to its labelled twin is a live case, not a hypothetical one. Existing self-loops written
-at ingestion (the same key collapse happening within one page) are a separate defect the pass
-leaves alone.
+linked to its labelled twin is a live case, not a hypothetical one.
+
+Self-loops already stored — written before ingestion learned to refuse them — are cleared by
+`delete_self_relationships`, reported as `self_relationships_deleted`. It runs **before** both
+merges, since merging moves the relationships of the node it absorbs and a loop left in place
+would simply be carried onto the survivor. Full walk only: ingestion now drops the statement
+and both merges refuse to create one, so a run has none to find and paying for the scan every
+time buys nothing.
 
 ### Text2Cypher Search Normalization
 
