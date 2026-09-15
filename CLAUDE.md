@@ -581,9 +581,20 @@ Two limits sit between the Cypher model and the database, and neither is the pro
 
 **The row cap is `rag.max_results`, not what the model asked for.** `ensure_limit` used to
 return early on any `LIMIT` at all, so `LIMIT 999999999` satisfied it and `max_results` decided
-nothing; the prompt's `LIMIT 10` is what ran against a config that says 5 (#85). It now appends
+nothing; the prompt's `LIMIT 10` is what ran against a config that said 5 (#85). It now appends
 a `LIMIT` when the query ends without one and clamps a trailing one that asks for more, leaving
 a smaller one alone — a model narrowing its own result set is not what the cap defends against.
+
+**The prompt and the config have to name the same number.** With the clamp live, a prompt asking
+for more rows than `max_results` does not produce more rows; it just means the model is told to
+ask for something the code takes away, and anyone reading the prompt is misled about how many
+rows an answer is built from. `rag.max_results` is therefore 10, matching the prompt, rather
+than the 5 the config used to carry: until this was fixed the clamp never ran, so the prompt's
+`LIMIT 10` is what production had been answering from, and dropping to 5 would have halved a
+list question ("jakie kursy prowadzi X") as a side effect of enforcing a cap. The same number
+also bounds how many nodes the label-agnostic search takes from the index, where the score floor
+and the grader are the precision gates. `tests/test_llm_determinism_config.py` fails if the two
+drift apart again.
 
 Only the **trailing** clause is read or rewritten. A `WITH n ORDER BY n.rank DESC LIMIT 100`
 shapes an intermediate result, and rewriting it would change what the query means rather than
@@ -1019,8 +1030,9 @@ fix for that is a second key, not a second attempt.
 
 6. **Cypher LIMIT enforcement** — `ensure_limit` caps every generated query at
    `rag.max_results`: it appends a `LIMIT` when the query ends without one and clamps a trailing
-   one that asks for more. A smaller one is left alone. Do not rely on the LLM to add it — the
-   prompt says `LIMIT 10` and the config says 5, and the config is what runs.
+   one that asks for more. A smaller one is left alone. Do not rely on the LLM to add it. The
+   Cypher prompt's `LIMIT` must name the same number as `rag.max_results`, or the model is asked
+   for rows the code then takes away; `tests/test_llm_determinism_config.py` fails if they drift.
 
 7. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
 

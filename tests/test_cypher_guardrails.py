@@ -157,7 +157,8 @@ def test_ensure_limit_clamps_a_larger_limit_to_the_configured_cap():
 
 
 def test_ensure_limit_clamps_the_limit_the_prompt_asks_for():
-    # The Cypher prompt says "Always add LIMIT 10" and the config says 5. The config wins.
+    # The two agree in graph_config.yaml (test_llm_determinism_config pins that), so this is the
+    # case where an edit moved the config and the model is still writing the old number.
     assert ensure_limit(READ_QUERY_WITH_LIMIT, max_results=5) == f"{READ_QUERY} LIMIT 5"
 
 
