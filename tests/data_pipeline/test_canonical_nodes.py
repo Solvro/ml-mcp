@@ -361,3 +361,35 @@ def test_nothing_is_dropped_from_a_page_with_no_relationships() -> None:
 
 def test_an_empty_page_is_handled() -> None:
     assert drop_self_relationships([]) == ([], [])
+
+
+def test_a_loop_on_the_second_hop_of_a_chain_is_seen() -> None:
+    """Review of PR #91: matching the right end consumed the node between two hops.
+
+    `(c)-[:R]->(a)-[:S]->(b)` reported only `c -> a`, so the loop between `a` and `b` survived
+    while the same loop written as its own statement was dropped.
+    """
+    chain = "MERGE (n1)-[:HAS_CATEGORY]->(n2)-[:HAS_SUBCOMPETENCY]->(n3)"
+    statements = [
+        _merged("n1", "CompetencyCategory", "R4"),
+        _merged("n2", "Topic", "Patenty"),
+        _merged("n3", "Topic", "patenty."),
+        chain,
+    ]
+
+    kept, dropped = drop_self_relationships(statements)
+
+    assert dropped == [chain]
+    assert kept == statements[:3]
+
+
+def test_a_chain_of_distinct_entities_survives() -> None:
+    chain = "MERGE (n1)-[:HAS_CATEGORY]->(n2)-[:HAS_SUBCOMPETENCY]->(n3)"
+    statements = [
+        _merged("n1", "CompetencyCategory", "R4"),
+        _merged("n2", "Topic", "Patenty"),
+        _merged("n3", "Topic", "Wynalazki"),
+        chain,
+    ]
+
+    assert drop_self_relationships(statements) == (statements, [])

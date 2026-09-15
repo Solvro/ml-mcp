@@ -471,8 +471,12 @@ naming an unbound variable and fail the whole page for the sake of one row. That
 combined pattern like `MERGE (n:Topic {key: 'x'})-[:R]->(n)` for the dedup pass rather than
 risking the page, which is the same trade `sanitize_titles` makes.
 
-The filter sits in `populate_graph` rather than beside the generation rewrites so a page
-replayed from stored Cypher, which never goes through generation again, is covered too.
+The filter sits in `populate_graph` rather than beside the generation rewrites because that is
+the last thing to touch the statements before they run: it sees the final list, after the
+missed-row pass has appended to it and after every rewrite in `llm_cypher_generation`, so
+nothing downstream can reintroduce the shape. `pipeline.py` is its only caller —
+`scripts/populate_graph.py` builds its own driver and runs its own MERGE blocks, and nothing in
+the repo stores generated Cypher or replays it.
 
 **4. Title sanity (`title_sanity.py`).** A title is the entity's name. What extraction kept
 writing was the line the name was copied from: `a) doswiadczenie w kierowaniu i pracy w

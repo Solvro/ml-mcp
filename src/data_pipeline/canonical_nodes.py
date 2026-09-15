@@ -56,8 +56,14 @@ LABEL_RE = re.compile(r":\s*(?:`(?P<quoted>[^`]+)`|(?P<plain>[A-Za-z_]\w*))")
 
 # `(a)-[:R]->(b)`, either direction. Both ends are bare variables: a pattern carrying its own
 # labels or properties is binding nodes of its own, and this rule has nothing to say about it.
+#
+# The right end is a lookahead so the node between two hops is not consumed. Matching it left a
+# chain's second hop invisible - `(c)-[:R]->(a)-[:S]->(b)` reported only `c -> a`, so the loop
+# between `a` and `b` survived while the same loop written as its own statement was dropped
+# (review of PR #91).
 RELATIONSHIP_PATTERN_RE = re.compile(
-    r"\(\s*(?P<left>[A-Za-z_]\w*)\s*\)\s*<?-\s*\[[^\]]*\]\s*->?\s*\(\s*(?P<right>[A-Za-z_]\w*)\s*\)"
+    r"\(\s*(?P<left>[A-Za-z_]\w*)\s*\)\s*<?-\s*\[[^\]]*\]\s*->?"
+    r"(?=\s*\(\s*(?P<right>[A-Za-z_]\w*)\s*\))"
 )
 
 # Guards the appended context against unbounded growth as more pages mention the same entity.
