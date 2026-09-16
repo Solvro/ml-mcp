@@ -1,31 +1,30 @@
-# CLAUDE.md — SOLVRO MCP
+# CLAUDE.md — SOLVRO MCPWr
 
 ## Project Overview
 
-**SOLVRO MCP** is a Knowledge Graph RAG system for Wrocław University of Science and Technology (ToPWR). It answers natural-language questions (in Polish) about university entities — courses, professors, departments, articles — by generating Cypher queries against a Neo4j graph database.
+**SOLVRO MCPWr** is a Knowledge Graph RAG system for Wrocław University of Science and Technology (ToPWR). It answers natural-language questions (in Polish) about university entities — courses, professors, departments, articles — by generating Cypher queries against a Neo4j graph database.
 
-**Architecture:** Four loosely-coupled services + a data pipeline:
-1. **Frontend** — React 18 + TypeScript chatbot UI served by Nginx (port 80); proxies `/api/*` to ToPWR API
-2. **MCP Server** — FastMCP server exposing a `knowledge_graph_tool` (port 8005, container-internal only — see *The Stack Publishes No Host Ports*)
-3. **ToPWR API** — FastAPI HTTP backend, session management, user-facing chat endpoint (port 8000)
-4. **Data Pipeline** — Prefect ETL: Azure Blob → PDF extraction → LLM Cypher generation → Neo4j
-5. **MCP Client** — CLI for direct graph queries
+**Architecture:** This repository is the graph side of the system — two services and a data
+pipeline. The chat UI and the user-facing HTTP API (sessions, authentication, rate limits) live
+in the separate `Solvro/backend-mcp` repository, which reaches this server over a shared
+Docker network.
+1. **MCP Server** — FastMCP server exposing a `knowledge_graph_tool` (port 8005, container-internal only — see *The Stack Publishes No Host Ports*)
+2. **Neo4j** — the knowledge graph, reachable only from the MCP server
+3. **Data Pipeline** — Prefect ETL: Azure Blob → PDF extraction → LLM Cypher generation → Neo4j
+4. **MCP Client** — CLI for direct graph queries
 
 **Core tech stack:**
 | Layer | Technology |
 |---|---|
-| Frontend | React 18, TypeScript, Vite, TailwindCSS v3 |
-| Frontend serving | Nginx (SPA fallback + API proxy) |
 | LLM orchestration | LangChain, LangGraph (state machines) |
 | MCP protocol | FastMCP >=2.12.4 |
 | Graph database | Neo4j (async driver via langchain-neo4j) |
-| API framework | FastAPI + Uvicorn |
 | Data pipeline | Prefect >=3.6.7 |
 | Cloud storage | Azure Blob Storage |
 | Observability | Langfuse (optional) |
 | Config validation | Pydantic v2 |
-| Package manager | uv (NOT pip); npm for frontend |
-| Linter/formatter | Ruff (Python); TypeScript strict mode |
+| Package manager | uv (NOT pip) |
+| Linter/formatter | Ruff |
 | Python version | >=3.11 (Docker images use 3.12) |
 
 ---
@@ -34,7 +33,6 @@
 
 ### Prerequisites
 - Python >=3.11
-- Node.js >=20 + npm (for frontend development)
 - [uv](https://docs.astral.sh/uv/) package manager
 - Docker + Docker Compose (for full stack)
 - Neo4j instance
@@ -43,8 +41,8 @@
 ### Install Dependencies
 ```bash
 uv sync
-# or for initial setup (also installs frontend npm deps):
-just setup   # runs uv sync + generates Pydantic models + npm install
+# or for initial setup:
+just setup   # runs uv sync + generates Pydantic models
 ```
 
 ### Environment Variables
@@ -113,8 +111,6 @@ LOG_LEVEL=INFO      # DEBUG | INFO | WARNING | ERROR | CRITICAL
 MCP_BIND_HOST=0.0.0.0   # bind inside the process/container; privacy comes from compose, not this
 MCP_HOST=localhost
 MCP_PORT=8005
-TOPWR_API_HOST=0.0.0.0
-TOPWR_API_PORT=8000
 ```
 
 ### Run Locally
@@ -124,19 +120,12 @@ TOPWR_API_PORT=8000
 just mcp-server
 # or: uv run server
 
-# FastAPI backend
-just api
-# or: uv run topwr-api
-
-# Frontend dev server (requires running API on :8000)
-just frontend-dev      # → http://localhost:3000
-
 # Query CLI (requires running MCP server)
 just kg "Kto wykłada analizę matematyczną?"
 # or: uv run kg "<question>"
 
 # Neo4j + MCP server via Docker. `just up` publishes no host ports: the server is reachable
-# only by ml-mcp-backend over the shared `solvro-mcp-internal` network. `just up-dev` adds
+# only by backend-mcp over the shared `solvro-mcp-internal` network. `just up-dev` adds
 # 127.0.0.1 port mappings so `just kg`, the Neo4j browser and dump/restore work from the host.
 just up
 just up-dev
@@ -170,10 +159,6 @@ ml-mcp/
 │   │       ├── question_analysis.py # Polish question-literal detection, search phrases
 │   │       ├── schema_visibility.py # Hides the pipeline's bookkeeping labels from the prompt
 │   │       └── graph_visualizer.py  # Mermaid diagram generator
-│   ├── topwr_api/
-│   │   ├── server.py            # FastAPI app, endpoints, MCP client integration
-│   │   ├── models.py            # Pydantic models (ChatRequest, ChatResponse, Session)
-│   │   └── session_manager.py   # Thread-safe in-memory session store
 │   ├── mcp_client/
 │   │   └── client.py            # CLI client for knowledge graph queries
 │   ├── data_pipeline/
@@ -191,7 +176,6 @@ ml-mcp/
 │   │       ├── graph_dedup.py           # Post-ingest relabel, title repair, key backfill, merge
 │   │       └── graph_populating.py      # Execute Cypher against Neo4j
 │   └── scripts/
-│       ├── api_smoke.py         # Manual smoke check against a live API (uv run api-smoke)
 │       ├── populate_graph.py    # One-off graph population script
 │       └── config/
 │           └── generate_models.py   # Runs datamodel-codegen to regenerate config_models.py
@@ -216,10 +200,10 @@ ml-mcp/
 │   ├── test_rag_graph_connection_lifecycle.py  # ping_database / close on the graph driver
 │   └── data_pipeline/                          # Concurrency, acquisition, OCR, extraction quality
 ├── docker/
-│   ├── compose.stack.yml        # Full stack (neo4j, postgres, mcp, api, prefect)
+│   ├── compose.stack.yml        # neo4j + mcp-server, no host ports
+│   ├── compose.dev.yml          # Override: republish the ports on 127.0.0.1
 │   ├── compose.prefect.yml      # Data pipeline only
 │   ├── Dockerfile.mcp           # MCP server image
-│   ├── Dockerfile.api           # FastAPI image
 │   └── Dockerfile.prefect       # Data pipeline image
 ├── graph_config.yaml            # Master config: LLM settings, graph schema, prompts
 ├── pyproject.toml               # Dependencies, ruff config, entry points
@@ -241,11 +225,10 @@ just ci                 # lint + test
 
 # Running services locally
 just mcp-server         # Start MCP server
-just api                # Start FastAPI
 just kg "<question>"    # Query the knowledge graph
 
 # Docker
-just network            # create the solvro-mcp-internal network shared with ml-mcp-backend (idempotent)
+just network            # create the solvro-mcp-internal network shared with backend-mcp (idempotent)
 just up                 # neo4j + mcp-server, no host ports (runs `network` first)
 just up-dev             # same, plus 127.0.0.1:7474/7687/8005 for host-side work (compose.dev.yml)
 just down               # stop stack (the shared network is external and stays)
@@ -871,7 +854,7 @@ failed fetch so good staged content is never overwritten.
 ### Logging
 
 Nothing in `src/` prints. Every module holds `logging.getLogger(__name__)`, and each entry
-point (`mcp_server/server.py`, `topwr_api/server.py`, `mcp_client/client.py`, the
+point (`mcp_server/server.py`, `mcp_client/client.py`, the
 `data_pipeline` and `scripts` CLIs) calls `configure_logging()` from
 `src/config/logging_config.py` once, right after `load_dotenv()`.
 
@@ -905,7 +888,7 @@ switch cannot quietly stop covering a module.
 ### The Stack Publishes No Host Ports
 
 `docker/compose.stack.yml` maps nothing to the host. The one consumer of this server is the
-chat service in `Solvro/ml-mcp-backend`, and the two Compose projects share a single Docker
+chat service in `Solvro/backend-mcp`, and the two Compose projects share a single Docker
 network, `solvro-mcp-internal`, created once outside both of them with
 `docker network create --internal solvro-mcp-internal` (`just network`, which `just up` runs on
 both sides). `mcp-server` joins that network and its own `mcp_network`; Neo4j joins only
@@ -939,7 +922,7 @@ container to heap + page cache alone is how a JVM gets OOM-killed while reportin
 
 **The network is the whole boundary, on purpose.** `/mcp` carries no token and `user_input`
 has no cap here. The server lives only inside the VM, the only thing on its network is
-`ml-mcp-backend`, and every third party reaches it through that backend, which owns
+`backend-mcp`, and every third party reaches it through that backend, which owns
 authentication, `chat_input_max_length`, rate limits and daily quotas. Adding a second layer
 here was considered (#6b/#6c) and dropped: it would duplicate the backend's controls for a
 caller that cannot exist. If that ever changes — another service on the network, or the
@@ -1009,8 +992,8 @@ stays inside the graph timeout.
 
 **Failure is not content.** `knowledge_graph_tool` raises `ToolError` when the graph cannot be
 consulted at all — no RAG, an unreachable database, or the pipeline timed out.
-`fastmcp.Client.call_tool` raises on `isError` by default, so `topwr_api` lands in its `except`
-branch and tags the turn `source="error"` rather than feeding "Error: RAG not initialized" to
+`fastmcp.Client.call_tool` raises on `isError` by default, so the backend's chat service lands
+in its `except` branch and reports the turn as an error rather than feeding "Error: RAG not initialized" to
 the answering model as if it were graph data. `OFF_TOPIC_MESSAGE` and `NO_GRAPH_DATA_MESSAGE`
 are *answers* — retrieval ran and found nothing — and keep coming back as ordinary results.
 
@@ -1034,7 +1017,7 @@ fails raises `LLMUnavailableError`, which the server maps to `LLM_UNAVAILABLE_ME
 `LLM_CALL_TIMEOUT_MESSAGE` when it timed out — keeping the provider's own text in the log. Only
 `guardrails_system` and `generate_cypher` raise it; `grade_context` fails open.
 
-Both consumers of the tool had to learn the difference. `topwr_api` already caught the
+Both consumers of the tool had to learn the difference. The backend already caught the
 exception. The `kg` CLI did not, and a raised `ToolError` would have surfaced as a traceback, so
 it now prints the failure to **stderr** and exits non-zero — the answer owns stdout, and anything
 piping `kg` must not read an error as one.
@@ -1043,9 +1026,6 @@ piping `kg` must not read an error as one.
 the process lifetime; `RAG.close()` releases it and the FastMCP `lifespan` calls it, so a restart
 loop no longer leaks one per cycle. `close_rag()` is idempotent and swallows a failing close,
 because a shutdown derailed by its own cleanup is worse than a leaked socket.
-
-### Session Management
-`SessionManager` is thread-safe in-memory storage (dict + `threading.Lock`). Not persisted across restarts. Suitable for single-instance deployments only.
 
 ### Multi-LLM Fallback
 
@@ -1077,32 +1057,25 @@ fix for that is a second key, not a second attempt.
 
 2. **Langfuse is optional** — if `LANGFUSE_SECRET_KEY` is not set, traces are silently skipped. The code checks for the env var before initializing.
 
-3. **Session storage is in-memory** — restarting the API loses all sessions. No database persistence layer for sessions.
-
-4. **No `print` in `src/`** — use `logging.getLogger(__name__)`; the level comes from
+3. **No `print` in `src/`** — use `logging.getLogger(__name__)`; the level comes from
    `LOG_LEVEL` in `.env`. The `kg` CLI answer is the single deliberate exception.
 
-5. **`topwr_api`'s `/health` is still shallow** — it reports the session store and never checks
-   that the MCP server is reachable, so it can read healthy while the graph behind it is not.
-   The MCP side was fixed in #64; this half was left alone deliberately, since failing the API's
-   probe on a dependency hiccup would restart a container that is itself fine.
-
-6. **Cypher LIMIT enforcement** — `ensure_limit` caps every generated query at
+4. **Cypher LIMIT enforcement** — `ensure_limit` caps every generated query at
    `rag.max_results`: it appends a `LIMIT` when the query ends without one and clamps a trailing
    one that asks for more. A smaller one is left alone. Do not rely on the LLM to add it. The
    Cypher prompt's `LIMIT` must name the same number as `rag.max_results`, or the model is asked
    for rows the code then takes away; `tests/test_llm_determinism_config.py` fails if they drift.
 
-7. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
+5. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
 
-8. **Polish language** — prompts are in Polish; guardrails check if a query is university-related in Polish context; CLARIN model is used as alternative for Polish-specific tasks.
+6. **Polish language** — prompts are in Polish; guardrails check if a query is university-related in Polish context; CLARIN model is used as alternative for Polish-specific tasks.
 
-9. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
+7. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
 
-10. **Docker multi-stage builds** — MCP and API Dockerfiles use `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
+8. **Docker multi-stage builds** — `Dockerfile.mcp` uses `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
 
-11. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
+9. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
 
-12. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.
+10. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.
 
-13. **Pipeline CLI exit code** — `data_pipeline_flow()` returns a `PipelineOutcome`, so the `prefect_pipeline` script must point at `src.data_pipeline.cli:prefect_pipeline_main`. Wiring it straight to the flow makes the generated wrapper call `sys.exit(PipelineOutcome(...))`, which exits `1` after a successful run. Page failures are not fatal, so `PipelineOutcome.failed` carries them: the wrapper then exits non-zero and `refresh_sources_flow` raises.
+11. **Pipeline CLI exit code** — `data_pipeline_flow()` returns a `PipelineOutcome`, so the `prefect_pipeline` script must point at `src.data_pipeline.cli:prefect_pipeline_main`. Wiring it straight to the flow makes the generated wrapper call `sys.exit(PipelineOutcome(...))`, which exits `1` after a successful run. Page failures are not fatal, so `PipelineOutcome.failed` carries them: the wrapper then exits non-zero and `refresh_sources_flow` raises.

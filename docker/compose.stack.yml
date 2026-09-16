@@ -1,7 +1,7 @@
 # Core MCP Stack: Neo4j + MCP Server
 #
 # Nothing here publishes a host port. The only consumer of this stack is the chat service in
-# Solvro/ml-mcp-backend, which reaches mcp-server by service name over the shared
+# Solvro/backend-mcp, which reaches mcp-server by service name over the shared
 # `solvro-mcp-internal` network, and Neo4j is reachable only from mcp-server over `mcp_network`.
 # That network is created once, outside either Compose project, so neither side owns it and
 # either can come up first:
@@ -96,7 +96,7 @@ networks:
   # Private to this stack: Neo4j is on it and nothing else joins it.
   mcp_network:
     driver: bridge
-  # Shared with Solvro/ml-mcp-backend, whose chat-service is the only other member. Declared
+  # Shared with Solvro/backend-mcp, whose chat-service is the only other member. Declared
   # external so that `docker compose down` on either side leaves it in place for the other.
   solvro_internal:
     external: true

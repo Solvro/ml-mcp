@@ -1,5 +1,5 @@
 # ============================================================================
-# SOLVRO MCP - Project Commands
+# SOLVRO MCPWr - Project Commands
 # ============================================================================
 # Usage: just <recipe>
 # Run `just help` to see all available commands
@@ -24,21 +24,16 @@ mcp-server:
 kg QUERY:
     uv run kg "{{QUERY}}"
 
-# Start FastAPI backend locally
-[group('dev')]
-api:
-    uv run topwr-api
-
 # ============================================================================
 # 🐳 DOCKER STACK (Neo4j + MCP Server)
 # ============================================================================
 #
 # The stack publishes no host ports. mcp-server is reachable only over the shared
-# `solvro-mcp-internal` network, which Solvro/ml-mcp-backend joins too; Neo4j only from
+# `solvro-mcp-internal` network, which Solvro/backend-mcp joins too; Neo4j only from
 # mcp-server. `just up-dev` republishes the ports on 127.0.0.1 for local work. See #6 in
 # ISSUES.prod-readiness.md.
 
-# Create the network shared with ml-mcp-backend (idempotent; either stack may run it first)
+# Create the network shared with backend-mcp (idempotent; either stack may run it first)
 [group('docker')]
 network:
     docker network inspect solvro-mcp-internal >/dev/null 2>&1 || docker network create --internal solvro-mcp-internal
@@ -99,25 +94,6 @@ nuke:
     docker compose --env-file .env -f docker/compose.stack.yml down -v --remove-orphans
 
 # ============================================================================
-# 🌐 FRONTEND (React + Vite + TailwindCSS)
-# ============================================================================
-
-# Install frontend dependencies
-[group('frontend')]
-frontend-install:
-    cd frontend && npm install
-
-# Start frontend dev server (requires running backend on :8000)
-[group('frontend')]
-frontend-dev:
-    cd frontend && npm run dev
-
-# Build frontend for production
-[group('frontend')]
-frontend-build:
-    cd frontend && npm run build
-
-# ============================================================================
 # 📊 PREFECT DATA PIPELINE (separate service)
 # ============================================================================
 
@@ -155,21 +131,17 @@ refresh-serve:
 # 🧪 QUALITY & TESTING
 # ============================================================================
 
-# Format and lint code (Python + Frontend)
+# Format and lint code
 [group('quality')]
 lint:
     uv run ruff format src tests
     uv run ruff check src tests --fix
-    cd frontend && npm run format
-    cd frontend && npm run lint
 
 # Verify formatting and lint without modifying files (used by CI)
 [group('quality')]
 lint-check:
     uv run ruff format --check src tests
     uv run ruff check src tests
-    cd frontend && npm run format:check
-    cd frontend && npm run lint
 
 # Run tests with coverage
 [group('quality')]
@@ -195,7 +167,6 @@ ci: lint-check test
 setup:
     uv sync
     just generate-models
-    just frontend-install
     @echo ""
     @echo "✅ Development environment ready!"
     @echo ""
@@ -235,7 +206,7 @@ clean:
 # Show all available commands
 [group('help')]
 help:
-    @echo "SOLVRO MCP - Knowledge Graph RAG System"
+    @echo "SOLVRO MCPWr - Knowledge Graph RAG System"
     @echo ""
     @echo "Quick Start:"
     @echo "  just setup    # Initial setup"

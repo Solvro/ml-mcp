@@ -1,1 +1,1 @@
-# SOLVRO MCP - Main package
+# SOLVRO MCPWr - Main package

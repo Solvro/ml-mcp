@@ -1,4 +1,4 @@
-# Debugging Guide — SOLVRO MCP
+# Debugging Guide — SOLVRO MCPWr
 
 ## Logging
 
@@ -36,7 +36,6 @@ Enable `enable_debug: true` in `graph_config.yaml` under `rag:` to activate the 
 ```bash
 just logs           # tail all services
 just logs-mcp       # MCP server only
-just logs-api       # FastAPI only
 just logs-neo4j     # Neo4j only
 just prefect-logs   # Prefect pipeline
 ```
@@ -44,17 +43,13 @@ just prefect-logs   # Prefect pipeline
 Or directly:
 ```bash
 docker compose -f docker/compose.stack.yml logs -f mcp-server
-docker compose -f docker/compose.stack.yml logs -f topwr-api
 ```
 
 ## Health Checks
 
 ```bash
-# API health
-curl http://localhost:8000/health
-
-# Stats endpoint
-curl http://localhost:8000/api/stats
+# MCP server health (needs `just up-dev`; answers 503 with a reason when Neo4j is unreachable)
+curl http://127.0.0.1:8005/health
 
 # Neo4j browser (needs `just up-dev`; `just up` publishes no host ports)
 open http://localhost:7474
@@ -84,7 +79,7 @@ open http://localhost:4200
 
 ### MCP server not reachable from API
 - Check `MCP_HOST` and `MCP_PORT` match the running server
-- In Docker: services communicate via service names (`mcp-server:8005`); ml-mcp-backend reaches it over the shared `solvro-mcp-internal` network, which `just network` creates
+- In Docker: services communicate via service names (`mcp-server:8005`); backend-mcp reaches it over the shared `solvro-mcp-internal` network, which `just network` creates
 - Health check: `docker compose ps` → mcp-server should show `healthy`
 
 ### Session not found (API)
@@ -104,9 +99,6 @@ uv run kg "Kto wykłada analizę matematyczną?"
 
 # Run pipeline locally without Docker
 uv run prefect_pipeline
-
-# Run API integration tests against live server
-uv run api-smoke
 
 # Check graph schema cached in config
 python -c "from src.config.config import get_config; c = get_config(); print(c.graph.nodes)"

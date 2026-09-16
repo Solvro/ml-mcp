@@ -1,4 +1,4 @@
-# Coding Standards — SOLVRO MCP
+# Coding Standards — SOLVRO MCPWr
 
 ## File Structure Conventions
 
@@ -7,7 +7,6 @@ src/
 ├── config/           # Config loading only — no business logic
 ├── mcp_server/       # FastMCP server + RAG tools
 │   └── tools/<name>/ # Each tool in its own package: __init__.py, main module, state.py
-├── topwr_api/        # FastAPI app — server.py, models.py, session_manager.py
 ├── mcp_client/       # CLI clients
 ├── data_pipeline/    # Prefect flows
 │   ├── pipeline.py   # Orchestrating @flow only — no logic
