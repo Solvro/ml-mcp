@@ -1,5 +1,5 @@
 # ============================================================================
-# SOLVRO MCP - Project Commands
+# SOLVRO MCPWr - Project Commands
 # ============================================================================
 # Usage: just <recipe>
 # Run `just help` to see all available commands
@@ -29,11 +29,11 @@ kg QUERY:
 # ============================================================================
 #
 # The stack publishes no host ports. mcp-server is reachable only over the shared
-# `solvro-mcp-internal` network, which Solvro/ml-mcp-backend joins too; Neo4j only from
+# `solvro-mcp-internal` network, which Solvro/backend-mcp joins too; Neo4j only from
 # mcp-server. `just up-dev` republishes the ports on 127.0.0.1 for local work. See #6 in
 # ISSUES.prod-readiness.md.
 
-# Create the network shared with ml-mcp-backend (idempotent; either stack may run it first)
+# Create the network shared with backend-mcp (idempotent; either stack may run it first)
 [group('docker')]
 network:
     docker network inspect solvro-mcp-internal >/dev/null 2>&1 || docker network create --internal solvro-mcp-internal
@@ -92,6 +92,40 @@ restore-graph:
 [group('docker')]
 nuke:
     docker compose --env-file .env -f docker/compose.stack.yml down -v --remove-orphans
+
+# ============================================================================
+# 📊 PREFECT DATA PIPELINE (separate service)
+# ============================================================================
+
+# Start Prefect server
+[group('prefect')]
+prefect-up:
+    docker compose --env-file .env -f docker/compose.prefect.yml up -d --build
+
+# Stop Prefect server
+[group('prefect')]
+prefect-down:
+    docker compose --env-file .env -f docker/compose.prefect.yml down
+
+# View Prefect logs
+[group('prefect')]
+prefect-logs:
+    docker compose --env-file .env -f docker/compose.prefect.yml logs -f
+
+# Run data pipeline locally
+[group('prefect')]
+pipeline:
+    uv run prefect_pipeline
+
+# Run source refresh once (discover + fetch + stage + trigger pipeline)
+[group('prefect')]
+refresh:
+    uv run python -m src.data_pipeline.flows.source_refresh
+
+# Serve scheduled source refresh deployment (blocks; cron from DATA_PIPELINE_REFRESH_CRON)
+[group('prefect')]
+refresh-serve:
+    uv run prefect-refresh
 
 # ============================================================================
 # 🧪 QUALITY & TESTING
@@ -172,7 +206,7 @@ clean:
 # Show all available commands
 [group('help')]
 help:
-    @echo "SOLVRO MCP - Knowledge Graph RAG System"
+    @echo "SOLVRO MCPWr - Knowledge Graph RAG System"
     @echo ""
     @echo "Quick Start:"
     @echo "  just setup    # Initial setup"

@@ -1,4 +1,4 @@
-# Testing Strategy — SOLVRO MCP
+# Testing Strategy — SOLVRO MCPWr
 
 ## Framework & Tools
 

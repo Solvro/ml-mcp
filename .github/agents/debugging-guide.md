@@ -1,4 +1,4 @@
-# Debugging Guide — SOLVRO MCP
+# Debugging Guide — SOLVRO MCPWr
 
 ## Logging
 
@@ -79,7 +79,7 @@ open http://localhost:4200
 
 ### MCP server not reachable from API
 - Check `MCP_HOST` and `MCP_PORT` match the running server
-- In Docker: services communicate via service names (`mcp-server:8005`); ml-mcp-backend reaches it over the shared `solvro-mcp-internal` network, which `just network` creates
+- In Docker: services communicate via service names (`mcp-server:8005`); backend-mcp reaches it over the shared `solvro-mcp-internal` network, which `just network` creates
 - Health check: `docker compose ps` → mcp-server should show `healthy`
 
 ### Session not found (API)

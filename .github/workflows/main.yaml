@@ -98,7 +98,7 @@ jobs:
   # ── 4. Integration — the stack as it deploys: nothing published on the host ───
   #
   # compose.stack.yml maps no ports; mcp-server is reachable only over the external
-  # `solvro-mcp-internal` network that ml-mcp-backend joins, and Neo4j only from mcp-server.
+  # `solvro-mcp-internal` network that backend-mcp joins, and Neo4j only from mcp-server.
   # This job asserts exactly that, from the network the backend would use, and then checks
   # that the compose.dev.yml override still republishes the ports on 127.0.0.1 for local work.
   integration:
@@ -155,7 +155,7 @@ jobs:
           echo "no host ports on mcp-server or neo4j"
 
       - name: "Smoke: MCP /health by service name from the shared network"
-        # What ml-mcp-backend's chat-service sees.
+        # What backend-mcp's chat-service sees.
         run: |
           docker run --rm --network solvro-mcp-internal curlimages/curl:8.10.1 \
             -sf --max-time 10 http://mcp-server:8005/health

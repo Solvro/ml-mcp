@@ -1,4 +1,4 @@
-# Coding Standards — SOLVRO MCP
+# Coding Standards — SOLVRO MCPWr
 
 ## File Structure Conventions
 

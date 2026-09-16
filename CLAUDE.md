@@ -1,12 +1,12 @@
-# CLAUDE.md — SOLVRO MCP
+# CLAUDE.md — SOLVRO MCPWr
 
 ## Project Overview
 
-**SOLVRO MCP** is a Knowledge Graph RAG system for Wrocław University of Science and Technology (ToPWR). It answers natural-language questions (in Polish) about university entities — courses, professors, departments, articles — by generating Cypher queries against a Neo4j graph database.
+**SOLVRO MCPWr** is a Knowledge Graph RAG system for Wrocław University of Science and Technology (ToPWR). It answers natural-language questions (in Polish) about university entities — courses, professors, departments, articles — by generating Cypher queries against a Neo4j graph database.
 
 **Architecture:** This repository is the graph side of the system — two services and a data
 pipeline. The chat UI and the user-facing HTTP API (sessions, authentication, rate limits) live
-in the separate `Solvro/ml-mcp-backend` repository, which reaches this server over a shared
+in the separate `Solvro/backend-mcp` repository, which reaches this server over a shared
 Docker network.
 1. **MCP Server** — FastMCP server exposing a `knowledge_graph_tool` (port 8005, container-internal only — see *The Stack Publishes No Host Ports*)
 2. **Neo4j** — the knowledge graph, reachable only from the MCP server
@@ -125,7 +125,7 @@ just kg "Kto wykłada analizę matematyczną?"
 # or: uv run kg "<question>"
 
 # Neo4j + MCP server via Docker. `just up` publishes no host ports: the server is reachable
-# only by ml-mcp-backend over the shared `solvro-mcp-internal` network. `just up-dev` adds
+# only by backend-mcp over the shared `solvro-mcp-internal` network. `just up-dev` adds
 # 127.0.0.1 port mappings so `just kg`, the Neo4j browser and dump/restore work from the host.
 just up
 just up-dev
@@ -228,7 +228,7 @@ just mcp-server         # Start MCP server
 just kg "<question>"    # Query the knowledge graph
 
 # Docker
-just network            # create the solvro-mcp-internal network shared with ml-mcp-backend (idempotent)
+just network            # create the solvro-mcp-internal network shared with backend-mcp (idempotent)
 just up                 # neo4j + mcp-server, no host ports (runs `network` first)
 just up-dev             # same, plus 127.0.0.1:7474/7687/8005 for host-side work (compose.dev.yml)
 just down               # stop stack (the shared network is external and stays)
@@ -858,7 +858,7 @@ switch cannot quietly stop covering a module.
 ### The Stack Publishes No Host Ports
 
 `docker/compose.stack.yml` maps nothing to the host. The one consumer of this server is the
-chat service in `Solvro/ml-mcp-backend`, and the two Compose projects share a single Docker
+chat service in `Solvro/backend-mcp`, and the two Compose projects share a single Docker
 network, `solvro-mcp-internal`, created once outside both of them with
 `docker network create --internal solvro-mcp-internal` (`just network`, which `just up` runs on
 both sides). `mcp-server` joins that network and its own `mcp_network`; Neo4j joins only
@@ -892,7 +892,7 @@ container to heap + page cache alone is how a JVM gets OOM-killed while reportin
 
 **The network is the whole boundary, on purpose.** `/mcp` carries no token and `user_input`
 has no cap here. The server lives only inside the VM, the only thing on its network is
-`ml-mcp-backend`, and every third party reaches it through that backend, which owns
+`backend-mcp`, and every third party reaches it through that backend, which owns
 authentication, `chat_input_max_length`, rate limits and daily quotas. Adding a second layer
 here was considered (#6b/#6c) and dropped: it would duplicate the backend's controls for a
 caller that cannot exist. If that ever changes — another service on the network, or the
@@ -1042,7 +1042,7 @@ fix for that is a second key, not a second attempt.
 
 7. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
 
-8. **Docker multi-stage builds** — MCP and API Dockerfiles use `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
+8. **Docker multi-stage builds** — `Dockerfile.mcp` uses `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
 
 9. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
 

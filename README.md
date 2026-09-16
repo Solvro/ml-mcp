@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/logo.png" alt="SOLVRO MCP Logo" width="400"/>
+  <img src="docs/images/logo.png" alt="SOLVRO MCPWr Logo" width="400"/>
 </p>
 
 <h1 align="center">SOLVRO MCPWr</h1>
@@ -44,7 +44,7 @@ just setup
 cp .env.example .env  # Edit with your API keys
 
 # Run with Docker
-just up      # Neo4j + MCP Server, reachable only by ml-mcp-backend (no host ports)
+just up      # Neo4j + MCP Server, reachable only by backend-mcp (no host ports)
 just up-dev  # same, plus 127.0.0.1 ports for local work
 just logs    # View logs
 just down    # Stop services
@@ -68,12 +68,10 @@ just down    # Stop services
 | Service | Container port | Reachable from | Description |
 |---------|----------------|----------------|-------------|
 | `mcp-server` | 8005 | `backend-mcp` over `solvro-mcp-internal` | FastMCP server exposing `knowledge_graph_tool` and `/health` |
-| `neo4j` | 7687 / 7474 | `mcp-server` over `mcp_network` | Knowledge graph |
-
-The chat UI and the HTTP API that users talk to live in `ml-mcp-backend`; this repository
-is the graph, the retrieval pipeline and the ETL that fills it.
-| `mcp-server` | 8005 | `backend-mcp` over `solvro-mcp-internal` | MCP server with RAG pipeline |
 | `neo4j` | 7474/7687 | `mcp-server` over `mcp_network` only | Knowledge graph database |
+
+The chat UI and the HTTP API that users talk to live in `backend-mcp`; this repository is the
+graph, the retrieval pipeline and the ETL that fills it.
 
 Nothing is published on the host. `just up-dev` layers `docker/compose.dev.yml` on top, which
 republishes the ports on `127.0.0.1` for the Neo4j browser, `just kg` and `uv run dump-graph`.
@@ -243,7 +241,7 @@ just kg "Czym jest nagroda dziekana?"
 
 `GET http://127.0.0.1:8005/health` answers `200 {"status": "healthy"}` once the server can reach
 Neo4j, and `503` with a `reason` otherwise. The user-facing chat endpoint, sessions and
-authentication are in `ml-mcp-backend`.
+authentication are in `backend-mcp`.
 
 ---
 

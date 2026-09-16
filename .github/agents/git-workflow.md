@@ -1,4 +1,4 @@
-# Git Workflow — SOLVRO MCP
+# Git Workflow — SOLVRO MCPWr
 
 ## Commit Message Format
 

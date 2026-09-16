@@ -1,9 +1,9 @@
-# Architecture Decisions — SOLVRO MCP
+# Architecture Decisions — SOLVRO MCPWr
 
 ## Core Architecture: Three-Component System
 
 ```
-[Azure Blob] → [Prefect Pipeline] → [Neo4j Graph DB] ← [MCP Server] ← [ml-mcp-backend] ← [Users]
+[Azure Blob] → [Prefect Pipeline] → [Neo4j Graph DB] ← [MCP Server] ← [backend-mcp] ← [Users]
                                                               ↑
                                                         [LangGraph RAG]
 ```
@@ -13,7 +13,7 @@
 3. **MCP Client** — CLI; same protocol as the backend; not used in production path
 
 The user-facing HTTP API (sessions, conversation history, authentication) lives in the separate
-`Solvro/ml-mcp-backend` repository and reaches the MCP server over the shared
+`Solvro/backend-mcp` repository and reaches the MCP server over the shared
 `solvro-mcp-internal` Docker network.
 
 ## Key Patterns to Preserve
