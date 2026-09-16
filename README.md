@@ -13,7 +13,7 @@
   <a href="#quick-start">Quick Start</a> •
   <a href="#architecture">Architecture</a> •
   <a href="#features">Features</a> •
-  <a href="#api-usage">API</a>
+  <a href="#querying-the-server">Querying</a>
 </p>
 
 ---
@@ -27,7 +27,6 @@
    auth + UI          agent       │ solvro-mcp-internal          mcp_network
 ```
 
-- **PWrChat UI** - React chatbot (session sidebar, dark/light mode toggle, persistent theme)
 - **Intelligent Query Routing** - Guardrails system determines query relevance
 - **Natural Language to Cypher** - Converts questions to graph queries
 - **Knowledge Graph RAG** - Retrieval-Augmented Generation with Neo4j
@@ -68,6 +67,11 @@ just down    # Stop services
 
 | Service | Container port | Reachable from | Description |
 |---------|----------------|----------------|-------------|
+| `mcp-server` | 8005 | `ml-mcp-backend` over `solvro-mcp-internal` | FastMCP server exposing `knowledge_graph_tool` and `/health` |
+| `neo4j` | 7687 / 7474 | `mcp-server` over `mcp_network` | Knowledge graph |
+
+The chat UI and the HTTP API that users talk to live in `ml-mcp-backend`; this repository
+is the graph, the retrieval pipeline and the ETL that fills it.
 | `mcp-server` | 8005 | `ml-mcp-backend` over `solvro-mcp-internal` | MCP server with RAG pipeline |
 | `neo4j` | 7474/7687 | `mcp-server` over `mcp_network` only | Knowledge graph database |
 
@@ -184,7 +188,8 @@ MCP_PORT=8005
 
 ```bash
 # Docker Stack
-just up          # Start all services (including frontend at :80)
+just up          # Neo4j + MCP server, no host ports
+just up-dev      # same, plus 127.0.0.1 ports for local work
 just down        # Stop services
 just logs        # View logs
 just ps          # Service status
@@ -192,13 +197,7 @@ just nuke        # Remove everything
 
 # Local Development
 just mcp-server  # Run MCP server
-just api         # Run FastAPI
 just kg "query"  # Query knowledge graph
-
-# Frontend
-just frontend-install  # Install npm dependencies
-just frontend-dev      # Start dev server at :3000 (requires running API)
-just frontend-build    # Build for production
 
 # Quality
 just lint        # Format & lint
@@ -220,61 +219,31 @@ just pipeline    # Run ETL
 src/
 ├── mcp_server/      # MCP server + RAG pipeline
 ├── mcp_client/      # CLI client
-├── topwr_api/       # FastAPI backend
 ├── config/          # Configuration
 └── data_pipeline/   # Prefect ETL flows
 
-frontend/
-├── src/
-│   ├── api/         # API client
-│   ├── hooks/       # useUserId, useSessions, useChat, useTheme
-│   ├── components/  # Sidebar, Chat, shared UI
-│   └── types/       # TypeScript mirrors of backend models
-└── package.json     # React + Vite + TailwindCSS
-
 docker/
-├── compose.stack.yml    # Main stack (Neo4j + MCP + API + Frontend)
+├── compose.stack.yml    # Main stack (Neo4j + MCP server, no host ports)
+├── compose.dev.yml      # Override that republishes the ports on 127.0.0.1
 ├── compose.prefect.yml  # Data pipeline
 ├── Dockerfile.mcp       # MCP server image
-├── Dockerfile.api       # FastAPI image
-├── Dockerfile.frontend  # React + Nginx image
-└── nginx.conf           # SPA fallback + API proxy
+└── Dockerfile.prefect   # Data pipeline image
 ```
 
 ---
 
-## API Usage
+## Querying the Server
 
-### Chat Endpoint
-
-```bash
-curl -X POST http://localhost:8000/api/chat \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "user1", "message": "Czym jest nagroda dziekana?"}'
-```
-
-**Response:**
-
-```json
-{
-  "session_id": "abc123",
-  "message": "Nagroda dziekana to wyróżnienie przyznawane...",
-  "metadata": {
-    "source": "mcp_knowledge_graph",
-    "trace_id": "xyz789"
-  }
-}
-```
-
-### Session Management
+The server speaks MCP over HTTP at `http://mcp-server:8005/mcp` on the shared network. From the
+host, bring the stack up with `just up-dev` and use the CLI:
 
 ```bash
-# Get session history
-curl http://localhost:8000/api/sessions/{session_id}/history
-
-# List user sessions  
-curl http://localhost:8000/api/users/{user_id}/sessions
+just kg "Czym jest nagroda dziekana?"
 ```
+
+`GET http://127.0.0.1:8005/health` answers `200 {"status": "healthy"}` once the server can reach
+Neo4j, and `503` with a `reason` otherwise. The user-facing chat endpoint, sessions and
+authentication are in `ml-mcp-backend`.
 
 ---
 
@@ -282,14 +251,10 @@ curl http://localhost:8000/api/users/{user_id}/sessions
 
 | Technology | Purpose |
 |------------|---------|
-| **React 18 + TypeScript** | Frontend chat UI |
-| **Vite + TailwindCSS v3** | Build tooling & styling |
-| **Nginx** | Frontend serving + API proxy |
 | **FastMCP** | Model Context Protocol server |
 | **LangGraph** | RAG state machine |
 | **LangChain** | LLM orchestration |
 | **Neo4j** | Knowledge graph database |
-| **FastAPI** | REST API backend |
 | **Langfuse** | Observability (optional) |
 | **Prefect** | Data pipeline orchestration |
 | **Docker** | Containerization |

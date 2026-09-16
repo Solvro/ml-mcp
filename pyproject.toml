@@ -8,7 +8,6 @@ dependencies = [
     "beautifulsoup4>=4.15.0",
     "datamodel-code-generator>=0.27.2",
     "dotenv>=0.9.9",
-    "fastapi>=0.115.0",
     "fastmcp>=2.12.4",
     "httpx>=0.28.0",
     "langchain>=0.3.27",
@@ -26,7 +25,6 @@ dependencies = [
     "python-docx>=1.2.0",
     "pyyaml>=6.0.0",
     "ruff>=0.14.1",
-    "uvicorn>=0.34.0",
 ]
 
 [project.scripts]
@@ -37,8 +35,6 @@ prefect_pipeline = "src.data_pipeline.cli:prefect_pipeline_main"
 prefect-refresh = "src.data_pipeline.flows.source_refresh:serve_refresh"
 server = "src.mcp_server.server:main"
 kg = "src.mcp_client.client:call_knowledge_graph_tool"
-topwr-api = "src.topwr_api.server:main"
-api-smoke = "src.scripts.api_smoke:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

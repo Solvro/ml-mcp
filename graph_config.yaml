@@ -4,11 +4,6 @@ servers:
     port: 8005
     host: "127.0.0.1"
 
-  topwr_api:
-    host: "0.0.0.0"
-    port: 8000
-    cors_origins: "*"
-
 rag:
   # The cap `ensure_limit` clamps every generated query to, and the number of nodes the
   # label-agnostic search takes from the index. It must match the `LIMIT` the Cypher prompt asks

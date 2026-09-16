@@ -1,17 +1,20 @@
 # Architecture Decisions — SOLVRO MCP
 
-## Core Architecture: Four-Component System
+## Core Architecture: Three-Component System
 
 ```
-[Azure Blob] → [Prefect Pipeline] → [Neo4j Graph DB] ← [MCP Server] ← [ToPWR API] ← [Users]
+[Azure Blob] → [Prefect Pipeline] → [Neo4j Graph DB] ← [MCP Server] ← [ml-mcp-backend] ← [Users]
                                                               ↑
                                                         [LangGraph RAG]
 ```
 
 1. **MCP Server** — single source of graph intelligence; stateless; exposed as FastMCP tool
-2. **ToPWR API** — user-facing HTTP API; owns sessions and conversation history; delegates intelligence to MCP
-3. **Data Pipeline** — one-way ETL; documents become graph nodes/relations via LLM-generated Cypher
-4. **MCP Client** — CLI; same protocol as API; not used in production path
+2. **Data Pipeline** — one-way ETL; documents become graph nodes/relations via LLM-generated Cypher
+3. **MCP Client** — CLI; same protocol as the backend; not used in production path
+
+The user-facing HTTP API (sessions, conversation history, authentication) lives in the separate
+`Solvro/ml-mcp-backend` repository and reaches the MCP server over the shared
+`solvro-mcp-internal` Docker network.
 
 ## Key Patterns to Preserve
 
@@ -55,9 +58,6 @@ The LLM Cypher generation prompts (in `graph_config.yaml` under `prompts.cypher_
 
 ### Add a new RAG pipeline node
 → Add field to `State`, add node method to `RAG` class in `rag.py`, wire into `StateGraph`.
-
-### Add a new API endpoint
-→ Add route to `src/topwr_api/server.py`, add Pydantic models to `models.py` if needed.
 
 ### Add a new data source (not Azure)
 → Create new flow in `src/data_pipeline/flows/data_acquisition.py` or add a new flow file. Update `pipeline.py` orchestrator to call it.

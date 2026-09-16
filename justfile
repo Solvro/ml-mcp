@@ -24,11 +24,6 @@ mcp-server:
 kg QUERY:
     uv run kg "{{QUERY}}"
 
-# Start FastAPI backend locally
-[group('dev')]
-api:
-    uv run topwr-api
-
 # ============================================================================
 # 🐳 DOCKER STACK (Neo4j + MCP Server)
 # ============================================================================
@@ -99,77 +94,20 @@ nuke:
     docker compose --env-file .env -f docker/compose.stack.yml down -v --remove-orphans
 
 # ============================================================================
-# 🌐 FRONTEND (React + Vite + TailwindCSS)
-# ============================================================================
-
-# Install frontend dependencies
-[group('frontend')]
-frontend-install:
-    cd frontend && npm install
-
-# Start frontend dev server (requires running backend on :8000)
-[group('frontend')]
-frontend-dev:
-    cd frontend && npm run dev
-
-# Build frontend for production
-[group('frontend')]
-frontend-build:
-    cd frontend && npm run build
-
-# ============================================================================
-# 📊 PREFECT DATA PIPELINE (separate service)
-# ============================================================================
-
-# Start Prefect server
-[group('prefect')]
-prefect-up:
-    docker compose --env-file .env -f docker/compose.prefect.yml up -d --build
-
-# Stop Prefect server
-[group('prefect')]
-prefect-down:
-    docker compose --env-file .env -f docker/compose.prefect.yml down
-
-# View Prefect logs
-[group('prefect')]
-prefect-logs:
-    docker compose --env-file .env -f docker/compose.prefect.yml logs -f
-
-# Run data pipeline locally
-[group('prefect')]
-pipeline:
-    uv run prefect_pipeline
-
-# Run source refresh once (discover + fetch + stage + trigger pipeline)
-[group('prefect')]
-refresh:
-    uv run python -m src.data_pipeline.flows.source_refresh
-
-# Serve scheduled source refresh deployment (blocks; cron from DATA_PIPELINE_REFRESH_CRON)
-[group('prefect')]
-refresh-serve:
-    uv run prefect-refresh
-
-# ============================================================================
 # 🧪 QUALITY & TESTING
 # ============================================================================
 
-# Format and lint code (Python + Frontend)
+# Format and lint code
 [group('quality')]
 lint:
     uv run ruff format src tests
     uv run ruff check src tests --fix
-    cd frontend && npm run format
-    cd frontend && npm run lint
 
 # Verify formatting and lint without modifying files (used by CI)
 [group('quality')]
 lint-check:
     uv run ruff format --check src tests
     uv run ruff check src tests
-    cd frontend && npm run format:check
-    cd frontend && npm run lint
 
 # Run tests with coverage
 [group('quality')]
@@ -195,7 +133,6 @@ ci: lint-check test
 setup:
     uv sync
     just generate-models
-    just frontend-install
     @echo ""
     @echo "✅ Development environment ready!"
     @echo ""

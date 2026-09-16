@@ -20,25 +20,12 @@ tests/
 └── data_pipeline/      # Pipeline flow tests with their own conftest
 ```
 
-Note: `src/scripts/api_smoke.py` is a manual smoke script, not a test. It hits a live API at the configured host/port and prints what it gets back — it asserts nothing and pytest does not collect it. Run it by hand via `uv run api-smoke`.
-
 ## What to Test
 
 ### MCP Server / RAG Pipeline
 - Each LangGraph node in isolation (guardrails, generate_cypher, retrieve)
 - State transitions and conditional routing
 - Schema fallback behavior (empty Neo4j → config fallback)
-
-### FastAPI Backend
-- All endpoints: `/api/chat`, `/api/sessions/*`, `/health`
-- Session creation/retrieval/deletion
-- Chat continuation (existing session reuse)
-- Error responses for invalid session IDs
-
-### Session Manager
-- Thread-safety (inferred from Lock usage — worth testing with concurrent writes)
-- `get_active_session()` returns most recent active session
-- `deactivate_session()` marks correctly
 
 ### Data Pipeline
 - Text extraction from PDF and TXT inputs
@@ -110,22 +97,9 @@ async def test_guardrails_routes_relevant_query():
     assert result["next_node"] == "generate_cypher"
 ```
 
-### Session Manager Tests
-```python
-def test_session_creation():
-    manager = SessionManager()
-    session = manager.create_session(user_id="user1")
-    assert session.user_id == "user1"
-    assert session.is_active
-
-def test_get_nonexistent_session_returns_none():
-    manager = SessionManager()
-    assert manager.get_session("nonexistent") is None
-```
-
 ## Coverage Expectations
 
-- Aim for high coverage on core business logic: `rag.py`, `session_manager.py`, `pipeline.py`
+- Aim for high coverage on core business logic: `rag.py`, `pipeline.py`
 - Lower priority for: auto-generated `config_models.py`, Docker entrypoint scripts
 - Manual scripts under `src/scripts/` are not pytest — they are excluded from coverage via `omit` in `[tool.coverage.run]`
 

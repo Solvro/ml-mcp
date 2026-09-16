@@ -226,7 +226,7 @@ def test_tool_returns_the_answer_when_the_pipeline_works(restore_rag) -> None:
 #
 # The tests above call the tool function directly, which proves it raises but not that a caller
 # sees a failure. The issue is about what the backend receives, so these go through the protocol
-# with an in-memory client: `isError` is the flag topwr_api's client raises on.
+# with an in-memory client: `isError` is the flag the backend's client raises on.
 
 
 def call_over_mcp(rag, *, raise_on_error: bool = True):

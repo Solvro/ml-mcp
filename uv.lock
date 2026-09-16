@@ -4098,7 +4098,6 @@ dependencies = [
     { name = "beautifulsoup4" },
     { name = "datamodel-code-generator" },
     { name = "dotenv" },
-    { name = "fastapi" },
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "langchain" },
@@ -4116,7 +4115,6 @@ dependencies = [
     { name = "python-docx" },
     { name = "pyyaml" },
     { name = "ruff" },
-    { name = "uvicorn" },
 ]
 
 [package.dev-dependencies]
@@ -4130,7 +4128,6 @@ requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.15.0" },
     { name = "datamodel-code-generator", specifier = ">=0.27.2" },
     { name = "dotenv", specifier = ">=0.9.9" },
-    { name = "fastapi", specifier = ">=0.115.0" },
     { name = "fastmcp", specifier = ">=2.12.4" },
     { name = "httpx", specifier = ">=0.28.0" },
     { name = "langchain", specifier = ">=0.3.27" },
@@ -4148,7 +4145,6 @@ requires-dist = [
     { name = "python-docx", specifier = ">=1.2.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "ruff", specifier = ">=0.14.1" },
-    { name = "uvicorn", specifier = ">=0.34.0" },
 ]
 
 [package.metadata.requires-dev]
