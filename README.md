@@ -2,10 +2,10 @@
   <img src="docs/images/logo.png" alt="SOLVRO MCP Logo" width="400"/>
 </p>
 
-<h1 align="center">SOLVRO MCP</h1>
+<h1 align="center">SOLVRO MCPWr</h1>
 
 <p align="center">
-  <strong>Knowledge Graph RAG System for ToPWR</strong><br>
+  <strong>Knowledge Graph RAG System for PWr</strong><br>
   Intelligent assistant for Wrocław University of Science and Technology
 </p>
 
@@ -19,7 +19,7 @@
 ---
 
 ```
- ml-mcp-backend (separate repo)   │            ml-mcp (this repo, no host ports)
+ backend-mcp (separate repo)   │            ml-mcp (this repo, no host ports)
 ┌─────────────┐   ┌──────────────┐│   ┌─────────────┐          ┌─────────────┐
 │    nginx    │──▶│ chat-service │┼──▶│  MCP Server │─────────▶│    Neo4j    │
 │   :8080     │   │              ││   │ :8005 (int.)│          │ :7687 (int.)│
@@ -57,7 +57,7 @@ just down    # Stop services
 ### System Overview
 
 ```
- ml-mcp-backend (separate repo)   │            ml-mcp (this repo, no host ports)
+ backend-mcp (separate repo)   │            ml-mcp (this repo, no host ports)
 ┌─────────────┐   ┌──────────────┐│   ┌─────────────┐          ┌─────────────┐
 │    nginx    │──▶│ chat-service │┼──▶│  MCP Server │─────────▶│    Neo4j    │
 │   :8080     │   │              ││   │ :8005 (int.)│          │ :7687 (int.)│
@@ -67,12 +67,12 @@ just down    # Stop services
 
 | Service | Container port | Reachable from | Description |
 |---------|----------------|----------------|-------------|
-| `mcp-server` | 8005 | `ml-mcp-backend` over `solvro-mcp-internal` | FastMCP server exposing `knowledge_graph_tool` and `/health` |
+| `mcp-server` | 8005 | `backend-mcp` over `solvro-mcp-internal` | FastMCP server exposing `knowledge_graph_tool` and `/health` |
 | `neo4j` | 7687 / 7474 | `mcp-server` over `mcp_network` | Knowledge graph |
 
 The chat UI and the HTTP API that users talk to live in `ml-mcp-backend`; this repository
 is the graph, the retrieval pipeline and the ETL that fills it.
-| `mcp-server` | 8005 | `ml-mcp-backend` over `solvro-mcp-internal` | MCP server with RAG pipeline |
+| `mcp-server` | 8005 | `backend-mcp` over `solvro-mcp-internal` | MCP server with RAG pipeline |
 | `neo4j` | 7474/7687 | `mcp-server` over `mcp_network` only | Knowledge graph database |
 
 Nothing is published on the host. `just up-dev` layers `docker/compose.dev.yml` on top, which
