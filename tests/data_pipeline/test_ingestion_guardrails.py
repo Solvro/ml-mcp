@@ -74,6 +74,10 @@ def test_a_clause_inside_a_string_literal_stays_text():
         ),
         ("CALL apoc.refactor.mergeNodes([], {})", "must start with MERGE, not `CALL`"),
         ("DROP INDEX entity_key_topic", "must start with MERGE, not `DROP`"),
+        (
+            "CREATE CONSTRAINT c IF NOT EXISTS FOR (n:Topic) REQUIRE n.key IS UNIQUE",
+            "must start with MERGE, not `CREATE`",
+        ),
         ("MERGE (a:Topic {key: 'x'}) DETACH DELETE a", "`DETACH` is not allowed"),
         # A URL literal must not swallow what follows it on the line.
         ("MERGE (a:Topic {key: 'x'}) SET a.url = 'http://x' DELETE a", "`DELETE` is not allowed"),
@@ -157,6 +161,17 @@ def test_refuse_unsafe_statements_fails_the_page_when_a_refused_statement_bound_
         refuse_unsafe_statements(statements)
 
     assert error.value.unbound_variable == "a"
+
+
+def test_the_bare_merge_redeclaration_pass_leaves_behind_fails_the_page():
+    """`_drop_redeclarations` keeps `MERGE (node13)` when nothing else binds it; this is where it
+    stops, since running it would hang HAS_CRITERION off every node in the graph."""
+    statements = ["MERGE (node13)", "MERGE (node13)-[:HAS_CRITERION]->(node14)"]
+
+    with pytest.raises(StrandedStatementError) as error:
+        refuse_unsafe_statements(statements)
+
+    assert error.value.unbound_variable == "node13"
 
 
 def test_refuse_unsafe_statements_reads_variables_in_page_order():

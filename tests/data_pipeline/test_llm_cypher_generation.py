@@ -51,7 +51,8 @@ def test_a_statement_re_declaring_a_bound_variable_is_dropped(monkeypatch) -> No
 
 
 def test_a_bare_merge_nothing_else_binds_is_left_alone() -> None:
-    """There it is the binding, and dropping it would strand the relationships naming it."""
+    """Not this pass's call. With no label and no properties it matches every node in the graph,
+    so the ingestion guardrail refuses it and fails the page (#93)."""
     parts = ["MERGE (node13)", "MERGE (node13)-[:HAS_CRITERION]->(node14)"]
 
     assert cypher_module._drop_redeclarations(parts, MagicMock()) == parts
