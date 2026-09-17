@@ -11,6 +11,7 @@ from prefect.exceptions import MissingContextError
 from src.config.config import get_config
 from src.config.system_labels import SYSTEM_LABELS
 from src.data_pipeline.canonical_nodes import drop_self_relationships, extract_entity_keys
+from src.data_pipeline.ingestion_guardrails import StrandedStatementError, refuse_unsafe_statements
 
 module_logger = logging.getLogger(__name__)
 
@@ -92,6 +93,44 @@ def _build_query_with_provenance(
         *[f"MERGE ({var})-[:FROM_SOURCE]->({source_var})" for var in node_vars],
     ]
     return f"{combined}\n" + "\n".join(provenance_lines), {"source_id": source_id}
+
+
+def _refuse_unsafe_statements(
+    statements: list[str],
+    source_id: str,
+    logger: logging.Logger,
+) -> list[str]:
+    """Keep only the statements that MERGE the page's own entities, logging the rest.
+
+    Issue #93: the statements are model output written from crawled documents and run as the
+    pipeline's Neo4j user. Every rewrite before this point passes a shape it does not recognise
+    through verbatim, so this is the one place that asks what a statement does.
+
+    Args:
+        statements: The page's statements as they would run
+        source_id: Page source id, for the log
+        logger: Prefect run logger
+
+    Returns:
+        The statements to run
+
+    Raises:
+        StrandedStatementError: If a kept statement needs a variable only a refused one bound
+    """
+    try:
+        kept, refused = refuse_unsafe_statements(statements)
+    except StrandedStatementError as error:
+        logger.error("Failing the page for source %s: %s", source_id or "<unknown>", error)
+        raise
+
+    for item in refused:
+        logger.warning(
+            "Refused a statement outside the ingestion contract for source %s (%s): %s",
+            source_id or "<unknown>",
+            item.reason,
+            item.statement,
+        )
+    return kept
 
 
 class GraphPopulator:
@@ -440,21 +479,25 @@ def populate_graph(cypher_query: str, doc_hash: str = "", source_id: str = "") -
     )
     statements = [part.strip() for part in (cypher_query or "").split("|") if part.strip()]
 
-    statements, self_relationships = drop_self_relationships(statements)
-    for statement in self_relationships:
-        logger.warning(
-            "Dropped a relationship whose two ends are the same node for source %s: %s",
-            source_id or "<unknown>",
-            statement,
-        )
-
-    query_to_execute, query_params = _build_query_with_provenance(
-        statements,
-        source_id,
-        logger,
-    )
     pop = GraphPopulator()
     try:
+        # Inside the try: a page failed by the guardrail is marked failed and linked to its
+        # source like a page Neo4j rejected, rather than left claimed until the claim goes stale.
+        statements = _refuse_unsafe_statements(statements, source_id, logger)
+
+        statements, self_relationships = drop_self_relationships(statements)
+        for statement in self_relationships:
+            logger.warning(
+                "Dropped a relationship whose two ends are the same node for source %s: %s",
+                source_id or "<unknown>",
+                statement,
+            )
+
+        query_to_execute, query_params = _build_query_with_provenance(
+            statements,
+            source_id,
+            logger,
+        )
         if query_to_execute:
             pop.execute_cypher(query_to_execute, params=query_params)
         pop.mark_document_processed(doc_hash)
