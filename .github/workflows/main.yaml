@@ -187,6 +187,19 @@ jobs:
           fi
           echo "dedup and export procedures run; apoc.cypher.* is not loaded"
 
+      - name: "Smoke: LOAD CSV cannot read a file URL"
+        # compose.stack.yml turns file URLs off (#93). A file is put in the import directory and the
+        # refusal has to name the setting, so a missing file or a wrong path cannot pass for it.
+        run: |
+          cypher() { docker exec ml-mcp-neo4j sh -c 'cypher-shell -u neo4j -p "${NEO4J_AUTH#neo4j/}" --format plain "$1"' _ "$1"; }
+          docker exec ml-mcp-neo4j sh -c 'echo probe > /var/lib/neo4j/import/ci-probe.csv'
+          cypher "LOAD CSV FROM 'file:///ci-probe.csv' AS row RETURN count(row) AS rows" > /tmp/load-csv-smoke.txt 2>&1 || true
+          docker exec ml-mcp-neo4j rm -f /var/lib/neo4j/import/ci-probe.csv
+          cat /tmp/load-csv-smoke.txt
+          grep -q "allow_csv_import_from_file_urls' is false" /tmp/load-csv-smoke.txt \
+            || { echo "::error::LOAD CSV was not refused by dbms.security.allow_csv_import_from_file_urls"; exit 1; }
+          echo "LOAD CSV refuses file URLs"
+
       - name: "Smoke: the shared network has no route out"
         run: |
           if docker run --rm --network solvro-mcp-internal curlimages/curl:8.10.1 \

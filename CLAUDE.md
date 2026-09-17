@@ -558,6 +558,12 @@ bound is read generously (every name in it), so an unclear case fails the page r
 running a statement that matches the whole graph. The pipeline's own Cypher (provenance wiring,
 `graph_dedup`, the dump CLI) never goes through this path.
 
+**The database adds one cheap layer, not a second line.** `compose.stack.yml` sets
+`dbms.security.allow_csv_import_from_file_urls=false`, since nothing in `src/` uses `LOAD CSV`
+and a `file:///` URL would read the mounted import volume. It is server-wide and covers file
+URLs only: no setting refuses `http(s)`, and a separate pipeline user buys nothing on Community,
+where every user is an admin. The CI integration job checks that the refusal names the setting.
+
 ### Post-Ingest Deduplication
 
 `graph_dedup.deduplicate_graph` repairs entities split across several nodes. It has two modes,
