@@ -284,8 +284,9 @@ def _drop_redeclarations(parts: List[str], logger) -> List[str]:
     than claiming to know who wrote it; every part is now logged at debug so the next one can be
     attributed.
 
-    A bare MERGE nothing else binds is left alone: there it is the binding, and dropping it
-    would leave the relationships that name the variable pointing at nothing.
+    A bare MERGE nothing else binds is left to ``populate_graph``. It only looks like the binding:
+    with no label and no properties it matches every node in the graph, so the ingestion
+    guardrail refuses it there, and fails the page if a relationship names the variable (#93).
 
     Args:
         parts: Generated Cypher statements, after every rewrite

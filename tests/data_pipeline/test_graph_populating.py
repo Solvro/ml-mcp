@@ -4,6 +4,7 @@ import pytest
 
 from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.flows import graph_populating
+from src.data_pipeline.ingestion_guardrails import StrandedStatementError
 
 
 class FakePopulator:
@@ -62,10 +63,10 @@ def test_populate_graph_runs_pipe_joined_clauses_as_one_query(fake_populator):
 
 
 def test_populate_graph_appends_provenance_to_single_statement(fake_populator):
-    graph_populating.populate_graph.fn("MERGE (a:X)", "hash2", "file://docs/a.pdf#page=1")
+    graph_populating.populate_graph.fn("MERGE (a:X {t: 'x'})", "hash2", "file://docs/a.pdf#page=1")
     assert fake_populator.executed == [
         (
-            "MERGE (a:X)\n"
+            "MERGE (a:X {t: 'x'})\n"
             "WITH a\n"
             "MERGE (prov_source:Source {source_id: $source_id})\n"
             "MERGE (a)-[:FROM_SOURCE]->(prov_source)",
@@ -80,7 +81,7 @@ def test_populate_graph_failure_marks_failed_and_raises(fake_populator):
     fake_populator.fail_on = "b:Y"
     with pytest.raises(RuntimeError):
         graph_populating.populate_graph.fn(
-            "MERGE (a:X)|MERGE (b:Y)",
+            "MERGE (a:X {t: 'x'})|MERGE (b:Y {t: 'y'})",
             "hash3",
             "file://docs/a.pdf#page=1",
         )
@@ -91,9 +92,9 @@ def test_populate_graph_failure_marks_failed_and_raises(fake_populator):
 
 
 def test_populate_graph_without_merge_vars_runs_without_provenance(fake_populator, caplog):
-    graph_populating.populate_graph.fn("MATCH (a) RETURN a", "hash4", "file://docs/a.pdf#page=1")
+    graph_populating.populate_graph.fn("MERGE (:X {t: 'x'})", "hash4", "file://docs/a.pdf#page=1")
 
-    assert fake_populator.executed == [("MATCH (a) RETURN a", {})]
+    assert fake_populator.executed == [("MERGE (:X {t: 'x'})", {})]
     assert fake_populator.processed == ["hash4"]
     assert any("without provenance" in rec.message for rec in caplog.records)
 
@@ -240,3 +241,48 @@ def test_populate_graph_keeps_a_relationship_between_two_entities(fake_populator
 
     executed, _ = fake_populator.executed[0]
     assert "MERGE (n1)-[:PART_OF]->(n2)" in executed
+
+
+def test_populate_graph_refuses_a_write_and_keeps_the_rest_of_the_page(fake_populator, caplog):
+    """Issue #93: a statement outside the MERGE contract never reaches Neo4j."""
+    page = "|".join(
+        [
+            rewrite_merge_to_canonical_key("MERGE (n1:Course {title: 'Analiza matematyczna'})"),
+            "MATCH (n) DETACH DELETE n",
+            "LOAD CSV FROM 'http://127.0.0.1:9/never.csv' AS row RETURN count(row)",
+        ]
+    )
+
+    with caplog.at_level(logging.WARNING):
+        keys = graph_populating.populate_graph.fn(page, "hash-safe", "file://docs/a.pdf#page=1")
+
+    executed, _ = fake_populator.executed[0]
+    assert "DETACH DELETE" not in executed
+    assert "LOAD CSV" not in executed
+    assert "MERGE (n1)-[:FROM_SOURCE]->(prov_source)" in executed
+    assert fake_populator.processed == ["hash-safe"]
+    assert keys == ["analiza matematyczna"]
+    refusals = [record.message for record in caplog.records if "Refused" in record.message]
+    assert len(refusals) == 2
+    assert all("file://docs/a.pdf#page=1" in message for message in refusals)
+
+
+def test_populate_graph_fails_the_page_when_a_refused_statement_bound_a_used_variable(
+    fake_populator,
+):
+    """Dropping the binding would leave `(n1)` matching any node, so the page fails instead."""
+    page = "|".join(
+        [
+            "MERGE (n1:ProcessedDocument {hash: 'abc'}) ON MATCH SET n1.status = 'processed'",
+            rewrite_merge_to_canonical_key("MERGE (n2:Course {title: 'Analiza matematyczna'})"),
+            "MERGE (n1)-[:PART_OF]->(n2)",
+        ]
+    )
+
+    with pytest.raises(StrandedStatementError):
+        graph_populating.populate_graph.fn(page, "hash-stranded", "file://docs/a.pdf#page=1")
+
+    assert fake_populator.executed == []
+    assert fake_populator.processed == []
+    assert fake_populator.failed and fake_populator.failed[0][0] == "hash-stranded"
+    assert fake_populator.linked == [("hash-stranded", "file://docs/a.pdf#page=1")]

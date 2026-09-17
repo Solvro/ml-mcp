@@ -27,6 +27,11 @@ services:
       # mounted into the container.
       - NEO4J_dbms_security_procedures_unrestricted=apoc.meta.*,apoc.schema.*,apoc.any.property
       - NEO4J_dbms_security_procedures_allowlist=apoc.meta.*,apoc.schema.*,apoc.any.property,apoc.coll.sort,apoc.refactor.mergeNodes,apoc.create.removeLabels,apoc.export.cypher.all
+      # Nothing in src/ uses LOAD CSV, and a file:/// URL would read the import volume below
+      # (#93). This is server-wide: Community has no roles to take LOAD away from one user, and
+      # no setting covers http(s) URLs, which is why ingestion_guardrails.py refuses LOAD CSV
+      # before it is sent.
+      - NEO4J_dbms_security_allow__csv__import__from__file__urls=false
       # Sized for the target VM (#85). Left unset, Neo4j picks a heap from whatever the host
       # reports, which on a shared box is a number nobody chose; the initial size matches the
       # maximum so the JVM never pauses to resize one.
