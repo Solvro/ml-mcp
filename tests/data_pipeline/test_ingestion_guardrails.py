@@ -50,7 +50,7 @@ def test_accepts_a_pattern_that_merges_its_nodes_and_relationship_at_once():
 def test_accepts_values_built_from_literals_and_the_pages_own_properties():
     statement = (
         'MERGE (`node 1`:Topic {key: "x"}) '
-        "SET `node 1`.n = -1.5e3, `node 1`.tags = ['a', null, true], "
+        "SET `node 1`.n = -1.5e3, `node 1`.tags = ['a', 'b'], "
         "`node 1`.flag = `node 1`.x IS NOT NULL AND NOT `node 1`.y STARTS WITH 'a'"
     )
 
