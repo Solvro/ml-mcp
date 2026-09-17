@@ -168,6 +168,7 @@ ml-mcp/
 │   │   ├── label_vocabulary.py  # Closed node-label set and the rewrite that enforces it
 │   │   ├── canonical_nodes.py   # Canonical merge keys (one node per real entity)
 │   │   ├── title_sanity.py      # Titles are entity names: no enumerators, no fragments
+│   │   ├── ingestion_guardrails.py # Generated Cypher may only MERGE the page's own entities
 │   │   └── flows/
 │   │       ├── source_refresh.py        # Scheduled discovery + fetch of source docs (web connector)
 │   │       ├── data_acquisition.py      # Staging dir scan → document references
@@ -354,7 +355,8 @@ enforced via prompt and string values are folded deterministically before execut
 
 The pipe-separated shape is a hard contract: `graph_populating.populate_graph` splits on `|` and
 runs the parts as **one** query, because relationship clauses reference variables bound by
-earlier node clauses.
+earlier node clauses. Before it does, every part has to parse as a MERGE of the page's own
+entities, or it is refused (see *Ingestion Cypher Can Only MERGE the Page's Own Entities*).
 
 ### Ingestion Extraction Quality
 
@@ -511,12 +513,50 @@ title token missing from the page would fire on both.
 **One degenerate statement must not cost a whole page.** A page's statements run as one query,
 so `MERGE (node13)` — no label, no properties, next to the `node13` the page already bound —
 fails every row on that page with `Variable `node13` already declared`. `_drop_redeclarations`
-removes that shape after every other rewrite; a bare MERGE nothing else binds is left alone,
-since there it *is* the binding and dropping it would strand the relationships naming it. No
+removes that shape after every other rewrite. A bare MERGE nothing else binds is left to the
+ingestion guardrail below, which refuses it: it looks like the binding, but with no label and no
+properties it binds every node in the graph. No
 rewrite in this repo reproduces the statement and it appeared in no logged model output, so
 this drops the shape rather than claiming to know who wrote it — and every generated part is
 now logged at `DEBUG`, untruncated, so the next one can be attributed. The INFO log still shows
 the first ten, cut at 400 characters, which is what made the first occurrence unattributable.
+
+### Ingestion Cypher Can Only MERGE the Page's Own Entities
+
+The extraction model writes Cypher from crawled documents, including pages other people can
+edit, and it runs as the pipeline's Neo4j user. Every rewrite above recognises the shapes it
+expects and passes anything else through verbatim, so before #93 `MATCH (n) DETACH DELETE n`, a
+forged `ProcessedDocument`, or `LOAD CSV FROM 'http://…'` reached Neo4j untouched. That last one
+is plain Cypher, with no APOC involved: the database makes the request itself. Retrieval has
+`validate_read_only` and READ access mode behind it. Ingestion has to write, and the Community
+image has no roles to take `LOAD` away from a pipeline user, so `ingestion_guardrails.py` is the
+only line.
+
+**The check is positive.** `validate_ingestion_statement` tokenises a statement left to right, so
+a quote, a backtick and a comment are each read where they start, the way Neo4j reads them. It
+keeps the statement only when it parses as the prompt's contract: `MERGE` of a pattern, then
+`ON CREATE SET`, `ON MATCH SET` or `SET` assigning one property at a time. Values are literals,
+lists, maps, `CASE`, properties of bound variables and the pure functions in
+`ALLOWED_FUNCTIONS`. Nothing else has a rule, so `CALL`, `LOAD CSV`, `MATCH`, `WITH`, `DELETE`,
+`REMOVE`, `FOREACH`, `CREATE`, comments, `;` and `$params` are refused without a list naming
+them. A denylist would miss the next `LOAD CSV`.
+
+**Scope is what keeps a MERGE on the page's own nodes.** A node that introduces a variable needs
+a label *and* properties: without properties the label matches every node under it, and without
+a label `{hash: …}` matches a `ProcessedDocument`. A bare `(n)` must name a variable an earlier
+statement on the page bound, since an unbound one matches any node in the graph, and `SET` and
+property reads only take bound variables. `SYSTEM_LABELS` are refused in any label position,
+ignoring case.
+
+**A refused statement is dropped, unless something needed it.** `populate_graph` runs
+`refuse_unsafe_statements` before `drop_self_relationships` and logs each refusal with the
+source id and the reason. The rest of the page still runs, unless a later statement uses a
+variable only a refused one bound. That statement would match any node, so
+`StrandedStatementError` fails the page instead. The check sits inside the `try`, so that page
+is marked failed and linked to its source like a page Neo4j rejected. What a refused statement
+bound is read generously (every name in it), so an unclear case fails the page rather than
+running a statement that matches the whole graph. The pipeline's own Cypher (provenance wiring,
+`graph_dedup`, the dump CLI) never goes through this path.
 
 ### Post-Ingest Deduplication
 
