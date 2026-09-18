@@ -282,6 +282,24 @@ def _row_values(rows: List[Any]) -> List[str]:
     return values
 
 
+def _locate_candidate(
+    candidate: str | None, entity: str | None, cypher: str, rows: List[Any]
+) -> str | None:
+    """Say where one candidate anchor sits, if it holds the entity at all."""
+    anchor_words = _words(candidate or "")
+    if not anchor_words:
+        return None
+    if _is_label_in(candidate, cypher):
+        return "query"
+    if entity and not _anchor_covers_entity(entity, anchor_words):
+        return None
+    if _contains_phrase(_words(cypher), anchor_words):
+        return "query"
+    if any(_contains_phrase(_words(value), anchor_words) for value in _row_values(rows)):
+        return "rows"
+    return None
+
+
 def locate_anchor(verdict: GraderVerdict, cypher: str, rows: List[Any]) -> str | None:
     """
     Find where the anchor the grader named actually sits.
@@ -292,6 +310,10 @@ def locate_anchor(verdict: GraderVerdict, cypher: str, rows: List[Any]) -> str |
     thing in English, which no Polish entity spells out, and it is the only anchor a question
     like "Jakie są dni wolne?" has.
 
+    The entity itself is tried second. Against the fast model the grader named the entity
+    right and still answered a null anchor about one run in six, with that exact phrase sitting
+    in the query's filter; the filter is evidence, the null is not.
+
     Args:
         verdict: The grader's reply
         cypher: The query that returned the rows
@@ -301,17 +323,10 @@ def locate_anchor(verdict: GraderVerdict, cypher: str, rows: List[Any]) -> str |
         "query" when the query filters on or matches the entity, "rows" when only a row holds
         it, and None when nothing does
     """
-    anchor_words = _words(verdict.anchor or "")
-    if not anchor_words:
-        return None
-    if _is_label_in(verdict.anchor, cypher):
-        return "query"
-    if verdict.entity and not _anchor_covers_entity(verdict.entity, anchor_words):
-        return None
-    if _contains_phrase(_words(cypher), anchor_words):
-        return "query"
-    if any(_contains_phrase(_words(value), anchor_words) for value in _row_values(rows)):
-        return "rows"
+    for candidate in (verdict.anchor, verdict.entity):
+        located = _locate_candidate(candidate, verdict.entity, cypher, rows)
+        if located is not None:
+            return located
     return None
 
 
@@ -962,8 +977,9 @@ class RAG:
         entity the question is about, and ``locate_anchor`` confirms it: a row that only uses a
         similar word is how a grader that was merely asked "is this relevant" kept the wrong
         category. A primary query that filters on the entity itself keeps its whole list, since
-        everything it returned sits under that entity; one whose anchor is only found in the
-        rows mixed entities, and keeps just the rows the grader picked. When nothing is kept,
+        everything it returned sits under that entity, whatever the grader said about single
+        rows; one whose anchor is only found in the rows mixed entities, and keeps just the rows
+        the grader picked. When nothing is kept,
         the run moves on to the label-agnostic search, since a wrong result must get the same
         second chance an empty one does.
 
@@ -1032,6 +1048,12 @@ class RAG:
                 )
                 kept = []
 
+        if strategy == RetrievalStrategy.PRIMARY.value and anchored_in == "query":
+            # The anchor is the check here, not the row list: measured against the fast model,
+            # it found the teacher filter every time and still dropped the course titles under
+            # it, because none of them repeats the teacher's name.
+            return {"context_graded": True, "next_node": "end"}
+
         if not kept:
             logger.info("Context grader rejected all %d %s row(s)", len(context), strategy)
             return {
@@ -1042,9 +1064,6 @@ class RAG:
                     "search_after_grading" if strategy in MODEL_QUERY_STRATEGIES else "end"
                 ),
             }
-
-        if strategy == RetrievalStrategy.PRIMARY.value and anchored_in == "query":
-            return {"context_graded": True, "next_node": "end"}
 
         return {
             "context": [context[index] for index in kept],

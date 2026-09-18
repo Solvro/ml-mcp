@@ -180,6 +180,34 @@ def test_a_filter_on_the_teacher_anchors_course_titles_that_never_name_them() ->
     assert result == {"context_graded": True, "next_node": "end"}
 
 
+def test_an_anchored_primary_list_stays_when_the_grader_drops_every_row() -> None:
+    """Measured on the fast model: right anchor, and every course title dropped anyway."""
+    rag, _ = _grader_stub(_verdict(entity="dr Jan Kowalski", anchor="jan kowalski", relevant=[]))
+
+    result = rag.grade_context(
+        _state(
+            user_question="Jakie kursy prowadzi dr Jan Kowalski?",
+            retrieval_strategy="primary",
+            generated_cypher=(
+                "MATCH (p:Person)-[:TEACHES]->(c:Course) "
+                "WHERE toLower(p.title) CONTAINS toLower('jan kowalski') RETURN c.title"
+            ),
+            context=[{"c.title": "Analiza matematyczna 1"}, {"c.title": "Algebra liniowa"}],
+        )
+    )
+
+    assert result == {"context_graded": True, "next_node": "end"}
+
+
+def test_the_entity_anchors_when_the_grader_says_null_but_the_query_filters_on_it() -> None:
+    """The fast model did this about one run in six; the filter is evidence, the null is not."""
+    rag, _ = _grader_stub(_verdict(anchor=None, relevant=[1, 2]))
+
+    result = rag.grade_context(_criteria_state(ANCHORED_CYPHER, TEACHING_ROWS))
+
+    assert result == {"context_graded": True, "next_node": "end"}
+
+
 def test_a_label_is_the_anchor_when_the_question_names_only_a_kind() -> None:
     rag, _ = _grader_stub(_verdict(entity="dni wolne", anchor="DayOff", relevant=[1]))
 

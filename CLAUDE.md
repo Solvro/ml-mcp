@@ -870,12 +870,17 @@ Whether to answer is settled before an answer is written, not by the answering m
    (`dydaktyczne` covers `dydaktyczna`, nothing covers `działalność`; years must match
    exactly). Without an anchor nothing is kept, and the run goes on to the full-text search.
    A label is taken on the grader's word, since it is the only anchor a kind-of-thing
-   question ("Jakie są dni wolne?") has and no Polish entity spells an English label.
+   question ("Jakie są dni wolne?") has and no Polish entity spells an English label. When
+   the anchor is null or not found, the entity's own text is tried as one: the fast model
+   named the entity right and still answered `anchor: null` about one run in six with that
+   phrase sitting in the query's filter.
    Where the anchor sits decides how much is kept. A `primary` query that filters on the
-   entity only returns what sits under it, so its list stays whole rather than being edited
-   row by row — a strict grader dropping entries from a correct list is the regression
-   per-row filtering would buy. An anchor found only in the rows means the query didn't
-   select the entity and its rows mix several, so only the rows the grader picked stay.
+   entity only returns what sits under it, so its list stays whole, whatever the grader said
+   about single rows. Measured on the fast model, the grader found the teacher filter every
+   time and still dropped every course title under it for not repeating the teacher's name,
+   so its row list is not what decides here. An anchor found only in the rows means the query
+   didn't select the entity and its rows mix several, so only the rows the grader picked
+   stay.
    The grader sees the executed Cypher for these rows, since a primary row carries only the
    columns its query returned — a course title from a query that filters on the teacher the
    question names does not repeat the teacher, and that filter is the anchor. Full-text rows

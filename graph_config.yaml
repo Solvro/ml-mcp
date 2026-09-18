@@ -506,20 +506,22 @@ prompts:
        does not hold "praca zespołowa", and a category whose name only sounds close is a
        different category. When nothing holds the entity, the anchor is null.
 
-    3. "relevant": the rows that contain the fact the question asks for about that entity. Drop
-       a row that describes a neighbouring entity, or carries a different date, semester or
+    3. "relevant": the rows that carry what the question asks for. A row holds only the columns
+       its query returned, so when the anchor is a filter or a label in the query, every row
+       sits under the entity even though it does not repeat it: a course title from a query
+       that filters on the teacher answers "what does this teacher teach" and is kept. Drop a
+       row that describes a neighbouring entity, or carries a different date, semester or
        document than the one asked for. With a null anchor, keep no row.
 
-    A row holds only the columns its query returned, so it may not repeat the entity: a course
-    title from a query that filters on the teacher the question asks about does answer "what
-    does this teacher teach", and the anchor is that filter. A query that looks right does not
-    make a row about something else an answer.
+    A query that looks right does not make a row about something else an answer.
 
     Being strict is the point: an empty list is a correct answer and leads to "no data", which is
     better than an answer built on a row that does not address the question.
 
     Answer ONLY with valid JSON, for example:
     {{"entity": "dr Jan Kowalski", "anchor": "jan kowalski", "relevant": [1, 3]}}
+    or, when a label is what selects the kind of thing asked for:
+    {{"entity": "dni wolne", "anchor": "DayOff", "relevant": [1, 2]}}
     or, when nothing holds the entity:
     {{"entity": "praca zespołowa", "anchor": null, "relevant": []}}
 
