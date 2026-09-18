@@ -1,5 +1,7 @@
 import re
 
+from ....text_normalization import CYPHER_STRING_LITERAL_RE
+
 WRITE_KEYWORDS = frozenset(
     {
         "CREATE",
@@ -32,9 +34,17 @@ READ_ONLY_START_RE = re.compile(
 PROCEDURE_CALL_RE = re.compile(r"\bCALL\s+(?P<procedure>[A-Za-z_][\w.]*)", re.IGNORECASE)
 # A CALL subquery names no procedure, so the allowlist has nothing to vet.
 CALL_SUBQUERY_RE = re.compile(r"\bCALL\s*\{", re.IGNORECASE)
-STRING_LITERAL_RE = re.compile(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"")
-COMMENT_RE = re.compile(r"//.*?$|/\*.*?\*/", re.MULTILINE | re.DOTALL)
 CODE_FENCE_RE = re.compile(r"^\s*```\w*\s*\n?|\n?\s*```\s*$", re.MULTILINE)
+# One left-to-right pass: the first alternative matching at a position wins, so `//` inside a
+# string is not a comment and a quote inside a comment is not a string.
+SCRUB_TOKEN_RE = re.compile(
+    rf"(?P<literal>{CYPHER_STRING_LITERAL_RE.pattern})"
+    r"|(?P<quoted>`[^`]+`)"
+    r"|(?P<line_comment>//[^\r\n]*)"
+    r"|(?P<block_comment>/\*.*?\*/)"
+    r"|(?P<unterminated>['\"`]|/\*)",
+    re.DOTALL,
+)
 # The cap on what a query may return is the LIMIT it ends on. One further in - `WITH n ORDER BY
 # n.rank DESC LIMIT 100` - shapes an intermediate result, and rewriting it would change what the
 # query means rather than how much of the answer comes back.
@@ -52,19 +62,34 @@ def strip_code_fences(raw: str) -> str:
     return stripped.strip()
 
 
-def _blank(match: re.Match[str]) -> str:
-    """Replace a match with as many spaces as it had characters."""
-    return " " * len(match.group(0))
+def _scrub(cypher: str) -> tuple[str, str | None]:
+    """Blank out comments, string literals and backticked names, keeping every offset.
+
+    Args:
+        cypher: Query to read
+
+    Returns:
+        The blanked query, and the opener that never closed (everything after it is blanked
+        too), or None
+    """
+    pieces: list[str] = []
+    cursor = 0
+
+    for token in SCRUB_TOKEN_RE.finditer(cypher):
+        pieces.append(cypher[cursor : token.start()])
+        if token.lastgroup == "unterminated":
+            pieces.append(" " * (len(cypher) - token.start()))
+            return "".join(pieces), token.group(0)
+        pieces.append(" " * (token.end() - token.start()))
+        cursor = token.end()
+
+    pieces.append(cypher[cursor:])
+    return "".join(pieces), None
 
 
 def _scrub_for_validation(cypher: str) -> str:
-    """Blank out comments and string literals before keyword inspection.
-
-    Blanked rather than deleted: ``ensure_limit`` finds the trailing LIMIT in this text and
-    rewrites it in the original, which only works while the two agree on every offset.
-    """
-    without_comments = COMMENT_RE.sub(_blank, cypher)
-    return STRING_LITERAL_RE.sub(_blank, without_comments)
+    """Blank out everything a keyword scan must not read."""
+    return _scrub(cypher)[0]
 
 
 def validate_read_only(cypher: str, allowed_procedures: frozenset[str] = frozenset()) -> None:
@@ -78,10 +103,14 @@ def validate_read_only(cypher: str, allowed_procedures: frozenset[str] = frozens
 
     Raises:
         UnsafeCypherQueryError: If the query can mutate the graph, calls a procedure that was
-            not allowlisted, or does not match the allowed read shape
+            not allowlisted, leaves a quote or comment unterminated, or does not match the
+            allowed read shape
     """
     cleaned = strip_code_fences(cypher)
-    scrubbed = _scrub_for_validation(cleaned).strip()
+    blanked, unterminated = _scrub(cleaned)
+    if unterminated is not None:
+        raise UnsafeCypherQueryError(f"unterminated {unterminated} in generated Cypher")
+    scrubbed = blanked.strip()
     if not scrubbed:
         raise UnsafeCypherQueryError("generated Cypher query is empty")
     if ";" in scrubbed.rstrip(";"):
