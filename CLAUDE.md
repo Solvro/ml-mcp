@@ -928,6 +928,25 @@ Two things `LOG_LEVEL` does not reach:
   the price of one switch, and `LOG_FORMAT` or a per-logger `setLevel` is the way out if it ever
   gets in the way.
 
+**Three sources of noise are cut at the source, not by raising a level.** Ten quiet minutes at
+`INFO` used to write ~92 KB, almost none of it about a request:
+
+- **The `/health` probe.** Docker curls it every 10s, and uvicorn wrote an access line for each.
+  `configure_logging()` hangs `HealthCheckAccessFilter` on the `uvicorn.access` logger. It is a
+  logger filter because uvicorn's own `dictConfig`, applied later on `mcp.run()`, replaces that
+  logger's handlers but leaves its filters, and it is added once however often `force=True`
+  reruns. Every other request, `/mcp` included, is still logged.
+- **Neo4j "does not exist" notifications.** Against a sparse graph each generated query named
+  properties no node carries yet, and the driver logged every notification at `WARNING` with the
+  full query — eight per question on an empty schema. `RAG` asks the server not to send the
+  `UNRECOGNIZED` classification (`notifications_disabled_classifications` in `driver_config`);
+  deprecation, performance and the rest still arrive. Silencing the `neo4j.notifications` logger
+  would have hidden those too.
+- **Prefect's `HashError` on `deduplicate_graph`.** The default cache policy hashes a task's
+  inputs, and a live `Neo4jGraph` cannot be hashed, so every run logged a full traceback before
+  running the task uncached anyway. The task is `cache_policy=NO_CACHE`, which is also the right
+  meaning: it writes to the graph, and a cached result would be a repair that never ran.
+
 `tests/test_no_print_in_src.py` walks the package with `ast` and fails on a new `print`, so the
 switch cannot quietly stop covering a module.
 
