@@ -185,8 +185,9 @@ def call_knowledge_graph_tool():
 
     user_input = " ".join(args.question)
     try:
+        _build_llm()
         asyncio.run(query_knowledge_graph(user_input))
-    except (ToolError, TimeoutError) as exc:
+    except (ToolError, TimeoutError, ValueError) as exc:
         # A graph the server could not consult arrives as a failed tool call. Report it as a
         # failure: on stderr, with a non-zero exit, so anything piping stdout for the answer
         # never reads an error as one.
