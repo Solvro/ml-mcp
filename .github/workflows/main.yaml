@@ -91,9 +91,9 @@ jobs:
 
       - name: Check entry points
         run: |
-          uv run server --help || true
-          uv run kg --help || true
-          uv run pipeline --help || true
+          uv run mcp-server --help
+          uv run kg --help
+          uv run prefect_pipeline --help
 
   # ── 4. Integration — the stack as it deploys: nothing published on the host ───
   #

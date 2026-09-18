@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import atexit
 import logging
@@ -219,6 +220,11 @@ def main():
     import os
 
     global rag
+
+    argparse.ArgumentParser(
+        prog="mcp-server",
+        description="Serve knowledge_graph_tool over MCP. Configured through .env",
+    ).parse_args()
 
     rag = initialize_rag()
 

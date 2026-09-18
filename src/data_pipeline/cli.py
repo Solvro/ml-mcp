@@ -1,3 +1,4 @@
+import argparse
 import logging
 
 from dotenv import load_dotenv
@@ -60,6 +61,10 @@ def dedup_graph_main() -> None:
 
 def prefect_pipeline_main() -> None:
     """Run the pipeline, returning nothing so a clean run exits 0."""
+    argparse.ArgumentParser(
+        prog="prefect_pipeline",
+        description="Ingest the staging dir into Neo4j. Configured through .env",
+    ).parse_args()
     load_dotenv()
     configure_logging()
     outcome = data_pipeline_flow()

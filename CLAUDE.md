@@ -118,7 +118,7 @@ MCP_PORT=8005
 ```bash
 # MCP server
 just mcp-server
-# or: uv run server
+# or: uv run mcp-server
 
 # Query CLI (requires running MCP server)
 just kg "Kto wykłada analizę matematyczną?"

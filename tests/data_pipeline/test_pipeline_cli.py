@@ -12,6 +12,7 @@ def _stub_pipeline_cli_runtime(
     monkeypatch,
     failed: frozenset[str] = frozenset(),
 ) -> None:
+    monkeypatch.setattr(sys, "argv", ["prefect_pipeline"])
     monkeypatch.setattr(cli_module, "configure_logging", lambda: None)
     monkeypatch.setattr(cli_module, "load_dotenv", lambda: None)
     monkeypatch.setattr(
@@ -44,6 +45,17 @@ def test_failed_documents_exit_nonzero(monkeypatch) -> None:
     with pytest.raises(SystemExit) as exc_info:
         sys.exit(cli_module.prefect_pipeline_main())
     assert exc_info.value.code not in (None, 0)
+    assert "failed documents" in str(exc_info.value.code)
+
+
+def test_help_exits_zero_before_touching_the_pipeline(monkeypatch) -> None:
+    """CI runs `prefect_pipeline --help` in a job with no Neo4j and no .env."""
+    _stub_pipeline_cli_runtime(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["prefect_pipeline", "--help"])
+    monkeypatch.setattr(cli_module, "data_pipeline_flow", pytest.fail)
+    with pytest.raises(SystemExit) as exc_info:
+        cli_module.prefect_pipeline_main()
+    assert exc_info.value.code == 0
 
 
 def test_prefect_pipeline_script_points_to_cli_wrapper() -> None:
