@@ -857,15 +857,30 @@ Whether to answer is settled before an answer is written, not by the answering m
    the context. Rows from the model's own query then go on to the full-text search (step 5 of
    the escalation above); anything else reaches the caller as `NO_GRAPH_DATA_MESSAGE` without
    the answering model being consulted.
-   **Primary rows are graded too, as a whole.** They used to skip grading because the query
-   "expressed the question's own structure", which only holds when the traversal is right, and
-   #99 is a traversal that wasn't. One kept row shows the traversal is right, so the list it
-   returned stays intact rather than being edited row by row: the grader is there to catch a
-   wrong traversal, and a strict grader dropping entries from a correct list is the regression
-   per-row filtering would buy. The grader sees the executed Cypher for these rows, since a
-   primary row carries only the columns its query returned — a course title from a traversal
-   that starts at the teacher the question names does not repeat the teacher. This costs every
-   primary answer one more fast-model call, and a graded-out one up to two.
+   **Primary rows are graded too, and only kept with an anchor.** They used to skip grading
+   because the query "expressed the question's own structure", which only holds when the
+   traversal is right, and #99 is a traversal that wasn't. Asking the grader "does this row
+   answer it" was not enough either: on the PR #102 review it kept `Odbyte szkolenia ->
+   dydaktyczne` for `Jakie kryteria oceniają działalność dydaktyczną?` in three runs of eight,
+   because a similar word read as "naming the entity". So for rows from a model query
+   (`primary`, `repaired_literals`) the grader has to name the question's `entity` and an
+   `anchor`, text copied from the query or a row that holds that entity, and
+   `locate_anchor` checks both: the anchor must really be in the query or a row, and unless
+   it is a label it must cover every content word of the entity in some case ending
+   (`dydaktyczne` covers `dydaktyczna`, nothing covers `działalność`; years must match
+   exactly). Without an anchor nothing is kept, and the run goes on to the full-text search.
+   A label is taken on the grader's word, since it is the only anchor a kind-of-thing
+   question ("Jakie są dni wolne?") has and no Polish entity spells an English label.
+   Where the anchor sits decides how much is kept. A `primary` query that filters on the
+   entity only returns what sits under it, so its list stays whole rather than being edited
+   row by row — a strict grader dropping entries from a correct list is the regression
+   per-row filtering would buy. An anchor found only in the rows means the query didn't
+   select the entity and its rows mix several, so only the rows the grader picked stay.
+   The grader sees the executed Cypher for these rows, since a primary row carries only the
+   columns its query returned — a course title from a query that filters on the teacher the
+   question names does not repeat the teacher, and that filter is the anchor. Full-text rows
+   are still graded row by row with no anchor enforced. This costs every primary answer one
+   more fast-model call, and a graded-out one up to two.
    The grader **fails open**: a failed call or an unreadable reply keeps the rows, because a
    provider outage must not be indistinguishable from an empty graph.
 3. **The answer payload carries its provenance.** `RAG._format_result` returns

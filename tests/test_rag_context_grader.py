@@ -14,7 +14,12 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableLambda
 
 from src.config.config import get_config
-from src.mcp_server.tools.knowledge_graph.rag import RAG, RetrievalStrategy
+from src.mcp_server.tools.knowledge_graph.rag import (
+    RAG,
+    GraderVerdict,
+    RetrievalStrategy,
+    locate_anchor,
+)
 
 QUESTION = "Kiedy jest pierwszy dzień wolny w semestrze zimowym?"
 ROWS = [
@@ -22,6 +27,28 @@ ROWS = [
     {"title": "Przerwa miedzysemestralna", "context": "23 lutego 2027"},
 ]
 KEPT_AS_RETRIEVED = {"context_graded": False, "next_node": "end"}
+
+# The question from the PR #102 review, and the row shapes its eight kg runs came back with.
+CRITERIA_QUESTION = "Jakie kryteria oceniają działalność dydaktyczną?"
+TEACHING = "działalność dydaktyczna"
+ANCHORED_CYPHER = (
+    "MATCH (cc:CriterionCategory)-[:HAS_CRITERION]->(c:Criterion) "
+    "WHERE toLower(cc.title) CONTAINS toLower('dzialalnosc dydaktyczna') RETURN c.title"
+)
+UNANCHORED_CYPHER = (
+    "MATCH (cc:CriterionCategory)-[:HAS_CRITERION]->(c:Criterion) "
+    "RETURN cc.title AS category, c.title AS criterion"
+)
+TEACHING_ROWS = [{"c.title": "prowadzenie zajec"}, {"c.title": "opieka nad pracami dyplomowymi"}]
+TRAINING_ROWS = [
+    {"category": "Odbyte szkolenia", "criterion": "naukowe"},
+    {"category": "Odbyte szkolenia", "criterion": "dydaktyczne"},
+]
+MIXED_ROWS = [
+    {"category": "Odbyte szkolenia", "criterion": "dydaktyczne"},
+    {"category": "Dzialalnosc dydaktyczna", "criterion": "prowadzenie zajec"},
+    {"category": "Dzialalnosc organizacyjna", "criterion": "doswiadczenie w organizowaniu"},
+]
 
 
 class RecordingLLM:
@@ -99,15 +126,132 @@ def test_a_graded_out_result_reaches_the_caller_as_no_data() -> None:
     assert formatted["metadata"]["retrieval_strategy"] == "graded_out"
 
 
-def test_a_primary_result_the_grader_confirms_is_kept_whole() -> None:
-    """One kept row shows the traversal is right; the grader does not get to edit its list."""
-    rag, llm = _grader_stub('{"relevant": [1]}')
+def _verdict(*, anchor: str | None, relevant: list[int], entity: str = TEACHING) -> str:
+    return json.dumps({"entity": entity, "anchor": anchor, "relevant": relevant})
 
-    result = rag.grade_context(_state(retrieval_strategy="primary"))
+
+def _criteria_state(
+    cypher: str, rows: list[dict[str, Any]], retrieval_strategy: str = "primary"
+) -> dict[str, Any]:
+    return _state(
+        user_question=CRITERIA_QUESTION,
+        retrieval_strategy=retrieval_strategy,
+        generated_cypher=cypher,
+        context=list(rows),
+    )
+
+
+def test_a_primary_query_that_filters_on_the_entity_keeps_its_whole_list() -> None:
+    """Everything it returned sits under the entity; the grader does not get to edit the list."""
+    rag, llm = _grader_stub(_verdict(anchor="dzialalnosc dydaktyczna", relevant=[1]))
+
+    result = rag.grade_context(_criteria_state(ANCHORED_CYPHER, TEACHING_ROWS))
 
     assert len(llm.prompts) == 1
     assert "context" not in result
     assert result == {"context_graded": True, "next_node": "end"}
+
+
+def test_an_anchor_is_found_whatever_case_and_diacritics_the_grader_copied() -> None:
+    rag, _ = _grader_stub(_verdict(anchor="Działalność dydaktyczna", relevant=[1]))
+
+    result = rag.grade_context(_criteria_state(ANCHORED_CYPHER, TEACHING_ROWS))
+
+    assert result == {"context_graded": True, "next_node": "end"}
+
+
+def test_a_filter_on_the_teacher_anchors_course_titles_that_never_name_them() -> None:
+    rag, _ = _grader_stub(
+        _verdict(entity="dr Jan Kowalski", anchor="jan kowalski", relevant=[1, 2])
+    )
+
+    result = rag.grade_context(
+        _state(
+            user_question="Jakie kursy prowadzi dr Jan Kowalski?",
+            retrieval_strategy="primary",
+            generated_cypher=(
+                "MATCH (p:Person)-[:TEACHES]->(c:Course) "
+                "WHERE toLower(p.title) CONTAINS toLower('jan kowalski') RETURN c.title"
+            ),
+            context=[{"c.title": "Analiza matematyczna 1"}, {"c.title": "Algebra liniowa"}],
+        )
+    )
+
+    assert result == {"context_graded": True, "next_node": "end"}
+
+
+def test_a_label_is_the_anchor_when_the_question_names_only_a_kind() -> None:
+    rag, _ = _grader_stub(_verdict(entity="dni wolne", anchor="DayOff", relevant=[1]))
+
+    result = rag.grade_context(
+        _state(
+            user_question="Jakie są dni wolne od zajęć?",
+            retrieval_strategy="primary",
+            generated_cypher="MATCH (d:DayOff) RETURN d.title",
+        )
+    )
+
+    assert result == {"context_graded": True, "next_node": "end"}
+
+
+@pytest.mark.parametrize("strategy", ["primary", "repaired_literals"])
+def test_a_word_that_resembles_the_entity_is_not_an_anchor(strategy) -> None:
+    """The PR #102 review: "dydaktyczne" was kept as if it named "działalność dydaktyczna"."""
+    rag, _ = _grader_stub(_verdict(anchor="dydaktyczne", relevant=[1]))
+
+    result = rag.grade_context(
+        _criteria_state(UNANCHORED_CYPHER, TRAINING_ROWS, retrieval_strategy=strategy)
+    )
+
+    assert result["context"] == []
+    assert result["retrieval_strategy"] == "graded_out"
+    assert result["next_node"] == "search_after_grading"
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        _verdict(anchor=None, relevant=[1]),
+        '{"relevant": [1]}',
+        _verdict(anchor="dzialalnosc dydaktyczna", relevant=[1]),
+    ],
+    ids=["null-anchor", "no-anchor", "anchor-not-in-query-or-rows"],
+)
+def test_model_query_rows_without_a_real_anchor_are_rejected(reply) -> None:
+    rag, _ = _grader_stub(reply)
+
+    result = rag.grade_context(_criteria_state(UNANCHORED_CYPHER, TRAINING_ROWS))
+
+    assert result["retrieval_strategy"] == "graded_out"
+    assert result["next_node"] == "search_after_grading"
+
+
+def test_an_anchor_found_only_in_the_rows_keeps_just_the_rows_the_grader_picked() -> None:
+    """The query did not select the entity, so its rows mix categories."""
+    rag, _ = _grader_stub(_verdict(anchor="Dzialalnosc dydaktyczna", relevant=[2]))
+
+    result = rag.grade_context(_criteria_state(UNANCHORED_CYPHER, MIXED_ROWS))
+
+    assert result["context"] == [MIXED_ROWS[1]]
+    assert result["context_graded"] is True
+    assert result["next_node"] == "end"
+
+
+@pytest.mark.parametrize(
+    ("entity", "anchor", "expected"),
+    [
+        ("działalność dydaktyczną", "Dzialalnosc dydaktyczna", "rows"),
+        ("działalność dydaktyczna", "Odbyte szkolenia dydaktyczne", None),
+        ("dni wolne", "dzien wolny od zajec", "rows"),
+        ("rok akademicki 2026/2027", "rok akademicki 2025/2026", None),
+    ],
+)
+def test_an_anchor_has_to_cover_every_word_of_the_entity(entity, anchor, expected) -> None:
+    """A case ending may differ; a missing word or a different year may not."""
+    rows = [{"title": anchor}]
+    verdict = GraderVerdict(kept=[0], entity=entity, anchor=anchor)
+
+    assert locate_anchor(verdict, "MATCH (n:Topic) RETURN n.title", rows) == expected
 
 
 @pytest.mark.parametrize("strategy", ["primary", "repaired_literals"])
@@ -164,14 +308,28 @@ def test_a_failing_grader_keeps_model_query_rows(strategy) -> None:
     assert result == KEPT_AS_RETRIEVED
 
 
-@pytest.mark.parametrize("strategy", ["repaired_literals", "label_agnostic_phrases"])
-def test_every_rescue_path_is_graded(strategy) -> None:
+@pytest.mark.parametrize(
+    "strategy",
+    ["label_agnostic_phrases", "label_agnostic_after_error", "label_agnostic_after_grading"],
+)
+def test_full_text_rows_are_graded_row_by_row_without_an_anchor(strategy) -> None:
+    """The anchor rule is for model queries; a full-text row is judged on its own."""
     rag, llm = _grader_stub('{"relevant": [2]}')
 
     result = rag.grade_context(_state(retrieval_strategy=strategy))
 
     assert len(llm.prompts) == 1
     assert result["context"] == [ROWS[1]]
+
+
+def test_repaired_rows_with_an_anchor_are_graded_row_by_row() -> None:
+    rag, _ = _grader_stub(_verdict(anchor="Dzialalnosc dydaktyczna", relevant=[2]))
+
+    result = rag.grade_context(
+        _criteria_state(ANCHORED_CYPHER, MIXED_ROWS, retrieval_strategy="repaired_literals")
+    )
+
+    assert result["context"] == [MIXED_ROWS[1]]
 
 
 def test_an_empty_retrieval_skips_the_grader() -> None:

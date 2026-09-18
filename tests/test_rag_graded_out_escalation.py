@@ -39,8 +39,27 @@ FULLTEXT_ROWS = [
         "related": ["HAS_CRITERION: Hospitacje zajec"],
     }
 ]
+ANCHORED_CYPHER = (
+    "MATCH (cc:CriterionCategory)-[:HAS_CRITERION]->(c:Criterion) "
+    "WHERE toLower(cc.title) CONTAINS toLower('dzialalnosc dydaktyczna') RETURN c.title"
+)
+CATEGORY_CYPHER = (
+    "MATCH (cc:CriterionCategory)-[:HAS_CRITERION]->(c:Criterion) RETURN cc.title, c.title"
+)
+TEACHING_ROWS = [{"c.title": "prowadzenie zajec"}, {"c.title": "opieka nad pracami dyplomowymi"}]
+TRAINING_ROWS = [
+    {"cc.title": "Odbyte szkolenia", "c.title": "naukowe"},
+    {"cc.title": "Odbyte szkolenia", "c.title": "dydaktyczne"},
+]
 KEEP_FIRST = '{"relevant": [1]}'
 KEEP_NONE = '{"relevant": []}'
+KEEP_ANCHORED = (
+    '{"entity": "dzialalnosc dydaktyczna", "anchor": "dzialalnosc dydaktyczna", "relevant": [1]}'
+)
+# What runs 1 and 4 of the PR #102 review amount to: the grader kept a row for a similar word.
+KEEP_SIMILAR_WORD = (
+    '{"entity": "dzialalnosc dydaktyczna", "anchor": "dydaktyczne", "relevant": [2]}'
+)
 GRADER_OPENING = "You are a retrieval grader"
 
 
@@ -152,20 +171,38 @@ def test_a_query_that_matched_the_wrong_rows_is_answered_from_the_full_text_sear
     assert "Dzialalnosc dydaktyczna" in grader_prompts[1]
 
 
-def test_rows_the_grader_confirms_never_reach_the_full_text_search() -> None:
+def test_rows_the_grader_anchors_never_reach_the_full_text_search() -> None:
     rag, database, grader_prompts = _build_graph(
-        cypher_reply=WRONG_TRAVERSAL,
-        query_results=[PREAMBLE_ROWS],
+        cypher_reply=ANCHORED_CYPHER,
+        query_results=[TEACHING_ROWS],
         fulltext_results=[FULLTEXT_ROWS],
-        grader_replies=[KEEP_FIRST],
+        grader_replies=[KEEP_ANCHORED],
     )
 
     result = rag.invoke(QUESTION)
 
     assert result["metadata"]["retrieval_strategy"] == "primary"
-    assert result["metadata"]["context"] == PREAMBLE_ROWS
+    assert result["metadata"]["context"] == TEACHING_ROWS
     assert database.fulltext_queries == []
     assert len(grader_prompts) == 1
+
+
+def test_rows_kept_for_a_similar_word_still_reach_the_full_text_search() -> None:
+    """Runs 1 and 4 of the PR #102 review answered "kryteria: dydaktyczne, naukowe" from these."""
+    rag, database, grader_prompts = _build_graph(
+        cypher_reply=CATEGORY_CYPHER,
+        query_results=[TRAINING_ROWS],
+        fulltext_results=[FULLTEXT_ROWS],
+        grader_replies=[KEEP_SIMILAR_WORD, KEEP_FIRST],
+    )
+
+    result = rag.invoke(QUESTION)
+
+    assert result["metadata"]["retrieval_strategy"] == "label_agnostic_after_grading"
+    assert result["metadata"]["context"] == FULLTEXT_ROWS
+    assert "Odbyte szkolenia" not in result["answer"]
+    assert len(database.fulltext_queries) == 1
+    assert len(grader_prompts) == 2
 
 
 def test_a_search_that_finds_nothing_leaves_the_run_graded_out() -> None:

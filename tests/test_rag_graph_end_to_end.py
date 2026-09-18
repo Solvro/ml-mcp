@@ -11,7 +11,7 @@ from src.mcp_server.tools.knowledge_graph.rag import RAG
 
 QUESTION = "test question"
 SCHEMA_TEXT = "Node properties: X\nRelationship properties: Y\nThe relationships: Z"
-SAFE_CYPHER = "MATCH (n) RETURN n"
+SAFE_CYPHER = "MATCH (n:Course) RETURN n"
 EXECUTED_CYPHER = f"{SAFE_CYPHER}\nLIMIT 5"
 EMPTY_ANSWER = OFF_TOPIC_MESSAGE
 TIMEOUT_MESSAGE = "exceeded the maximum allowed wait time"
@@ -85,7 +85,7 @@ def _build_rag_graph_stub(
     guardrails_reply: str,
     cypher_reply: str,
     db_rows: list[dict[str, Any]],
-    grader_reply: str = '{"relevant": [1]}',
+    grader_reply: str = '{"entity": "kursy", "anchor": "Course", "relevant": [1]}',
     max_results: int = 5,
     graph_timeout_sec: float = 5.0,
 ) -> GraphStub:

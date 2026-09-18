@@ -492,22 +492,36 @@ prompts:
     Candidate rows:
     {candidates}
 
-    Keep a row when it contains the fact the question asks for, or names the entity the question
-    is about. Drop a row when it merely mentions a similar word, describes a neighbouring entity,
-    or carries a different date, semester or document than the one asked for.
+    Work in three steps.
 
-    A row holds only the columns its query returned, so it may not repeat what the question
-    names: a course title from a query that starts at the teacher the question asks about does
-    answer "what does this teacher teach". Read the query to see what a row stands for, but judge
-    the row itself. A query that looks right does not make a row about something else an answer.
+    1. "entity": the most specific thing the question names, a person, course, category,
+       document, semester or date, written as the question writes it. In "Jakie kursy prowadzi
+       dr Jan Kowalski?" it is "dr Jan Kowalski", not "kursy". Only when the question names
+       nothing more specific than a kind of thing ("Jakie są dni wolne?") is the entity that
+       kind.
+
+    2. "anchor": text copied exactly from the query or from a row that holds that same entity:
+       a value the query filters on, a label it matches, or a value in a row. It has to be the
+       whole entity. A word that shares part of its name is not an anchor: "zespoły badawcze"
+       does not hold "praca zespołowa", and a category whose name only sounds close is a
+       different category. When nothing holds the entity, the anchor is null.
+
+    3. "relevant": the rows that contain the fact the question asks for about that entity. Drop
+       a row that describes a neighbouring entity, or carries a different date, semester or
+       document than the one asked for. With a null anchor, keep no row.
+
+    A row holds only the columns its query returned, so it may not repeat the entity: a course
+    title from a query that filters on the teacher the question asks about does answer "what
+    does this teacher teach", and the anchor is that filter. A query that looks right does not
+    make a row about something else an answer.
 
     Being strict is the point: an empty list is a correct answer and leads to "no data", which is
     better than an answer built on a row that does not address the question.
 
-    Answer ONLY with valid JSON listing the numbers of the rows to keep, for example:
-    {{"relevant": [1, 3]}}
-    or, when no row answers the question:
-    {{"relevant": []}}
+    Answer ONLY with valid JSON, for example:
+    {{"entity": "dr Jan Kowalski", "anchor": "jan kowalski", "relevant": [1, 3]}}
+    or, when nothing holds the entity:
+    {{"entity": "praca zespołowa", "anchor": null, "relevant": []}}
 
     Answer:
 

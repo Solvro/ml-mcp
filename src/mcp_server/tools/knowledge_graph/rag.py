@@ -2,10 +2,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 import time
 from enum import Enum
-from typing import Any, Dict, List
+from typing import Any, Dict, List, NamedTuple
 
 from google.genai.errors import APIError as GoogleAPIError
 from google.genai.errors import ServerError as GoogleServerError
@@ -45,6 +46,7 @@ from ....config.timeouts import (
     get_schema_version_probe_seconds,
 )
 from ....text_normalization import (
+    POLISH_FUNCTION_WORDS,
     ensure_case_insensitive_fuzzy_matching,
     fold_diacritics,
     normalize_cypher_string_literals,
@@ -210,6 +212,107 @@ class RetrievalStrategy(Enum):
 MODEL_QUERY_STRATEGIES = frozenset(
     {RetrievalStrategy.PRIMARY.value, RetrievalStrategy.REPAIRED_LITERALS.value}
 )
+
+# A word this short carries no name of its own ("dr", "i", "w"), so an anchor need not repeat it.
+ANCHOR_MIN_WORD_CHARS = 4
+# How many leading characters two words must share to be the same Polish word. A case ending
+# changes the tail ("dydaktyczna", "dydaktyczne"), and a short word keeps one letter of slack for
+# it ("wolne", "wolny").
+ANCHOR_STEM_CHARS = 5
+
+
+class GraderVerdict(NamedTuple):
+    """What the grader said about one batch of rows."""
+
+    kept: List[int]
+    entity: str | None
+    anchor: str | None
+
+
+def _words(text: str) -> List[str]:
+    """Split text into case- and diacritic-folded words, dropping quotes and punctuation."""
+    return re.findall(r"\w+", normalize_search_text(text))
+
+
+def _contains_phrase(words: List[str], phrase: List[str]) -> bool:
+    """Report whether ``phrase`` occurs in ``words`` as whole, consecutive words."""
+    return f" {' '.join(phrase)} " in f" {' '.join(words)} "
+
+
+def _same_word(left: str, right: str) -> bool:
+    """Report whether two folded words are one Polish word in different cases."""
+    if left == right:
+        return True
+    if left.isdigit() or right.isdigit():
+        return False
+    stem = min(ANCHOR_STEM_CHARS, len(left) - 1, len(right) - 1)
+    return stem >= 3 and left[:stem] == right[:stem]
+
+
+def _anchor_covers_entity(entity: str, anchor_words: List[str]) -> bool:
+    """
+    Report whether an anchor names the whole entity rather than a word that resembles part of it.
+
+    Every content word of the entity has to reappear in the anchor, in any case ending. That is
+    the check "dydaktyczne" fails for "działalność dydaktyczna": the adjective matches and
+    nothing in it names the activity (issue #99 review).
+    """
+    required = [
+        word
+        for word in _words(entity)
+        if len(word) >= ANCHOR_MIN_WORD_CHARS and word not in POLISH_FUNCTION_WORDS
+    ]
+    return all(any(_same_word(word, candidate) for candidate in anchor_words) for word in required)
+
+
+def _is_label_in(anchor: str, cypher: str) -> bool:
+    """Report whether the anchor is a label or relationship type the query matches on."""
+    name = anchor.strip().strip("`:")
+    if not name:
+        return False
+    return re.search(rf"[:|]\s*`?{re.escape(name)}`?(?![\w`])", cypher, re.IGNORECASE) is not None
+
+
+def _row_values(rows: List[Any]) -> List[str]:
+    """Render every value of every row as text an anchor can be looked up in."""
+    values: List[str] = []
+    for row in rows:
+        for value in row.values() if isinstance(row, dict) else [row]:
+            values.append(value if isinstance(value, str) else json.dumps(value, default=str))
+    return values
+
+
+def locate_anchor(verdict: GraderVerdict, cypher: str, rows: List[Any]) -> str | None:
+    """
+    Find where the anchor the grader named actually sits.
+
+    The grader has to point at the text that holds the question's entity, and this checks that
+    the text is really there and really is the entity, so a grader that talks itself into a
+    similar word cannot keep the rows. A label is taken on the grader's word: it names a kind of
+    thing in English, which no Polish entity spells out, and it is the only anchor a question
+    like "Jakie są dni wolne?" has.
+
+    Args:
+        verdict: The grader's reply
+        cypher: The query that returned the rows
+        rows: The rows the grader was shown
+
+    Returns:
+        "query" when the query filters on or matches the entity, "rows" when only a row holds
+        it, and None when nothing does
+    """
+    anchor_words = _words(verdict.anchor or "")
+    if not anchor_words:
+        return None
+    if _is_label_in(verdict.anchor, cypher):
+        return "query"
+    if verdict.entity and not _anchor_covers_entity(verdict.entity, anchor_words):
+        return None
+    if _contains_phrase(_words(cypher), anchor_words):
+        return "query"
+    if any(_contains_phrase(_words(value), anchor_words) for value in _row_values(rows)):
+        return "rows"
+    return None
 
 
 class KnowledgeGraphUnavailableError(RuntimeError):
@@ -785,16 +888,17 @@ class RAG:
             lines.append(f"{position}. {rendered}")
         return "\n".join(lines)
 
-    def _parse_grader_output(self, raw_output: str, row_count: int) -> List[int] | None:
+    def _parse_grader_output(self, raw_output: str, row_count: int) -> GraderVerdict | None:
         """
-        Read the row numbers the grader kept.
+        Read the row numbers the grader kept, and the entity and anchor it named.
 
         Args:
             raw_output: Raw grader reply
             row_count: How many rows the grader was shown
 
         Returns:
-            Zero-based indices of the rows to keep, or None when the reply is unusable
+            Zero-based indices of the rows to keep with the entity and anchor, or None when the
+            reply is unusable. A missing or non-text entity or anchor comes back as None.
         """
         cleaned_output = strip_code_fences(raw_output)
 
@@ -819,7 +923,13 @@ class RAG:
             if 1 <= position <= row_count and position - 1 not in kept:
                 kept.append(position - 1)
 
-        return kept
+        entity = payload.get("entity")
+        anchor = payload.get("anchor")
+        return GraderVerdict(
+            kept=kept,
+            entity=entity if isinstance(entity, str) else None,
+            anchor=anchor if isinstance(anchor, str) else None,
+        )
 
     @staticmethod
     def _describe_retrieval(state: State) -> str:
@@ -847,11 +957,15 @@ class RAG:
         row that only shares a word with the question is what produces a confident wrong answer.
 
         Rows from the model's own query are graded too, because a query that followed the wrong
-        relationship returns rows as confidently as a right one (issue #99). They are judged as
-        a whole: one row the grader keeps shows the traversal is the right one, and the rest of
-        a list it returned stays. When the grader keeps none of them, the run moves on to the
-        label-agnostic search, since a wrong result must get the same second chance an empty
-        one does.
+        relationship returns rows as confidently as a right one (issue #99). None of them is
+        kept unless the grader points at an anchor, text in the query or a row that holds the
+        entity the question is about, and ``locate_anchor`` confirms it: a row that only uses a
+        similar word is how a grader that was merely asked "is this relevant" kept the wrong
+        category. A primary query that filters on the entity itself keeps its whole list, since
+        everything it returned sits under that entity; one whose anchor is only found in the
+        rows mixed entities, and keeps just the rows the grader picked. When nothing is kept,
+        the run moves on to the label-agnostic search, since a wrong result must get the same
+        second chance an empty one does.
 
         A grader that fails or replies with nonsense leaves the rows untouched - a model outage
         must not be indistinguishable from an empty graph.
@@ -890,11 +1004,33 @@ class RAG:
             logger.warning("Context grading failed; keeping retrieved rows: %s", exc)
             return kept_as_retrieved
 
-        kept = self._parse_grader_output(grader_output, len(context))
-        if kept is None:
+        verdict = self._parse_grader_output(grader_output, len(context))
+        if verdict is None:
             return kept_as_retrieved
 
-        logger.debug("Context grader kept %d of %d %s row(s)", len(kept), len(context), strategy)
+        kept = verdict.kept
+        logger.debug(
+            "Context grader kept %d of %d %s row(s); entity=%r anchor=%r",
+            len(kept),
+            len(context),
+            strategy,
+            verdict.entity,
+            verdict.anchor,
+        )
+
+        anchored_in = None
+        if strategy in MODEL_QUERY_STRATEGIES:
+            anchored_in = locate_anchor(verdict, state.get("generated_cypher") or "", context)
+            if anchored_in is None and kept:
+                logger.info(
+                    "Context grader kept %d %s row(s) but nothing holds %r (anchor %r); "
+                    "treating them as rejected",
+                    len(kept),
+                    strategy,
+                    verdict.entity,
+                    verdict.anchor,
+                )
+                kept = []
 
         if not kept:
             logger.info("Context grader rejected all %d %s row(s)", len(context), strategy)
@@ -907,7 +1043,7 @@ class RAG:
                 ),
             }
 
-        if strategy == RetrievalStrategy.PRIMARY.value:
+        if strategy == RetrievalStrategy.PRIMARY.value and anchored_in == "query":
             return {"context_graded": True, "next_node": "end"}
 
         return {
