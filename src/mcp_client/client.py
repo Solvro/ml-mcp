@@ -1,4 +1,6 @@
+import argparse
 import asyncio
+import functools
 import logging
 import os
 import sys
@@ -7,6 +9,7 @@ import uuid
 from dotenv import load_dotenv
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from langchain_core.language_models import BaseChatModel
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import BaseChatOpenAI
@@ -37,32 +40,43 @@ openai_api_key = os.getenv("OPENAI_API_KEY", "").strip()
 clarin_api_key = os.getenv("CLARIN_API_KEY", "").strip()
 google_api_key = os.getenv("GOOGLE_API_KEY", "").strip()
 
-if openai_api_key:
-    llm = BaseChatOpenAI(
-        model=config.llm.accurate_model.name,
-        api_key=SecretStr(openai_api_key),
-        temperature=config.llm.accurate_model.temperature,
-        timeout=llm_timeout_sec,
-    )
-elif clarin_api_key:
-    llm = ChatOpenAI(
-        model_name=config.llm.clarin.name,
-        base_url=config.llm.clarin.base_url,
-        api_key=clarin_api_key,
-        timeout=llm_timeout_sec,
-    )
-elif google_api_key:
-    llm = ChatGoogleGenerativeAI(
-        model=config.llm.gemini.name,
-        google_api_key=google_api_key,
-        temperature=1.0,
-        timeout=llm_timeout_sec,
-    )
-else:
+
+@functools.cache
+def _build_llm() -> BaseChatModel:
+    """Build the answering model on first use, so `kg --help` needs no API key.
+
+    Returns:
+        The chat model for the first provider whose key is set.
+
+    Raises:
+        ValueError: If no LLM API key is configured.
+    """
+    if openai_api_key:
+        return BaseChatOpenAI(
+            model=config.llm.accurate_model.name,
+            api_key=SecretStr(openai_api_key),
+            temperature=config.llm.accurate_model.temperature,
+            timeout=llm_timeout_sec,
+        )
+    if clarin_api_key:
+        return ChatOpenAI(
+            model_name=config.llm.clarin.name,
+            base_url=config.llm.clarin.base_url,
+            api_key=clarin_api_key,
+            timeout=llm_timeout_sec,
+        )
+    if google_api_key:
+        return ChatGoogleGenerativeAI(
+            model=config.llm.gemini.name,
+            google_api_key=google_api_key,
+            temperature=1.0,
+            timeout=llm_timeout_sec,
+        )
     raise ValueError(
         "No LLM API key found. "
         "Please set OPENAI_API_KEY, CLARIN_API_KEY, or GOOGLE_API_KEY in your .env file"
     )
+
 
 # Initialize Langfuse only if credentials are configured
 langfuse = None
@@ -147,7 +161,7 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
         invoke_config["callbacks"] = [handler]
 
     try:
-        llm_response = await llm.ainvoke(final_prompt, config=invoke_config)
+        llm_response = await _build_llm().ainvoke(final_prompt, config=invoke_config)
     except (APITimeoutError, TimeoutError) as exc:
         raise TimeoutError(LLM_CALL_TIMEOUT_MESSAGE) from exc
 
@@ -157,12 +171,19 @@ async def query_knowledge_graph(user_input: str, trace_id: str = None):
 
 def call_knowledge_graph_tool():
     """CLI entry point for knowledge graph tool."""
-    if len(sys.argv) < 2:
+    parser = argparse.ArgumentParser(
+        prog="kg",
+        description="Ask the knowledge graph a question through a running MCP server",
+        epilog="Example: kg 'Czym jest nagroda dziekana?'",
+    )
+    parser.add_argument("question", nargs="*", help="question in natural language (Polish)")
+    args = parser.parse_args()
+    if not args.question:
         print("Usage: kg <question>")
         print("Example: kg 'Czym jest nagroda dziekana?'")
         sys.exit(1)
 
-    user_input = " ".join(sys.argv[1:])
+    user_input = " ".join(args.question)
     try:
         asyncio.run(query_knowledge_graph(user_input))
     except (ToolError, TimeoutError) as exc:
