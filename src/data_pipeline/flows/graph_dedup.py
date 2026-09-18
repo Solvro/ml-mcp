@@ -25,6 +25,7 @@ import logging
 
 from langchain_neo4j import Neo4jGraph
 from prefect import get_run_logger, task
+from prefect.cache_policies import NO_CACHE
 from prefect.exceptions import MissingContextError
 
 from src.config.config import get_config
@@ -414,7 +415,7 @@ def merge_fallback_nodes(
     return merged
 
 
-@task
+@task(cache_policy=NO_CACHE)
 def deduplicate_graph(
     graph: Neo4jGraph | None = None, keys: list[str] | None = None
 ) -> dict[str, int]:

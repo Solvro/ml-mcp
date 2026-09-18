@@ -7,6 +7,7 @@ These tests cover the repair pass with a fake graph, so they run without Neo4j o
 from typing import Any
 
 import pytest
+from prefect.cache_policies import NO_CACHE
 
 from src.config.config import get_config
 from src.data_pipeline.flows import graph_dedup
@@ -426,3 +427,12 @@ def test_a_run_scoped_pass_does_not_hunt_for_self_relationships() -> None:
 
     assert stats["self_relationships_deleted"] == 0
     assert not [call for call in graph.calls if "(node)-[rel]->(node)" in call[0]]
+
+
+def test_deduplicate_graph_is_never_cached() -> None:
+    """The task takes a live Neo4jGraph, which Prefect cannot hash, and it writes to the graph.
+
+    The default policy tried to hash that argument on every run and logged a HashError
+    traceback; a cached result would also mean a repair that silently never ran.
+    """
+    assert graph_dedup.deduplicate_graph.cache_policy is NO_CACHE

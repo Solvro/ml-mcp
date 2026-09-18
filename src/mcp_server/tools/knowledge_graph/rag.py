@@ -330,6 +330,7 @@ class RAG:
             driver_config={
                 "connection_timeout": self.neo4j_connection_timeout_sec,
                 "max_transaction_retry_time": self.neo4j_max_transaction_retry_sec,
+                "notifications_disabled_classifications": ["UNRECOGNIZED"],
             },
             enhanced_schema=True,
         )
