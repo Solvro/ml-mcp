@@ -131,7 +131,23 @@ def test_rag_passes_neo4j_runtime_limits_to_driver(
     assert capture_neo4j_graph_init["driver_config"] == {
         "connection_timeout": 4,
         "max_transaction_retry_time": 3,
+        "notifications_disabled_classifications": ["UNRECOGNIZED"],
     }
+
+
+def test_rag_asks_neo4j_not_to_send_unrecognized_name_notifications(
+    capture_neo4j_graph_init: dict[str, Any],
+) -> None:
+    """Every generated query against a sparse graph names a property that does not exist yet.
+
+    The server answered each one with an UNRECOGNIZED notification, and the driver logged
+    every one at WARNING with the full query: 38 long lines in ten quiet minutes. Other
+    classifications (deprecation, performance) still come through.
+    """
+    _build_rag()
+
+    driver_config = capture_neo4j_graph_init["driver_config"]
+    assert driver_config["notifications_disabled_classifications"] == ["UNRECOGNIZED"]
 
 
 def test_the_constructors_own_schema_read_is_not_given_a_query_timeout(

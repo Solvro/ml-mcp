@@ -18,7 +18,22 @@ ENV_LOG_FORMAT = "LOG_FORMAT"
 DEFAULT_LOG_LEVEL = logging.INFO
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 
+UVICORN_ACCESS_LOGGER = "uvicorn.access"
+HEALTH_CHECK_PATH = "/health"
+
 _configured = False
+
+
+class HealthCheckAccessFilter(logging.Filter):
+    """Drop uvicorn access-log lines for the /health probe, which docker runs every 10s."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        # uvicorn logs '%s - "%s %s HTTP/%s" %d' with (client, method, path, version, status).
+        # Anything shaped otherwise is kept: a filter must never be what hides a log line.
+        args = record.args
+        if not isinstance(args, tuple) or len(args) < 3:
+            return True
+        return args[2] != HEALTH_CHECK_PATH
 
 
 def _resolve_level() -> tuple[int, str | None]:
@@ -52,6 +67,9 @@ def configure_logging(*, force: bool = False) -> int:
     reconfigure it. An existing handler (uvicorn, Prefect) is left in place and only the
     level is applied, because stealing it would drop those frameworks' formatting.
 
+    The uvicorn access log drops the /health probe. The filter sits on the logger, which
+    uvicorn's own dictConfig leaves alone, and is added once however often this runs.
+
     Args:
         force: Re-run the configuration even if this process already did it
 
@@ -68,6 +86,10 @@ def configure_logging(*, force: bool = False) -> int:
     logging.basicConfig(level=level, format=get_log_format())
     logging.getLogger().setLevel(level)
     _configured = True
+
+    access_logger = logging.getLogger(UVICORN_ACCESS_LOGGER)
+    if not any(isinstance(f, HealthCheckAccessFilter) for f in access_logger.filters):
+        access_logger.addFilter(HealthCheckAccessFilter())
 
     if invalid:
         logger.warning(
