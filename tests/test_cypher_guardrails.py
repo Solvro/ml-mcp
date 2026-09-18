@@ -50,6 +50,60 @@ def test_ignores_write_keyword_inside_comment(keyword):
     validate_read_only(f"// {keyword}\n{READ_QUERY_WITH_LIMIT}")
 
 
+@pytest.mark.parametrize("keyword", BLOCKED_KEYWORDS)
+def test_ignores_write_keyword_inside_backticked_name(keyword):
+    validate_read_only(f"MATCH (n:Node)-[:`{keyword}`]->(m:Node) RETURN m.value LIMIT 10")
+
+
+def test_rejects_a_clause_hidden_behind_a_url_literal():
+    query = (
+        "MATCH (n:Topic) WHERE n.title <> 'http://x' "
+        "LOAD CSV FROM 'http://127.0.0.1:9/never.csv' AS row\n"
+        "RETURN n.title, row LIMIT 5"
+    )
+
+    with pytest.raises(UnsafeCypherQueryError, match="LOAD"):
+        validate_read_only(query)
+
+
+def test_rejects_a_clause_hidden_by_a_quote_inside_a_comment():
+    query = (
+        "MATCH (n:Topic) WHERE n.title = 'a' // nie zapomnij o don'\n"
+        "LOAD CSV FROM 'http://127.0.0.1:9/x.csv' AS row\n"
+        "WITH row RETURN row LIMIT 5"
+    )
+
+    with pytest.raises(UnsafeCypherQueryError, match="LOAD"):
+        validate_read_only(query)
+
+
+def test_rejects_a_clause_after_a_comment_ended_by_a_carriage_return():
+    query = (
+        "MATCH (n:Topic) // x\rLOAD CSV FROM 'http://127.0.0.1:9/x.csv' AS row\nRETURN row LIMIT 5"
+    )
+
+    with pytest.raises(UnsafeCypherQueryError, match="LOAD"):
+        validate_read_only(query)
+
+
+def test_accepts_an_apostrophe_inside_a_comment():
+    validate_read_only(f"{READ_QUERY_WITH_LIMIT} // nie zapomnij o don'")
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "MATCH (n:Node) WHERE n.value = 'unterminated RETURN n.value LIMIT 10",
+        'MATCH (n:Node) WHERE n.value = "unterminated RETURN n.value LIMIT 10',
+        "MATCH (n:`unterminated) RETURN n.value LIMIT 10",
+        "MATCH (n:Node) /* unterminated RETURN n.value LIMIT 10",
+    ],
+)
+def test_rejects_an_unterminated_literal_or_comment(query):
+    with pytest.raises(UnsafeCypherQueryError, match="unterminated"):
+        validate_read_only(query)
+
+
 def test_accepts_fenced_query():
     validate_read_only(f"```cypher\n{READ_QUERY_WITH_LIMIT}\n```")
 
@@ -228,3 +282,23 @@ def test_ensure_limit_caps_only_the_last_branch_of_a_union():
 
     assert capped == "MATCH (n:A) RETURN n LIMIT 100 UNION MATCH (n:B) RETURN n LIMIT 5"
     validate_read_only(capped)
+
+
+def test_ensure_limit_clamps_past_a_url_literal():
+    """The other half of issue #95: the URL's `//` used to blank the LIMIT behind it.
+
+    The cap was then appended as a second clause - `LIMIT 900 LIMIT 5` - which Neo4j refuses, so
+    the query failed rather than coming back capped.
+    """
+    query = "MATCH (n:Topic) WHERE n.url = 'http://x' RETURN n.title LIMIT 900"
+
+    capped = ensure_limit(query, max_results=5)
+
+    assert capped == "MATCH (n:Topic) WHERE n.url = 'http://x' RETURN n.title LIMIT 5"
+    validate_read_only(capped)
+
+
+def test_ensure_limit_leaves_a_smaller_limit_past_a_url_literal_alone():
+    query = "MATCH (n:Topic) WHERE n.url = 'http://x' RETURN n.title LIMIT 3"
+
+    assert ensure_limit(query, max_results=5) == query

@@ -528,9 +528,10 @@ edit, and it runs as the pipeline's Neo4j user. Every rewrite above recognises t
 expects and passes anything else through verbatim, so before #93 `MATCH (n) DETACH DELETE n`, a
 forged `ProcessedDocument`, or `LOAD CSV FROM 'http://…'` reached Neo4j untouched. That last one
 is plain Cypher, with no APOC involved: the database makes the request itself. Retrieval has
-`validate_read_only` and READ access mode behind it. Ingestion has to write, and the Community
-image has no roles to take `LOAD` away from a pipeline user, so `ingestion_guardrails.py` is the
-only line.
+`validate_read_only`, and READ access mode behind it for anything that writes — though not for
+`LOAD CSV`, which is a read Neo4j executes in a READ session, so there the text check is alone
+too (#95). Ingestion has to write, and the Community image has no roles to take `LOAD` away from
+a pipeline user, so `ingestion_guardrails.py` is the only line.
 
 **The check is positive.** `validate_ingestion_statement` tokenises a statement left to right, so
 a quote, a backtick and a comment are each read where they start, the way Neo4j reads them. It
@@ -666,15 +667,32 @@ deleting them, so the scrubbed text and the original agree on every offset. An a
 goes on its own line, because after a trailing `//` comment a space-separated one landed inside
 the comment and never applied.
 
+**Literals, backticked names and comments are read in one left-to-right pass.** The scrub used
+to blank comments and then literals: two independent regexes, neither knowing the other's
+syntax. The `//` inside `'http://x'` opened a "comment" that ran to the end of the line, so a
+`LOAD CSV FROM 'http://…'` written after it on that line was invisible both to the keyword scan
+and to the trailing-`LIMIT` search — the query passed, the cap was appended as a second clause
+Neo4j refuses, and the database made the HTTP request inside a READ session. Reversing the
+two passes fixes nothing: a comment holding an odd quote (`// don'`) pairs it with the next real
+quote and swallows the clause between them. `SCRUB_TOKEN_RE` now reads a literal, a backticked
+name and a comment where each one starts, the way `ingestion_guardrails._tokenize` reads a
+statement, so a `//` inside a string is never a comment. An opener that never closes blanks the
+rest of the query and `validate_read_only` refuses it by name — that text is not valid Cypher,
+and guessing how much of it Neo4j would read is the defect itself.
+
 **The access mode is the database's own rule.** `RAG._read_query` runs the primary query and
 every retry with `default_access_mode=READ`, so a mutation is refused by Neo4j and not only by a
 regex over text — which matters most for the full-text rescue, the one path where `CALL` is
-allowed at all. `Neo4jGraph.query` exposes no routing argument, so this goes in through
-`session_params`, which takes the driver's implicit-transaction path and gives up the managed
-retry on a transient error. Against the single instance this deploys on that retry has nothing
-to recover, and a retrieval failure already escalates in `retrieve()`. `ping_database` and the
-schema probe deliberately keep the managed path, so the outage bound measured for the health
-signal is unchanged.
+allowed at all. It is not a backstop for everything the scan blocks: `LOAD CSV` is a *read*, so
+READ mode executes it and only `LOAD` in `WRITE_KEYWORDS` stands between the model and an HTTP
+request made by Neo4j. `dbms.security.allow_csv_import_from_file_urls=false` covers `file:///`
+and no setting covers `http(s)`, so on that one clause the text check is the whole defence, and
+that is why it has to read Cypher the way Neo4j does rather than approximately. `Neo4jGraph.query` 
+exposes no routing argument, so this goes in through `session_params`, which takes the driver's 
+implicit-transaction path and gives up the managed retry on a transient error. Against the single 
+instance this deploys on that retry has nothing to recover, and a retrieval failure already escalates 
+in `retrieve()`. `ping_database` and the schema probe deliberately keep the managed path, so the outage 
+bound measured for the health signal is unchanged.
 
 ### Text2Cypher Determinism and Empty-Result Escalation
 
