@@ -190,6 +190,7 @@ ml-mcp/
 │   ├── test_rag_empty_retrieval_escalation.py  # Empty-result retries and the abstention answer
 │   ├── test_rag_fulltext_fallback.py           # Scored index-backed rescue, procedure allowlist
 │   ├── test_rag_context_grader.py              # Grading rows before they can become an answer
+│   ├── test_rag_graded_out_escalation.py       # Wrong primary rows go on to the full-text search
 │   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
@@ -314,8 +315,11 @@ class State(MessagesState):
     trace_id: Optional[str]
 ```
 Nodes: `guardrails_system` → conditional → `generate_cypher` → conditional → `retrieve` →
-`grade_context`; `return_none` is the off-topic exit, and `generate_cypher` takes its own
-second exit straight to the end when the graph reports an empty schema.
+`grade_context` → conditional → end; `return_none` is the off-topic exit, and `generate_cypher`
+takes its own second exit straight to the end when the graph reports an empty schema.
+`grade_context` has a second exit too: when it rejects every row of the model's own query it
+routes to `search_after_grading`, which runs the full-text search and comes back to
+`grade_context` once (see *Abstention Is a Retrieval Decision*).
 
 ### Config System
 `graph_config.yaml` is the single source of truth. Loaded as a validated Pydantic singleton:
@@ -725,6 +729,13 @@ escalates in `src/mcp_server/tools/knowledge_graph/rag.py`:
    since it is derived from the failed statement. When the search is disabled or the question
    yields no phrases, the failure stands as `KnowledgeGraphQueryError`: nothing was put to the
    graph, so "no data" would be a claim about it that was never tested.
+5. **label_agnostic_after_grading** — the same search once more, reached after `grade_context`
+   rejected every row a `primary` or `repaired_literals` query returned (#99). A traversal that
+   follows the wrong relationship still returns rows, and a wrong result used to end the run
+   where an empty one would have escalated, so whether a question got answered depended on
+   whether the bad query happened to match anything. The `search_after_grading` node runs the
+   search and sends its rows back through the grader. They are never escalated again, so the
+   run cannot loop, and a search that finds nothing leaves the run `graded_out`.
 
 The chosen step is reported as `metadata.retrieval_strategy` and logged by the MCP server.
 Escalation otherwise only follows a *successful* execution: a query the guardrail blocks is a
@@ -858,16 +869,48 @@ Whether to answer is settled before an answer is written, not by the answering m
    guarantee. Keep it low: an inflected hit legitimately scores around 1.4 where the nominative
    form of the same question scores 10, so a floor chosen from nominative scores would drop the
    matches the inflection expansion exists to recover.
-2. **`grade_context` node** (between `retrieve` and the end of the graph). One cheap fast-model
-   call is shown the question and the retrieved rows and returns which of them actually answer
-   it. Rejecting all of them sets `retrieval_strategy = graded_out` and empties the context, so
-   the caller gets `NO_GRAPH_DATA_MESSAGE` without the answering model being consulted.
-   Rows from a `primary` query skip grading — that query expressed the question's own structure.
+2. **`grade_context` node** (after `retrieve`). One cheap fast-model call is shown the
+   question, how the rows were found and the rows themselves, and returns which of them
+   actually answer it. Rejecting all of them sets `retrieval_strategy = graded_out` and empties
+   the context. Rows from the model's own query then go on to the full-text search (step 5 of
+   the escalation above); anything else reaches the caller as `NO_GRAPH_DATA_MESSAGE` without
+   the answering model being consulted.
+   **Primary rows are graded too, and only kept with an anchor.** They used to skip grading
+   because the query "expressed the question's own structure", which only holds when the
+   traversal is right, and #99 is a traversal that wasn't. Asking the grader "does this row
+   answer it" was not enough either: on the PR #102 review it kept `Odbyte szkolenia ->
+   dydaktyczne` for `Jakie kryteria oceniają działalność dydaktyczną?` in three runs of eight,
+   because a similar word read as "naming the entity". So for rows from a model query
+   (`primary`, `repaired_literals`) the grader has to name the question's `entity` and an
+   `anchor`, text copied from the query or a row that holds that entity, and
+   `locate_anchor` checks both: the anchor must really be in the query or a row, and unless
+   it is a label it must cover every content word of the entity in some case ending
+   (`dydaktyczne` covers `dydaktyczna`, nothing covers `działalność`; years must match
+   exactly). Without an anchor nothing is kept, and the run goes on to the full-text search.
+   A label is taken on the grader's word, since it is the only anchor a kind-of-thing
+   question ("Jakie są dni wolne?") has and no Polish entity spells an English label. When
+   the anchor is null or not found, the entity's own text is tried as one: the fast model
+   named the entity right and still answered `anchor: null` about one run in six with that
+   phrase sitting in the query's filter.
+   Where the anchor sits decides how much is kept. A `primary` query that filters on the
+   entity only returns what sits under it, so its list stays whole, whatever the grader said
+   about single rows. Measured on the fast model, the grader found the teacher filter every
+   time and still dropped every course title under it for not repeating the teacher's name,
+   so its row list is not what decides here. An anchor found only in the rows means the query
+   didn't select the entity and its rows mix several, so only the rows the grader picked
+   stay.
+   The grader sees the executed Cypher for these rows, since a primary row carries only the
+   columns its query returned — a course title from a query that filters on the teacher the
+   question names does not repeat the teacher, and that filter is the anchor. Full-text rows
+   are still graded row by row with no anchor enforced. This costs every primary answer one
+   more fast-model call, and a graded-out one up to two.
    The grader **fails open**: a failed call or an unreadable reply keeps the rows, because a
    provider outage must not be indistinguishable from an empty graph.
 3. **The answer payload carries its provenance.** `RAG._format_result` returns
    `{"retrieval_strategy", "context_graded", "rows"}`, and `prompts.final_answer` treats
-   `primary` rows as the answer and rescue rows as candidates.
+   `primary` rows as the answer and rescue rows as candidates. The prompt has to name every
+   strategy that can carry rows; `tests/test_rag_context_grader.py` fails when one is added
+   without it.
 
 There is no "answer from general knowledge" escape hatch anywhere in `prompts.final_answer`. A
 confidently wrong date in a student-facing chatbot is worse than an admission of ignorance —
@@ -1126,8 +1169,8 @@ and one dropped connection was one dropped user request.
 `guardrails_system` and `generate_cypher` — `grade_context` already fails open.
 
 A timeout and a 429 are deliberately not repeated. `APITimeoutError` has already spent the full
-`llm_timeout_seconds`, and a second one inside a graph budget shared by three model calls reports
-the same failure as a pipeline timeout instead; it subclasses `APIConnectionError`, so
+`llm_timeout_seconds`, and a second one inside a graph budget shared by up to four model calls
+reports the same failure as a pipeline timeout instead; it subclasses `APIConnectionError`, so
 `_is_worth_one_retry` has to exclude it by name. `RateLimitError` needs the `Retry-After` header
 that only the SDK reads, so a single-provider setup under a rate limit loses the request — the
 fix for that is a second key, not a second attempt.

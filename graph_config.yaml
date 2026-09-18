@@ -275,8 +275,9 @@ prompts:
 
     How much to trust the rows depends on "retrieval_strategy":
     - "primary": the query was written directly from the question, so its rows are the answer.
-    - "repaired_literals", "label_agnostic_phrases" or "label_agnostic_after_error": the first
-      query matched nothing or could not run, so the search was widened. These rows are
+    - "repaired_literals", "label_agnostic_phrases", "label_agnostic_after_error" or
+      "label_agnostic_after_grading": the first query matched nothing, could not run, or
+      returned rows that did not answer the question, so the search was widened. These rows are
       CANDIDATES, already filtered by a relevance grader.
       Answer only when a row actually names the entity or carries the fact that was asked for.
       If they are merely on a similar topic, say you do not know.
@@ -478,25 +479,51 @@ prompts:
 
   context_grader: |
     You are a retrieval grader for a Wrocław University of Science and Technology (Politechnika
-    Wrocławska) assistant. Rows below were recovered by a fallback search, so some of them are
-    only loosely related to the question. Your job is to say which ones actually answer it.
+    Wrocławska) assistant. The rows below came back from a knowledge graph lookup for the
+    question, and that lookup can be wrong: a query can follow the wrong relationship, and a
+    widened search can match a row that only shares a word with the question. Your job is to say
+    which rows actually answer it.
 
     Question: {user_question}
+
+    How the rows were found:
+    {retrieval}
 
     Candidate rows:
     {candidates}
 
-    Keep a row when it contains the fact the question asks for, or names the entity the question
-    is about. Drop a row when it merely mentions a similar word, describes a neighbouring entity,
-    or carries a different date, semester or document than the one asked for.
+    Work in three steps.
+
+    1. "entity": the most specific thing the question names, a person, course, category,
+       document, semester or date, written as the question writes it. In "Jakie kursy prowadzi
+       dr Jan Kowalski?" it is "dr Jan Kowalski", not "kursy". Only when the question names
+       nothing more specific than a kind of thing ("Jakie są dni wolne?") is the entity that
+       kind.
+
+    2. "anchor": text copied exactly from the query or from a row that holds that same entity:
+       a value the query filters on, a label it matches, or a value in a row. It has to be the
+       whole entity. A word that shares part of its name is not an anchor: "zespoły badawcze"
+       does not hold "praca zespołowa", and a category whose name only sounds close is a
+       different category. When nothing holds the entity, the anchor is null.
+
+    3. "relevant": the rows that carry what the question asks for. A row holds only the columns
+       its query returned, so when the anchor is a filter or a label in the query, every row
+       sits under the entity even though it does not repeat it: a course title from a query
+       that filters on the teacher answers "what does this teacher teach" and is kept. Drop a
+       row that describes a neighbouring entity, or carries a different date, semester or
+       document than the one asked for. With a null anchor, keep no row.
+
+    A query that looks right does not make a row about something else an answer.
 
     Being strict is the point: an empty list is a correct answer and leads to "no data", which is
     better than an answer built on a row that does not address the question.
 
-    Answer ONLY with valid JSON listing the numbers of the rows to keep, for example:
-    {{"relevant": [1, 3]}}
-    or, when no row answers the question:
-    {{"relevant": []}}
+    Answer ONLY with valid JSON, for example:
+    {{"entity": "dr Jan Kowalski", "anchor": "jan kowalski", "relevant": [1, 3]}}
+    or, when a label is what selects the kind of thing asked for:
+    {{"entity": "dni wolne", "anchor": "DayOff", "relevant": [1, 2]}}
+    or, when nothing holds the entity:
+    {{"entity": "praca zespołowa", "anchor": null, "relevant": []}}
 
     Answer:
 
