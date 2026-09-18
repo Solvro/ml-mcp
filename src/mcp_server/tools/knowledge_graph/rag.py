@@ -196,8 +196,20 @@ class RetrievalStrategy(Enum):
     # The model's Cypher was rejected by Neo4j and the full-text search answered instead. Kept
     # distinct from LABEL_AGNOSTIC_PHRASES so a log or trace shows that no primary query ran.
     LABEL_AGNOSTIC_AFTER_ERROR = "label_agnostic_after_error"
+    # The model's query returned rows, the grader rejected all of them, and the full-text search
+    # answered instead (issue #99). Distinct for the same reason as the one above: a trace has to
+    # show that the model's query ran and matched the wrong thing.
+    LABEL_AGNOSTIC_AFTER_GRADING = "label_agnostic_after_grading"
     GRADED_OUT = "graded_out"
     EMPTY = "empty"
+
+
+# Rows that came back from a traversal the Cypher model wrote. When the grader rejects every one
+# of them the traversal was wrong, and unlike an empty result nothing else has been tried yet, so
+# the run goes on to the label-agnostic search instead of ending in "no data" (issue #99).
+MODEL_QUERY_STRATEGIES = frozenset(
+    {RetrievalStrategy.PRIMARY.value, RetrievalStrategy.REPAIRED_LITERALS.value}
+)
 
 
 class KnowledgeGraphUnavailableError(RuntimeError):
@@ -738,7 +750,7 @@ class RAG:
         )
 
         self.context_grader_template = PromptTemplate(
-            input_variables=["user_question", "candidates"],
+            input_variables=["user_question", "retrieval", "candidates"],
             template=config.prompts.context_grader,
         )
 
@@ -809,6 +821,23 @@ class RAG:
 
         return kept
 
+    @staticmethod
+    def _describe_retrieval(state: State) -> str:
+        """
+        Tell the grader how the rows were found.
+
+        A row from the model's query holds only the columns that query returned, so a course
+        title from a traversal that started at the teacher the question names does not repeat
+        the teacher. Without the query the grader sees a bare title and cannot tell it answers
+        the question.
+        """
+        if state.get("retrieval_strategy") in MODEL_QUERY_STRATEGIES:
+            return f"The Cypher query that returned them:\n{state.get('generated_cypher') or ''}"
+        return (
+            "A full-text search for words from the question across every kind of entity, so a "
+            "row may only share a word with it."
+        )
+
     def grade_context(self, state: State):
         """
         Drop retrieved rows that do not answer the question.
@@ -817,21 +846,28 @@ class RAG:
         answering model: rows recovered by a widened search are candidates, not an answer, and a
         row that only shares a word with the question is what produces a confident wrong answer.
 
-        A query that ran as the model wrote it is trusted and skips grading. A grader that fails
-        or replies with nonsense leaves the rows untouched - a model outage must not be
-        indistinguishable from an empty graph.
+        Rows from the model's own query are graded too, because a query that followed the wrong
+        relationship returns rows as confidently as a right one (issue #99). They are judged as
+        a whole: one row the grader keeps shows the traversal is the right one, and the rest of
+        a list it returned stays. When the grader keeps none of them, the run moves on to the
+        label-agnostic search, since a wrong result must get the same second chance an empty
+        one does.
+
+        A grader that fails or replies with nonsense leaves the rows untouched - a model outage
+        must not be indistinguishable from an empty graph.
 
         Args:
             state: Current pipeline state
 
         Returns:
-            Updated state with the rows that survived grading
+            Updated state with the rows that survived grading, and where the run goes next
         """
         context = state.get("context") or []
         strategy = state.get("retrieval_strategy")
+        kept_as_retrieved = {"context_graded": False, "next_node": "end"}
 
-        if not context or strategy == RetrievalStrategy.PRIMARY.value:
-            return {"context_graded": False}
+        if not context:
+            return kept_as_retrieved
 
         grader_chain = self.context_grader_template | self.fast_llm | StrOutputParser()
 
@@ -839,6 +875,7 @@ class RAG:
             grader_output = grader_chain.invoke(
                 {
                     "user_question": state["user_question"],
+                    "retrieval": self._describe_retrieval(state),
                     "candidates": self._render_grader_candidates(context),
                 },
                 config=self._get_invoke_config(
@@ -851,25 +888,68 @@ class RAG:
             )
         except Exception as exc:
             logger.warning("Context grading failed; keeping retrieved rows: %s", exc)
-            return {"context_graded": False}
+            return kept_as_retrieved
 
         kept = self._parse_grader_output(grader_output, len(context))
         if kept is None:
-            return {"context_graded": False}
+            return kept_as_retrieved
 
-        graded_context = [context[index] for index in kept]
+        logger.debug("Context grader kept %d of %d %s row(s)", len(kept), len(context), strategy)
 
-        logger.debug("Context grader kept %d of %d row(s)", len(graded_context), len(context))
-
-        if not graded_context:
-            logger.info("Context grader rejected all %d retrieved row(s)", len(context))
+        if not kept:
+            logger.info("Context grader rejected all %d %s row(s)", len(context), strategy)
             return {
                 "context": [],
                 "context_graded": True,
                 "retrieval_strategy": RetrievalStrategy.GRADED_OUT.value,
+                "next_node": (
+                    "search_after_grading" if strategy in MODEL_QUERY_STRATEGIES else "end"
+                ),
             }
 
-        return {"context": graded_context, "context_graded": True}
+        if strategy == RetrievalStrategy.PRIMARY.value:
+            return {"context_graded": True, "next_node": "end"}
+
+        return {
+            "context": [context[index] for index in kept],
+            "context_graded": True,
+            "next_node": "end",
+        }
+
+    def search_after_grading(self, state: State):
+        """
+        Search every label once the grader has rejected every row of the model's query.
+
+        Retrieval only escalates on zero rows, so a query that matched the wrong entity used to
+        end the run on rows the answering model then, correctly, declined to use. Asked again,
+        the same question could come back empty and be answered from the full-text index, which
+        made the outcome depend on whether the bad query happened to match anything (issue #99).
+
+        The rows found here go back through ``grade_context`` like any other rescue. They are
+        never escalated again, so the run cannot loop.
+
+        Args:
+            state: Current pipeline state
+
+        Returns:
+            Updated state with the recovered context, or nothing when the search found nothing
+            and the run stays graded out
+        """
+        logger.debug("Graded-out query:\n%s", state.get("generated_cypher"))
+
+        fallback = self._search_every_label(state.get("user_question") or "")
+        if fallback is None:
+            logger.info("Label-agnostic search after a graded-out query found nothing")
+            return {}
+
+        logger.info(
+            "Label-agnostic search after a graded-out query found %d row(s)",
+            len(fallback["context"]),
+        )
+        return {
+            **fallback,
+            "retrieval_strategy": RetrievalStrategy.LABEL_AGNOSTIC_AFTER_GRADING.value,
+        }
 
     def _build_processing_graph(self):
         """Construct the state machine graph for the RAG pipeline."""
@@ -881,6 +961,7 @@ class RAG:
             ("generate_cypher", self.generate_cypher),
             ("retrieve", self.retrieve),
             ("grade_context", self.grade_context),
+            ("search_after_grading", self.search_after_grading),
             ("return_none", self.return_none),
         ]
 
@@ -917,8 +998,18 @@ class RAG:
         builder.add_edge("retrieve", "grade_context")
         visualizer.add_edge("retrieve", "grade_context")
 
-        builder.add_edge("grade_context", END)
-        visualizer.add_edge("grade_context", END)
+        grading_edges = {
+            "search_after_grading": "search_after_grading",
+            "end": END,
+        }
+
+        builder.add_conditional_edges(
+            "grade_context", lambda state: state["next_node"], grading_edges
+        )
+        visualizer.add_conditional_edges("grade_context", grading_edges)
+
+        builder.add_edge("search_after_grading", "grade_context")
+        visualizer.add_edge("search_after_grading", "grade_context")
 
         return builder.compile()
 

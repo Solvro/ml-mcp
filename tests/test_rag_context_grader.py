@@ -14,13 +14,14 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.runnables import RunnableLambda
 
 from src.config.config import get_config
-from src.mcp_server.tools.knowledge_graph.rag import RAG
+from src.mcp_server.tools.knowledge_graph.rag import RAG, RetrievalStrategy
 
 QUESTION = "Kiedy jest pierwszy dzień wolny w semestrze zimowym?"
 ROWS = [
     {"title": "2 XI 2026 r.", "context": "dzien wolny od zajec"},
     {"title": "Przerwa miedzysemestralna", "context": "23 lutego 2027"},
 ]
+KEPT_AS_RETRIEVED = {"context_graded": False, "next_node": "end"}
 
 
 class RecordingLLM:
@@ -44,7 +45,7 @@ def _grader_stub(reply: str | Exception) -> tuple[RAG, RecordingLLM]:
     """Build a RAG with the real grader prompt from graph_config.yaml and a stubbed model."""
     rag = object.__new__(RAG)
     rag.context_grader_template = PromptTemplate(
-        input_variables=["user_question", "candidates"],
+        input_variables=["user_question", "retrieval", "candidates"],
         template=get_config().prompts.context_grader,
     )
     llm = RecordingLLM(reply)
@@ -81,6 +82,7 @@ def test_rejecting_every_row_abstains_deterministically() -> None:
     assert result["context"] == []
     assert result["retrieval_strategy"] == "graded_out"
     assert result["context_graded"] is True
+    assert result["next_node"] == "end"
 
 
 def test_a_graded_out_result_reaches_the_caller_as_no_data() -> None:
@@ -97,14 +99,69 @@ def test_a_graded_out_result_reaches_the_caller_as_no_data() -> None:
     assert formatted["metadata"]["retrieval_strategy"] == "graded_out"
 
 
-def test_a_primary_query_is_trusted_and_never_graded() -> None:
-    """The query expressed the question's own structure, so its rows need no second opinion."""
-    rag, llm = _grader_stub('{"relevant": []}')
+def test_a_primary_result_the_grader_confirms_is_kept_whole() -> None:
+    """One kept row shows the traversal is right; the grader does not get to edit its list."""
+    rag, llm = _grader_stub('{"relevant": [1]}')
 
     result = rag.grade_context(_state(retrieval_strategy="primary"))
 
-    assert llm.prompts == []
-    assert result == {"context_graded": False}
+    assert len(llm.prompts) == 1
+    assert "context" not in result
+    assert result == {"context_graded": True, "next_node": "end"}
+
+
+@pytest.mark.parametrize("strategy", ["primary", "repaired_literals"])
+def test_a_model_query_the_grader_rejects_moves_on_to_the_full_text_search(strategy) -> None:
+    """Issue #99: a wrong result used to end the run, where an empty one would have escalated."""
+    rag, _ = _grader_stub('{"relevant": []}')
+
+    result = rag.grade_context(_state(retrieval_strategy=strategy))
+
+    assert result["context"] == []
+    assert result["retrieval_strategy"] == "graded_out"
+    assert result["next_node"] == "search_after_grading"
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    ["label_agnostic_phrases", "label_agnostic_after_error", "label_agnostic_after_grading"],
+)
+def test_a_rejected_full_text_result_ends_the_run(strategy) -> None:
+    """Nothing is left to try after the full-text search, and the run must not loop."""
+    rag, _ = _grader_stub('{"relevant": []}')
+
+    result = rag.grade_context(_state(retrieval_strategy=strategy))
+
+    assert result["retrieval_strategy"] == "graded_out"
+    assert result["next_node"] == "end"
+
+
+def test_the_grader_sees_the_query_behind_primary_rows() -> None:
+    """A bare course title only answers "what does X teach" next to the traversal from X."""
+    rag, llm = _grader_stub('{"relevant": [1]}')
+    cypher = "MATCH (p:Person)-[:TEACHES]->(c:Course) RETURN c.title"
+
+    rag.grade_context(_state(retrieval_strategy="primary", generated_cypher=cypher))
+
+    assert cypher in llm.prompts[0]
+
+
+def test_the_grader_is_told_full_text_rows_may_only_share_a_word() -> None:
+    rag, llm = _grader_stub('{"relevant": [1]}')
+
+    rag.grade_context(_state(generated_cypher="CALL db.index.fulltext.queryNodes(...)"))
+
+    assert "full-text search" in llm.prompts[0]
+    assert "db.index.fulltext" not in llm.prompts[0]
+
+
+@pytest.mark.parametrize("strategy", ["primary", "repaired_literals"])
+def test_a_failing_grader_keeps_model_query_rows(strategy) -> None:
+    rag, _ = _grader_stub(RuntimeError("provider down"))
+
+    result = rag.grade_context(_state(retrieval_strategy=strategy))
+
+    assert result == KEPT_AS_RETRIEVED
 
 
 @pytest.mark.parametrize("strategy", ["repaired_literals", "label_agnostic_phrases"])
@@ -123,7 +180,7 @@ def test_an_empty_retrieval_skips_the_grader() -> None:
     result = rag.grade_context(_state(context=[], retrieval_strategy="empty"))
 
     assert llm.prompts == []
-    assert result == {"context_graded": False}
+    assert result == KEPT_AS_RETRIEVED
 
 
 def test_the_grader_sees_the_question_and_the_numbered_rows() -> None:
@@ -144,7 +201,7 @@ def test_a_failing_grader_keeps_the_rows() -> None:
 
     result = rag.grade_context(_state())
 
-    assert result == {"context_graded": False}
+    assert result == KEPT_AS_RETRIEVED
 
 
 @pytest.mark.parametrize(
@@ -156,7 +213,7 @@ def test_an_unusable_grader_reply_keeps_the_rows(reply) -> None:
 
     result = rag.grade_context(_state())
 
-    assert result == {"context_graded": False}
+    assert result == KEPT_AS_RETRIEVED
 
 
 def test_out_of_range_and_duplicate_indices_are_ignored() -> None:
@@ -225,6 +282,17 @@ def test_the_answer_prompt_explains_both_kinds_of_row() -> None:
     prompt = get_config().prompts.final_answer
 
     assert "retrieval_strategy" in prompt
-    assert '"primary"' in prompt
-    assert '"label_agnostic_phrases"' in prompt
     assert "CANDIDATES" in prompt
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    [
+        strategy.value
+        for strategy in RetrievalStrategy
+        if strategy not in (RetrievalStrategy.GRADED_OUT, RetrievalStrategy.EMPTY)
+    ],
+)
+def test_the_answer_prompt_names_every_strategy_that_carries_rows(strategy) -> None:
+    """An unnamed strategy leaves the answering model guessing how far to trust its rows."""
+    assert f'"{strategy}"' in get_config().prompts.final_answer

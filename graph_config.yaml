@@ -275,8 +275,9 @@ prompts:
 
     How much to trust the rows depends on "retrieval_strategy":
     - "primary": the query was written directly from the question, so its rows are the answer.
-    - "repaired_literals", "label_agnostic_phrases" or "label_agnostic_after_error": the first
-      query matched nothing or could not run, so the search was widened. These rows are
+    - "repaired_literals", "label_agnostic_phrases", "label_agnostic_after_error" or
+      "label_agnostic_after_grading": the first query matched nothing, could not run, or
+      returned rows that did not answer the question, so the search was widened. These rows are
       CANDIDATES, already filtered by a relevance grader.
       Answer only when a row actually names the entity or carries the fact that was asked for.
       If they are merely on a similar topic, say you do not know.
@@ -478,10 +479,15 @@ prompts:
 
   context_grader: |
     You are a retrieval grader for a Wrocław University of Science and Technology (Politechnika
-    Wrocławska) assistant. Rows below were recovered by a fallback search, so some of them are
-    only loosely related to the question. Your job is to say which ones actually answer it.
+    Wrocławska) assistant. The rows below came back from a knowledge graph lookup for the
+    question, and that lookup can be wrong: a query can follow the wrong relationship, and a
+    widened search can match a row that only shares a word with the question. Your job is to say
+    which rows actually answer it.
 
     Question: {user_question}
+
+    How the rows were found:
+    {retrieval}
 
     Candidate rows:
     {candidates}
@@ -489,6 +495,11 @@ prompts:
     Keep a row when it contains the fact the question asks for, or names the entity the question
     is about. Drop a row when it merely mentions a similar word, describes a neighbouring entity,
     or carries a different date, semester or document than the one asked for.
+
+    A row holds only the columns its query returned, so it may not repeat what the question
+    names: a course title from a query that starts at the teacher the question asks about does
+    answer "what does this teacher teach". Read the query to see what a row stands for, but judge
+    the row itself. A query that looks right does not make a row about something else an answer.
 
     Being strict is the point: an empty list is a correct answer and leads to "no data", which is
     better than an answer built on a row that does not address the question.

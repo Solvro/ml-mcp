@@ -15,6 +15,7 @@ SAFE_CYPHER = "MATCH (n) RETURN n"
 EXECUTED_CYPHER = f"{SAFE_CYPHER}\nLIMIT 5"
 EMPTY_ANSWER = OFF_TOPIC_MESSAGE
 TIMEOUT_MESSAGE = "exceeded the maximum allowed wait time"
+GRADER_PREFIX = "Grade:"
 
 
 class FakeDatabase:
@@ -54,6 +55,7 @@ class GraphStub(NamedTuple):
     database: FakeDatabase
     guardrails_prompts: list[str]
     cypher_prompts: list[str]
+    grader_prompts: list[str]
     invoke_configs: list[dict[str, Any]]
 
 
@@ -68,11 +70,22 @@ def _recording_runnable(
     return RunnableLambda(_invoke)
 
 
+def _fast_runnable(guardrails: RunnableLambda, grader: RunnableLambda) -> RunnableLambda:
+    """The guardrail and the grader share the fast model; send each prompt to its own stub."""
+
+    def _invoke(prompt_value: Any, config: dict[str, Any] | None = None) -> str:
+        target = grader if prompt_value.to_string().startswith(GRADER_PREFIX) else guardrails
+        return target.invoke(prompt_value, config=config)
+
+    return RunnableLambda(_invoke)
+
+
 def _build_rag_graph_stub(
     *,
     guardrails_reply: str,
     cypher_reply: str,
     db_rows: list[dict[str, Any]],
+    grader_reply: str = '{"relevant": [1]}',
     max_results: int = 5,
     graph_timeout_sec: float = 5.0,
 ) -> GraphStub:
@@ -95,16 +108,26 @@ def _build_rag_graph_stub(
         input_variables=["user_question"],
         template="Question: {user_question}",
     )
+    rag.context_grader_template = PromptTemplate(
+        input_variables=["user_question", "retrieval", "candidates"],
+        template=GRADER_PREFIX + " {user_question}\n{retrieval}\n{candidates}",
+    )
 
     guardrails_prompts: list[str] = []
     cypher_prompts: list[str] = []
+    grader_prompts: list[str] = []
     invoke_configs: list[dict[str, Any]] = []
 
-    rag.fast_llm = _recording_runnable(guardrails_reply, guardrails_prompts, invoke_configs)
+    rag.fast_llm = _fast_runnable(
+        _recording_runnable(guardrails_reply, guardrails_prompts, invoke_configs),
+        _recording_runnable(grader_reply, grader_prompts, invoke_configs),
+    )
     rag.cypher_llm = _recording_runnable(cypher_reply, cypher_prompts, invoke_configs)
 
     rag.graph = rag._build_processing_graph()
-    return GraphStub(rag, database, guardrails_prompts, cypher_prompts, invoke_configs)
+    return GraphStub(
+        rag, database, guardrails_prompts, cypher_prompts, grader_prompts, invoke_configs
+    )
 
 
 def test_graph_run_generate_branch_executes_retrieve() -> None:
@@ -208,6 +231,37 @@ def test_graph_run_reports_the_strategy_that_produced_the_context() -> None:
     assert result["metadata"]["retrieval_strategy"] == "primary"
 
 
+def test_graph_run_grades_the_rows_of_the_primary_query() -> None:
+    stub = _build_rag_graph_stub(
+        guardrails_reply='{"decision":"generate"}',
+        cypher_reply=SAFE_CYPHER,
+        db_rows=[{"value": 1}, {"value": 2}],
+    )
+
+    result = stub.rag.invoke(QUESTION)
+
+    assert len(stub.grader_prompts) == 1
+    assert EXECUTED_CYPHER in stub.grader_prompts[0]
+    assert result["metadata"]["context_graded"] is True
+    assert result["metadata"]["context"] == [{"value": 1}, {"value": 2}]
+
+
+def test_graph_run_abstains_on_rejected_primary_rows_when_search_is_off() -> None:
+    stub = _build_rag_graph_stub(
+        guardrails_reply='{"decision":"generate"}',
+        cypher_reply=SAFE_CYPHER,
+        db_rows=[{"value": 1}],
+        grader_reply='{"relevant": []}',
+    )
+
+    result = stub.rag.invoke(QUESTION)
+
+    assert result["answer"] == NO_GRAPH_DATA_MESSAGE
+    assert result["metadata"]["retrieval_strategy"] == "graded_out"
+    assert len(stub.database.queries) == 1
+    assert len(stub.grader_prompts) == 1
+
+
 def test_async_graph_run_propagates_session_id_to_every_node() -> None:
     """Only ainvoke puts tracing context into graph state - invoke passes the question alone."""
     stub = _build_rag_graph_stub(
@@ -219,7 +273,7 @@ def test_async_graph_run_propagates_session_id_to_every_node() -> None:
     asyncio.run(stub.rag.ainvoke(QUESTION, session_id="s-1", trace_id="tr-1"))
 
     session_ids = [config["metadata"]["langfuse_session_id"] for config in stub.invoke_configs]
-    assert session_ids == ["s-1", "s-1"]
+    assert session_ids == ["s-1", "s-1", "s-1"]
 
 
 def test_async_graph_run_enforces_timeout() -> None:
