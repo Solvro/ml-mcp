@@ -298,10 +298,10 @@ def _anchor_names_part_of_entity(entity: str, anchor_words: List[str]) -> bool:
     then points at the name. A Polish noun phrase puts its head first and what
     makes it specific after, so the anchor may leave out the head before it and nothing after
     it but function words: "kursy prowadzone" inside "kursy prowadzone przez dr Jan Kowalski"
-    is the head with the name left out, and so is a name the anchor skips anywhere 
-    — a capitalised word or a code, except a capital at word 0, which is how the grader 
-    happened to spell the JSON. The anchor itself has to be more than one lowercase word: 
-    two or more content words, a code, or a capitalised word — "dydaktyczne" sits inside 
+    is the head with the name left out, and so is a name the anchor skips anywhere
+    — a capitalised word or a code, except a capital at word 0, which is how the grader
+    happened to spell the JSON. The anchor itself has to be more than one lowercase word:
+    two or more content words, a code, or a capitalised word — "dydaktyczne" sits inside
     "działalność dydaktyczna" too and is exactly the #99 leak.
     """
     folded = _words(entity)

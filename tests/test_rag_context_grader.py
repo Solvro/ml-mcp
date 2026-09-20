@@ -325,7 +325,7 @@ def test_a_query_filter_on_the_name_inside_a_wider_entity_phrase_anchors_it(
 def test_a_query_filter_on_the_generic_head_of_the_entity_is_not_an_anchor(
     entity, anchor, literal
 ) -> None:
-    """The head of the phrase is two content words too, and the name it leaves out is nowhere 
+    """The head of the phrase is two content words too, and the name it leaves out is nowhere
     in the query, and "query" would keep every row without escalating."""
     verdict = GraderVerdict(kept=[0], entity=entity, anchor=anchor)
 
