@@ -305,10 +305,47 @@ def _filter_query(literal: str) -> str:
 def test_a_query_filter_on_the_name_inside_a_wider_entity_phrase_anchors_it(
     entity, anchor, literal
 ) -> None:
-    """Issue #27: the grader names the question's noun phrase; the query filters on the name."""
+    """Ihe grader names the question's noun phrase; the query filters on the name."""
     verdict = GraderVerdict(kept=[0], entity=entity, anchor=anchor)
 
     assert locate_anchor(verdict, _filter_query(literal), [{"c.title": "patenty"}]) == "query"
+
+
+@pytest.mark.parametrize(
+    ("entity", "anchor", "literal"),
+    [
+        ("kursy prowadzone przez dr Jan Kowalski", "kursy prowadzone", "kursy prowadzone"),
+        ("kompetencje pożądane dla naukowca R2", "kompetencje pożądane", "kompetencje pozadane"),
+        ("kryteria oceny działalności dydaktycznej", "kryteria oceny", "kryteria oceny"),
+        ("Kryteria w kategorii Dorobek naukowy", "Kryteria", "kryteria"),
+        ("dr Jan Kowalski", "jan", "jan"),
+    ],
+    ids=["head-not-name", "head-not-code", "head-not-qualifier", "capital-at-word-0", "one-name"],
+)
+def test_a_query_filter_on_the_generic_head_of_the_entity_is_not_an_anchor(
+    entity, anchor, literal
+) -> None:
+    """The head of the phrase is two content words too, and the name it leaves out is nowhere 
+    in the query, and "query" would keep every row without escalating."""
+    verdict = GraderVerdict(kept=[0], entity=entity, anchor=anchor)
+
+    assert locate_anchor(verdict, _filter_query(literal), [{"n.title": "x"}]) is None
+
+
+@pytest.mark.parametrize(
+    ("entity", "anchor", "literal"),
+    [
+        ("Kryteria w kategorii Dorobek naukowy", "Dorobek naukowy", "dorobek naukowy"),
+        ("kursy prowadzone przez dr Jan Kowalski", "Jan Kowalski", "jan kowalski"),
+    ],
+    ids=["capitalised-head-left-out", "name-inside-qualifier"],
+)
+def test_the_generic_head_may_be_left_out_however_the_grader_spelled_it(
+    entity, anchor, literal
+) -> None:
+    verdict = GraderVerdict(kept=[0], entity=entity, anchor=anchor)
+
+    assert locate_anchor(verdict, _filter_query(literal), [{"n.title": "x"}]) == "query"
 
 
 def test_a_query_filter_on_a_lone_adjective_of_the_entity_is_not_an_anchor() -> None:
@@ -337,7 +374,7 @@ def test_a_code_in_the_entity_is_a_word_the_anchor_has_to_match() -> None:
 
 
 def test_a_wider_entity_phrase_keeps_the_whole_filtered_primary_list() -> None:
-    """The end-to-end shape of #27: 3 of 6 runs threw this list away and re-found it."""
+    """The end-to-end shape: 3 of 6 runs threw this list away and re-found it."""
     rag, llm = _grader_stub(
         _verdict(
             entity="kryteria w kategorii Dorobek naukowy", anchor="Dorobek naukowy", relevant=[1]
