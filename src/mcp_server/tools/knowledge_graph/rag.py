@@ -249,20 +249,61 @@ def _same_word(left: str, right: str) -> bool:
     return stem >= 3 and left[:stem] == right[:stem]
 
 
+def _is_code(word: str) -> bool:
+    """Report whether a word is a code like "R2" or "W4": short, but a name in its own right."""
+    return any(character.isdigit() for character in word)
+
+
+def _required_words(entity: str) -> List[str]:
+    """The words of the entity an anchor has to account for."""
+    return [
+        word
+        for word in _words(entity)
+        if (len(word) >= ANCHOR_MIN_WORD_CHARS or _is_code(word))
+        and word not in POLISH_FUNCTION_WORDS
+    ]
+
+
 def _anchor_covers_entity(entity: str, anchor_words: List[str]) -> bool:
     """
     Report whether an anchor names the whole entity rather than a word that resembles part of it.
 
     Every content word of the entity has to reappear in the anchor, in any case ending. That is
     the check "dydaktyczne" fails for "działalność dydaktyczna": the adjective matches and
-    nothing in it names the activity (issue #99 review).
+    nothing in it names the activity (issue #99 review). A code counts however short it is:
+    "R1" and "R2" are two entities one character apart.
     """
-    required = [
-        word
-        for word in _words(entity)
-        if len(word) >= ANCHOR_MIN_WORD_CHARS and word not in POLISH_FUNCTION_WORDS
-    ]
-    return all(any(_same_word(word, candidate) for candidate in anchor_words) for word in required)
+    return all(
+        any(_same_word(word, candidate) for candidate in anchor_words)
+        for word in _required_words(entity)
+    )
+
+
+def _anchor_names_part_of_entity(entity: str, anchor_words: List[str]) -> bool:
+    """
+    Report whether the anchor is the specific part of an entity phrase wider than a name.
+
+    The grader names the entity as the question's noun phrase more often than as the name in
+    it — "kryteria w kategorii Dorobek naukowy", "kompetencje pożądane dla naukowca R2" — and
+    then points at the name (issue #27). The anchor has to occur inside the entity, and has to
+    be more than one lowercase word: a name of two or more content words, a code, or a word
+    the grader capitalised. A lone adjective ("dydaktyczne") sits inside "działalność
+    dydaktyczna" too and is exactly the #99 leak, so it is not enough.
+    """
+    folded = _words(entity)
+    spelled = re.findall(r"\w+", entity)
+    if len(spelled) != len(folded):
+        spelled = folded
+    content_words = [word for word in anchor_words if word not in POLISH_FUNCTION_WORDS]
+    width = len(anchor_words)
+    for start in range(len(folded) - width + 1):
+        if not all(_same_word(folded[start + i], anchor_words[i]) for i in range(width)):
+            continue
+        if len(content_words) >= 2:
+            return True
+        if any(_is_code(word) or word[:1].isupper() for word in spelled[start : start + width]):
+            return True
+    return False
 
 
 def _is_label_in(anchor: str, cypher: str) -> bool:
@@ -291,11 +332,14 @@ def _locate_candidate(
         return None
     if _is_label_in(candidate, cypher):
         return "query"
-    if entity and not _anchor_covers_entity(entity, anchor_words):
-        return None
+    covers = not entity or _anchor_covers_entity(entity, anchor_words)
     if _contains_phrase(_words(cypher), anchor_words):
-        return "query"
-    if any(_contains_phrase(_words(value), anchor_words) for value in _row_values(rows)):
+        # A filter the query itself applies only has to name the specific part of the entity;
+        # an anchor found in a row has to cover all of it, since that is where the leak was.
+        if covers or _anchor_names_part_of_entity(entity, anchor_words):
+            return "query"
+        return None
+    if covers and any(_contains_phrase(_words(value), anchor_words) for value in _row_values(rows)):
         return "rows"
     return None
 
@@ -313,6 +357,12 @@ def locate_anchor(verdict: GraderVerdict, cypher: str, rows: List[Any]) -> str |
     The entity itself is tried second. Against the fast model the grader named the entity
     right and still answered a null anchor about one run in six, with that exact phrase sitting
     in the query's filter; the filter is evidence, the null is not.
+
+    How much of the entity the anchor has to name depends on where it sits. A filter the query
+    applies selects what it returns, so it only has to be the specific part of the entity —
+    the grader writes "kryteria w kategorii Dorobek naukowy" and points at "Dorobek naukowy"
+    (issue #27). An anchor found only in a row has to cover the whole entity, since a row
+    holding one word of it is how "dydaktyczne" once stood in for "działalność dydaktyczna".
 
     Args:
         verdict: The grader's reply

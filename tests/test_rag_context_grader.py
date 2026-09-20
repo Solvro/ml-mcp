@@ -282,6 +282,78 @@ def test_an_anchor_has_to_cover_every_word_of_the_entity(entity, anchor, expecte
     assert locate_anchor(verdict, "MATCH (n:Topic) RETURN n.title", rows) == expected
 
 
+def _filter_query(literal: str) -> str:
+    return (
+        "MATCH (cc:CriterionCategory)-[:HAS_CRITERION]->(c:Criterion) "
+        f"WHERE toLower(cc.title) CONTAINS '{literal}' RETURN cc.title, c.title LIMIT 10"
+    )
+
+
+@pytest.mark.parametrize(
+    ("entity", "anchor", "literal"),
+    [
+        ("kryteria w kategorii Dorobek naukowy", "Dorobek naukowy", "dorobek naukowy"),
+        ("kompetencje pożądane dla naukowca R2", "R2", "r2"),
+        (
+            "działalność dydaktyczna na Politechnice Wrocławskiej",
+            "Dzialalnosc dydaktyczna",
+            "dzialalnosc dydaktyczna",
+        ),
+    ],
+    ids=["category-name", "code", "institution-appended"],
+)
+def test_a_query_filter_on_the_name_inside_a_wider_entity_phrase_anchors_it(
+    entity, anchor, literal
+) -> None:
+    """Issue #27: the grader names the question's noun phrase; the query filters on the name."""
+    verdict = GraderVerdict(kept=[0], entity=entity, anchor=anchor)
+
+    assert locate_anchor(verdict, _filter_query(literal), [{"c.title": "patenty"}]) == "query"
+
+
+def test_a_query_filter_on_a_lone_adjective_of_the_entity_is_not_an_anchor() -> None:
+    """The #99 leak, moved into the query: "dydaktyczne" still names nothing."""
+    verdict = GraderVerdict(kept=[0], entity=TEACHING, anchor="dydaktyczne")
+    rows = [{"c.title": "Odbyte szkolenia dydaktyczne"}]
+
+    assert locate_anchor(verdict, _filter_query("dydaktyczne"), rows) is None
+
+
+def test_an_anchor_found_only_in_a_row_still_has_to_cover_the_whole_entity() -> None:
+    verdict = GraderVerdict(
+        kept=[0], entity="kryteria w kategorii Dorobek naukowy", anchor="Dorobek naukowy"
+    )
+    rows = [{"category": "Dorobek naukowy", "criterion": "patenty"}]
+
+    assert locate_anchor(verdict, UNANCHORED_CYPHER, rows) is None
+
+
+def test_a_code_in_the_entity_is_a_word_the_anchor_has_to_match() -> None:
+    """R1 and R2 differ in a character ANCHOR_MIN_WORD_CHARS used to drop."""
+    verdict = GraderVerdict(kept=[0], entity="kompetencje R2", anchor="kompetencje R1")
+    rows = [{"title": "kompetencje R1"}]
+
+    assert locate_anchor(verdict, UNANCHORED_CYPHER, rows) is None
+
+
+def test_a_wider_entity_phrase_keeps_the_whole_filtered_primary_list() -> None:
+    """The end-to-end shape of #27: 3 of 6 runs threw this list away and re-found it."""
+    rag, llm = _grader_stub(
+        _verdict(
+            entity="kryteria w kategorii Dorobek naukowy", anchor="Dorobek naukowy", relevant=[1]
+        )
+    )
+    rows = [
+        {"cc.title": "Dorobek naukowy", "c.title": "patenty"},
+        {"cc.title": "Dorobek naukowy", "c.title": "grantow"},
+    ]
+
+    result = rag.grade_context(_criteria_state(_filter_query("dorobek naukowy"), rows))
+
+    assert len(llm.prompts) == 1
+    assert result == {"context_graded": True, "next_node": "end"}
+
+
 @pytest.mark.parametrize("strategy", ["primary", "repaired_literals"])
 def test_a_model_query_the_grader_rejects_moves_on_to_the_full_text_search(strategy) -> None:
     """Issue #99: a wrong result used to end the run, where an empty one would have escalated."""

@@ -884,9 +884,17 @@ Whether to answer is settled before an answer is written, not by the answering m
    (`primary`, `repaired_literals`) the grader has to name the question's `entity` and an
    `anchor`, text copied from the query or a row that holds that entity, and
    `locate_anchor` checks both: the anchor must really be in the query or a row, and unless
-   it is a label it must cover every content word of the entity in some case ending
-   (`dydaktyczne` covers `dydaktyczna`, nothing covers `działalność`; years must match
-   exactly). Without an anchor nothing is kept, and the run goes on to the full-text search.
+   it is a label it must name the entity. How much of it depends on where the anchor sits.
+   Found only in a row, it must cover every content word of the entity in some case ending
+   (`dydaktyczne` covers `dydaktyczna`, nothing covers `działalność`; years and codes must
+   match exactly — `R1` is not `R2`). Found in the query's own filter, it only has to be the
+   *specific* part of the entity: the fast model names the entity as the question's noun
+   phrase (`kryteria w kategorii Dorobek naukowy`, `kompetencje pożądane dla naukowca R2`)
+   and points at the name in it, and demanding `kryteria` in the anchor threw away a correct
+   filtered list in 3 runs of 6 (#27). "Specific" means two or more content words, a code, or
+   a capitalised word — a lone lowercase adjective inside the entity is the #99 leak again
+   and does not count. Without an anchor nothing is kept, and the run goes on to the
+   full-text search.
    A label is taken on the grader's word, since it is the only anchor a kind-of-thing
    question ("Jakie są dni wolne?") has and no Polish entity spells an English label. When
    the anchor is null or not found, the entity's own text is tried as one: the fast model
