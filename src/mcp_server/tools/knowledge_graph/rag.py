@@ -249,20 +249,90 @@ def _same_word(left: str, right: str) -> bool:
     return stem >= 3 and left[:stem] == right[:stem]
 
 
+def _is_code(word: str) -> bool:
+    """Report whether a word is a code like "R2" or "W4": short, but a name in its own right."""
+    return any(character.isdigit() for character in word)
+
+
+def _required_words(entity: str) -> List[str]:
+    """The words of the entity an anchor has to account for."""
+    return [
+        word
+        for word in _words(entity)
+        if (len(word) >= ANCHOR_MIN_WORD_CHARS or _is_code(word))
+        and word not in POLISH_FUNCTION_WORDS
+    ]
+
+
 def _anchor_covers_entity(entity: str, anchor_words: List[str]) -> bool:
     """
     Report whether an anchor names the whole entity rather than a word that resembles part of it.
 
     Every content word of the entity has to reappear in the anchor, in any case ending. That is
     the check "dydaktyczne" fails for "działalność dydaktyczna": the adjective matches and
-    nothing in it names the activity (issue #99 review).
+    nothing in it names the activity (issue #99 review). A code counts however short it is:
+    "R1" and "R2" are two entities one character apart.
     """
-    required = [
-        word
-        for word in _words(entity)
-        if len(word) >= ANCHOR_MIN_WORD_CHARS and word not in POLISH_FUNCTION_WORDS
-    ]
-    return all(any(_same_word(word, candidate) for candidate in anchor_words) for word in required)
+    return all(
+        any(_same_word(word, candidate) for candidate in anchor_words)
+        for word in _required_words(entity)
+    )
+
+
+# The graph describes one institution, so its name qualifies nothing: the backend's answer agent
+# appends "na Politechnice Wrocławskiej" to most questions and it must not read as a name the
+# anchor left out. Folded stems, compared with ``_same_word``.
+INSTITUTION_WORDS = ("politechnika", "wroclawska", "pwr")
+
+
+def _is_institution(word: str) -> bool:
+    return any(_same_word(word, name) for name in INSTITUTION_WORDS)
+
+
+def _anchor_names_part_of_entity(entity: str, anchor_words: List[str]) -> bool:
+    """
+    Report whether the anchor is the specific part of an entity phrase wider than a name.
+
+    The grader names the entity as the question's noun phrase more often than as the name in
+    it — "kryteria w kategorii Dorobek naukowy", "kompetencje pożądane dla naukowca R2" — and
+    then points at the name. A Polish noun phrase puts its head first and what
+    makes it specific after, so the anchor may leave out the head before it and nothing after
+    it but function words: "kursy prowadzone" inside "kursy prowadzone przez dr Jan Kowalski"
+    is the head with the name left out, and so is a name the anchor skips anywhere
+    — a capitalised word or a code, except a capital at word 0, which is how the grader
+    happened to spell the JSON. The anchor itself has to be more than one lowercase word:
+    two or more content words, a code, or a capitalised word — "dydaktyczne" sits inside
+    "działalność dydaktyczna" too and is exactly the #99 leak.
+    """
+    folded = _words(entity)
+    spelled = re.findall(r"\w+", entity)
+    if len(spelled) != len(folded):
+        spelled = folded
+    content_words = [word for word in anchor_words if word not in POLISH_FUNCTION_WORDS]
+    width = len(anchor_words)
+    for start in range(len(folded) - width + 1):
+        if not all(_same_word(folded[start + i], anchor_words[i]) for i in range(width)):
+            continue
+        matched = spelled[start : start + width]
+        named = len(content_words) >= 2 or any(
+            _is_code(word) or (index > 0 and word[:1].isupper())
+            for index, word in enumerate(matched, start)
+        )
+        if not named:
+            continue
+        left_out = [
+            (index, folded[index], spelled[index])
+            for index in range(len(folded))
+            if not start <= index < start + width and not _is_institution(folded[index])
+        ]
+        if any(index > start and word not in POLISH_FUNCTION_WORDS for index, word, _ in left_out):
+            continue
+        if any(
+            _is_code(word) or (index > 0 and text[:1].isupper()) for index, word, text in left_out
+        ):
+            continue
+        return True
+    return False
 
 
 def _is_label_in(anchor: str, cypher: str) -> bool:
@@ -291,11 +361,14 @@ def _locate_candidate(
         return None
     if _is_label_in(candidate, cypher):
         return "query"
-    if entity and not _anchor_covers_entity(entity, anchor_words):
-        return None
+    covers = not entity or _anchor_covers_entity(entity, anchor_words)
     if _contains_phrase(_words(cypher), anchor_words):
-        return "query"
-    if any(_contains_phrase(_words(value), anchor_words) for value in _row_values(rows)):
+        # A filter the query itself applies only has to name the specific part of the entity;
+        # an anchor found in a row has to cover all of it, since that is where the leak was.
+        if covers or _anchor_names_part_of_entity(entity, anchor_words):
+            return "query"
+        return None
+    if covers and any(_contains_phrase(_words(value), anchor_words) for value in _row_values(rows)):
         return "rows"
     return None
 
@@ -313,6 +386,12 @@ def locate_anchor(verdict: GraderVerdict, cypher: str, rows: List[Any]) -> str |
     The entity itself is tried second. Against the fast model the grader named the entity
     right and still answered a null anchor about one run in six, with that exact phrase sitting
     in the query's filter; the filter is evidence, the null is not.
+
+    How much of the entity the anchor has to name depends on where it sits. A filter the query
+    applies selects what it returns, so it only has to be the specific part of the entity —
+    the grader writes "kryteria w kategorii Dorobek naukowy" and points at "Dorobek naukowy"
+    (issue #27). An anchor found only in a row has to cover the whole entity, since a row
+    holding one word of it is how "dydaktyczne" once stood in for "działalność dydaktyczna".
 
     Args:
         verdict: The grader's reply

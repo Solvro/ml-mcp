@@ -884,9 +884,23 @@ Whether to answer is settled before an answer is written, not by the answering m
    (`primary`, `repaired_literals`) the grader has to name the question's `entity` and an
    `anchor`, text copied from the query or a row that holds that entity, and
    `locate_anchor` checks both: the anchor must really be in the query or a row, and unless
-   it is a label it must cover every content word of the entity in some case ending
-   (`dydaktyczne` covers `dydaktyczna`, nothing covers `działalność`; years must match
-   exactly). Without an anchor nothing is kept, and the run goes on to the full-text search.
+   it is a label it must name the entity. How much of it depends on where the anchor sits.
+   Found only in a row, it must cover every content word of the entity in some case ending
+   (`dydaktyczne` covers `dydaktyczna`, nothing covers `działalność`; years and codes must
+   match exactly — `R1` is not `R2`). Found in the query's own filter, it only has to be the
+   *specific* part of the entity: the fast model names the entity as the question's noun
+   phrase (`kryteria w kategorii Dorobek naukowy`, `kompetencje pożądane dla naukowca R2`)
+   and points at the name in it, and demanding `kryteria` in the anchor threw away a correct
+   filtered list in 3 runs of 6. A Polish noun phrase puts its head first and what
+   makes it specific after, so the anchor may leave out the head before it and nothing after
+   it but function words — `kursy prowadzone` inside `kursy prowadzone przez dr Jan Kowalski`
+   is the head with the name left out, the #99 shape again, and a "query" anchor keeps every
+   row without escalating, so it is refused; so is any capitalised word or code the anchor
+   skips (a capital at word 0 is how the grader spelled the JSON and does not count), and so
+   is a lone lowercase adjective as the anchor itself. The institution's own name is exempt:
+   the backend's agent appends `na Politechnice Wrocławskiej` to most questions and every
+   entity in this graph is at PWr. Without an anchor nothing is kept, and the run goes on to
+   the full-text search.
    A label is taken on the grader's word, since it is the only anchor a kind-of-thing
    question ("Jakie są dni wolne?") has and no Polish entity spells an English label. When
    the anchor is null or not found, the entity's own text is tried as one: the fast model
@@ -1070,7 +1084,7 @@ against every `apoc.*` name in `src/`, so the mismatch fails in CI rather than a
 
 **Dump and restore share no files with the container.** `restore-graph` used to call
 `apoc.cypher.runFile`, which ships in APOC Extended and not in the `apoc` plugin the image
-installs, so it had never once loaded a dump on this stack (#21). Both directions now go over
+installs, so it had never once loaded a dump on this stack. Both directions now go over
 Bolt. `export_graph_to_cypher` asks `apoc.export.cypher.all` to *stream* the dump back
 (`stream: true`, no file name) and writes `dumps/graph_export.cypher` on the host itself;
 `import_graph_from_cypher_dump` reads that file and sends its statements:
