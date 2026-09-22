@@ -591,3 +591,41 @@ def test_the_answer_prompt_explains_both_kinds_of_row() -> None:
 def test_the_answer_prompt_names_every_strategy_that_carries_rows(strategy) -> None:
     """An unnamed strategy leaves the answering model guessing how far to trust its rows."""
     assert f'"{strategy}"' in get_config().prompts.final_answer
+
+
+def test_the_answer_payload_says_when_the_rows_may_be_cut() -> None:
+    """Issue #107: rows cut at the cap look exactly like a complete list to the answering model."""
+    formatted = RAG._format_result(
+        {
+            "context": [{"c.title": "kryterium 1"}],
+            "generated_cypher": "MATCH (n) RETURN n.title LIMIT 10",
+            "retrieval_strategy": "primary",
+            "rows_truncated": True,
+        }
+    )
+
+    assert json.loads(formatted["answer"])["rows_truncated"] is True
+
+
+def test_a_whole_result_says_so_too() -> None:
+    formatted = RAG._format_result(
+        {
+            "context": [{"c.title": "kryterium 1"}],
+            "generated_cypher": "MATCH (n) RETURN n.title LIMIT 10",
+            "retrieval_strategy": "primary",
+        }
+    )
+
+    assert json.loads(formatted["answer"])["rows_truncated"] is False
+
+
+def test_the_answer_prompt_explains_a_truncated_result() -> None:
+    """A flag the prompt never mentions changes nothing about the answer."""
+    assert '"rows_truncated"' in get_config().prompts.final_answer
+
+
+def test_the_cypher_prompt_asks_the_database_to_count() -> None:
+    prompt = get_config().prompts.cypher_search
+
+    assert "count(" in prompt
+    assert "Ile" in prompt

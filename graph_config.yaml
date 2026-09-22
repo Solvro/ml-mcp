@@ -282,6 +282,12 @@ prompts:
       Answer only when a row actually names the entity or carries the fact that was asked for.
       If they are merely on a similar topic, say you do not know.
 
+    "rows_truncated": true means the lookup returned as many rows as it was allowed to, so the
+    graph may hold more that did not come back. Answer from the rows you have, and never present
+    them as the whole list: do not count them into a total and do not say "wszystkie" or "tylko
+    tyle". Say the list may be incomplete ("co najmniej N", "m.in."). A number that a row itself
+    carries, from count(), is a real total and is unaffected by this.
+
     Answer the user's question from the rows above, and from nothing else.
     Use the conversation history only to resolve references like "he", "she", "that course",
     "who is that guy?", etc. — never as a source of facts.
@@ -446,6 +452,11 @@ prompts:
     - When the answer is a list of items under one entity, return the list as one row per
       entity with collect(), e.g. RETURN c.title, collect(i.title) AS items. LIMIT counts rows,
       so one item per row cuts a longer list short and the answer looks complete when it is not
+    - An "Ile ...?" / "Ilu ...?" question asks for a number: let the database count, with
+      count() next to the entity the question names, e.g.
+      RETURN c.title, count(i) AS liczba. Never return one item per row for the answer to count
+      them, LIMIT cuts those rows and the count comes out too low. Keep the entity in the RETURN
+      so a category that matches nothing gives no row rather than a row saying 0
 
     Choosing labels:
     - The schema holds many overlapping labels for similar things (categories, groups, items,
