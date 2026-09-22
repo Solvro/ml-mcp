@@ -662,6 +662,27 @@ also bounds how many nodes the label-agnostic search takes from the index, where
 and the grader are the precision gates. `tests/test_llm_determinism_config.py` fails if the two
 drift apart again.
 
+**A count is the database's job, and a full result says it might have been cut.** `Ile jest
+kryteriów w kategorii Dorobek naukowy?` was answered "10" from ten rows, and it was right only
+because that category holds exactly ten. `Działalność dydaktyczna` holds eleven, and the same
+question over it ran a row-per-criterion query as `primary` and handed the answering model ten
+of them (#107). Nothing in those rows says they were cut, so a wrong total is indistinguishable
+from a right one. Two halves:
+
+- `prompts.cypher_search` asks for `count()` next to the entity on an `Ile ...?` / `Ilu ...?`
+  question, so the number comes from the graph rather than from counting what survived the cap.
+  The entity stays in the `RETURN` because a grouped count gives no row for a category that
+  matched nothing, where a bare `RETURN count(*)` would answer `0` — the limit `_matched_anything`
+  documents. Measured on `gpt-5.4-mini`: 4 of 4 runs counted in the database, and the list and
+  lookup questions kept the shapes they had.
+- `retrieve()` compares the rows against the cap the query ended on
+  (`cypher_guardrails.trailing_limit`, or `max_results` for the full-text search, whose `LIMIT`
+  is not its trailing clause) and carries `rows_truncated` into the payload.
+  `prompts.final_answer` then forbids presenting those rows as the whole list: no total, no
+  "wszystkie", and a count a row carries itself is unaffected. A result that merely fills the cap
+  is flagged too, since a complete list and a cut one look identical from here — hedging a
+  complete list is the cheaper error.
+
 Only the **trailing** clause is read or rewritten. A `WITH n ORDER BY n.rank DESC LIMIT 100`
 shapes an intermediate result, and rewriting it would change what the query means rather than
 how much of the answer comes back; what reaches the answering model is decided by the last
@@ -1246,6 +1267,8 @@ fix for that is a second key, not a second attempt.
    one that asks for more. A smaller one is left alone. Do not rely on the LLM to add it. The
    Cypher prompt's `LIMIT` must name the same number as `rag.max_results`, or the model is asked
    for rows the code then takes away; `tests/test_llm_determinism_config.py` fails if they drift.
+   A result that fills the cap travels on as `rows_truncated`, so an answer built from it cannot
+   claim to be the whole list.
 
 5. **Pipeline Cypher delimiter** — the data pipeline LLM generates statements joined by `|`. Splitting logic lives in `llm_cypher_generation.py`.
 
