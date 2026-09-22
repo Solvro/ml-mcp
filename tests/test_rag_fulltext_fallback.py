@@ -142,6 +142,22 @@ def test_fallback_search_passes_the_score_threshold_to_the_index() -> None:
     assert "udzial w konferencjach" in params["lucene_query"]
 
 
+def test_a_code_in_the_question_is_required_of_every_hit() -> None:
+    """Issue #106: R3 and R4 rows sharing "kompetencje" outranked the R2 category."""
+    rag, database = _rag_stub([FALLBACK_ROWS])
+
+    rag._search_every_label("Jakie są kompetencje pożądane dla naukowca R2?")
+
+    _, params = database.calls[0]
+    assert params["lucene_query"].startswith("+r2 (")
+
+
+def test_a_question_naming_only_a_code_can_still_be_searched() -> None:
+    rag, _ = _rag_stub([])
+
+    assert rag._fallback_search_is_possible("Co to jest R2?")
+
+
 def test_fallback_search_is_index_backed_not_a_scan() -> None:
     """The whole point of the change: no unlabelled MATCH walking every node."""
     assert "db.index.fulltext.queryNodes" in FALLBACK_SEARCH_CYPHER

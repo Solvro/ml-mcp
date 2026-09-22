@@ -6,6 +6,7 @@ from src.mcp_server.tools.knowledge_graph.question_analysis import (
     build_lucene_query,
     expand_inflected_token,
     extract_search_phrases,
+    is_code_token,
     is_question_like_literal,
     strip_question_literal_filters,
     tokenize_search_text,
@@ -273,3 +274,68 @@ def test_expansion_still_drops_phrases_with_metacharacters() -> None:
 
 def test_no_phrases_still_produces_no_query() -> None:
     assert build_lucene_query([]) == ""
+
+
+# Issue #106: "R2" was two characters, so it never became a phrase of its own, and inside the
+# longer phrases it weighed nothing next to "kompetencje". The search came back with R3 and R4
+# rows and the answer listed 4 of R2's 14 competencies as if that were all of them.
+R2_QUESTION = "Jakie są kompetencje pożądane dla naukowca R2?"
+
+
+@pytest.mark.parametrize("token", ["r2", "w4", "a1", "3d", "inz002152w"])
+def test_a_token_mixing_letters_and_digits_is_a_code(token) -> None:
+    assert is_code_token(token)
+
+
+@pytest.mark.parametrize("token", ["2026", "27", "r", "ects", "kompetencje"])
+def test_words_and_plain_numbers_are_not_codes(token) -> None:
+    """A year is written too many ways for the question's spelling to be required of a node."""
+    assert not is_code_token(token)
+
+
+def test_a_short_code_is_kept_as_a_search_phrase() -> None:
+    assert "r2" in extract_search_phrases(R2_QUESTION)
+    assert extract_search_phrases("Co to jest R2?") == ["r2"]
+
+
+def test_the_code_is_required_and_the_other_words_only_rank() -> None:
+    query = build_lucene_query(extract_search_phrases(R2_QUESTION))
+
+    assert query.startswith("+r2 (")
+    assert query.endswith(")")
+    ranking = query[len("+r2 (") : -1]
+    assert '"kompetencje pozadane dla naukowca"^4' in ranking
+    assert '"naukowca r2"^2' in ranking
+    # Already required, so it is not repeated as an optional term.
+    assert '"r2"' not in ranking
+
+
+def test_several_codes_require_any_one_of_them() -> None:
+    query = build_lucene_query(extract_search_phrases("Czym różni się R1 od R4?"))
+
+    assert query.startswith("+(r1 OR r4) (")
+
+
+def test_a_question_that_is_only_a_code_searches_for_the_code() -> None:
+    assert build_lucene_query(["r2"]) == "r2"
+
+
+@pytest.mark.parametrize("token", ["r2", "inz002152w"])
+def test_a_code_is_never_expanded(token) -> None:
+    """One edit away from a code is another code: "r2~1" would match "r3"."""
+    assert expand_inflected_token(token) == []
+
+
+def test_no_expansion_of_the_code_reaches_the_query() -> None:
+    query = build_lucene_query(extract_search_phrases("Jakie kursy ma kod INZ002152W?"))
+
+    assert query.startswith("+inz002152w (")
+    assert "inz002152w~" not in query
+    assert "inz0021*" not in query
+
+
+def test_a_year_stays_optional() -> None:
+    query = build_lucene_query(extract_search_phrases("Kiedy zaczyna się semestr zimowy 2026?"))
+
+    assert "+" not in query
+    assert '"semestr zimowy 2026"^3' in query
