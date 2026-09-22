@@ -100,6 +100,26 @@ MIN_SINGLE_TOKEN_LENGTH = 5
 MAX_SEARCH_PHRASES = 24
 
 
+def is_code_token(token: str) -> bool:
+    """
+    Report whether a search token is a code like "r2", "w4" or a course code.
+
+    A code mixes letters and digits. It is a name however short it is, and one character away
+    from a different entity: "r2" and "r3" are two researcher levels (issue #106). Pure numbers
+    are left out on purpose. They are mostly years and dates, which a page writes in too many
+    ways ("2026", "2026/27", "26") for the question's spelling to be required of a node.
+
+    Args:
+        token: A single lowercase ASCII search token
+
+    Returns:
+        True when the token holds both a letter and a digit
+    """
+    return any(character.isdigit() for character in token) and any(
+        character.isalpha() for character in token
+    )
+
+
 def tokenize_search_text(text: str) -> list[str]:
     """
     Split text into case- and diacritic-folded ASCII search tokens.
@@ -190,7 +210,8 @@ def extract_search_phrases(
 
     Phrases never start or end with a question word or a function word, so
     "Co obejmuje udział w konferencjach?" yields "udzial w konferencjach" — the stored title —
-    while never yielding the truncated "udzial w".
+    while never yielding the truncated "udzial w". A short single word is too vague to search on,
+    except a code: "r2" is the most specific word in "Jakie są kompetencje naukowca R2?".
 
     Args:
         user_question: User's natural language question
@@ -209,7 +230,11 @@ def extract_search_phrases(
             span = tokens[start : start + length]
             if span[0] in PHRASE_BOUNDARY_WORDS or span[-1] in PHRASE_BOUNDARY_WORDS:
                 continue
-            if length == 1 and len(span[0]) < MIN_SINGLE_TOKEN_LENGTH:
+            if (
+                length == 1
+                and len(span[0]) < MIN_SINGLE_TOKEN_LENGTH
+                and not is_code_token(span[0])
+            ):
                 continue
             phrase = " ".join(span)
             if phrase in seen:
@@ -224,13 +249,17 @@ def expand_inflected_token(token: str) -> list[str]:
     """
     Build the prefix and fuzzy clauses that let an inflected token reach its base form.
 
+    A code is never expanded. It does not inflect, and one edit away from a code is another
+    code: "r2~1" matches "r3", and a course code's neighbour is a different course.
+
     Args:
         token: A single lowercase ASCII search token
 
     Returns:
-        Lucene clauses for the token, or an empty list when it is too short to expand safely
+        Lucene clauses for the token, or an empty list when it is too short to expand safely or
+        is a code
     """
-    if len(token) < LUCENE_EXPANDABLE_TOKEN_LENGTH:
+    if len(token) < LUCENE_EXPANDABLE_TOKEN_LENGTH or is_code_token(token):
         return []
 
     clauses = []
@@ -254,6 +283,13 @@ def build_lucene_query(phrases: list[str]) -> str:
     a boost below 1, so an inflected question still reaches a nominative title while an exact
     match keeps ranking above it.
 
+    A code in the question ("r2", "w4") is required: every hit has to hold one of them, and the
+    rest of the query only ranks those hits. Left as one optional term among the others it
+    weighed almost nothing, so "Jakie są kompetencje pożądane dla naukowca R2?" came back with R3
+    and R4 rows that shared "kompetencje" (issue #106). A node that holds none of the codes the
+    question names is about something else, and the grader downstream cannot tell R2 from R3 in
+    a row that never mentions either.
+
     The phrases come from `extract_search_phrases`, which emits nothing but lowercase ASCII words
     and single spaces, so no Lucene metacharacter can appear; any phrase that somehow carries one
     is dropped rather than escaped, because a malformed query would fail the whole lookup.
@@ -267,21 +303,30 @@ def build_lucene_query(phrases: list[str]) -> str:
     clauses: list[str] = []
     seen: set[str] = set()
     expandable_tokens: list[str] = []
+    codes: list[str] = []
 
     for phrase in phrases:
         if not phrase or not LUCENE_SAFE_PHRASE_RE.fullmatch(phrase):
             continue
 
         words = phrase.split()
-        boost = len(words)
-        clauses.append(f'"{phrase}"^{boost}' if boost > 1 else f'"{phrase}"')
-
         for word in words:
             if word not in seen:
                 seen.add(word)
-                expandable_tokens.append(word)
+                (codes if is_code_token(word) else expandable_tokens).append(word)
+
+        if len(words) == 1 and is_code_token(phrase):
+            # The required clause below already carries it.
+            continue
+        boost = len(words)
+        clauses.append(f'"{phrase}"^{boost}' if boost > 1 else f'"{phrase}"')
 
     for token in expandable_tokens:
         clauses.extend(expand_inflected_token(token))
 
-    return " OR ".join(clauses)
+    query = " OR ".join(clauses)
+    if not codes:
+        return query
+
+    required = codes[0] if len(codes) == 1 else f"({' OR '.join(codes)})"
+    return f"+{required} ({query})" if query else required

@@ -213,6 +213,28 @@ MODEL_QUERY_STRATEGIES = frozenset(
     {RetrievalStrategy.PRIMARY.value, RetrievalStrategy.REPAIRED_LITERALS.value}
 )
 
+
+def _matched_anything(rows: List[Any]) -> bool:
+    """
+    Report whether a model query's rows hold anything at all.
+
+    The Cypher prompt asks for a list as ``collect()`` so ``LIMIT`` cannot cut it (issue #106),
+    and an aggregate with no grouping key answers even when nothing matched:
+    ``RETURN collect(i.title) AS items`` comes back as one row, ``{items: []}``. That is the
+    zero-row result the escalation exists for. A 0 or a false is an answer and counts; only a
+    null, an empty string and an empty list or map do not.
+
+    That leaves a known limit: "Ile jest ..." over a filter that matched nothing returns
+    ``count(*) = 0``, which is reported as the answer rather than escalated. It behaved the same
+    before this check, and nothing in the row tells a real zero from a filter that missed.
+    """
+    return any(
+        value not in (None, "", [], {})
+        for row in rows
+        for value in (row.values() if isinstance(row, dict) else [row])
+    )
+
+
 # A word this short carries no name of its own ("dr", "i", "w"), so an anchor need not repeat it.
 ANCHOR_MIN_WORD_CHARS = 4
 # How many leading characters two words must share to be the same Polish word. A case ending
@@ -1329,7 +1351,7 @@ class RAG:
             cypher_query = ensure_limit(cypher_query, self.max_results)
 
             response = self._read_query(cypher_query)
-            if response:
+            if _matched_anything(response):
                 return {
                     "context": response,
                     "generated_cypher": cypher_query,
@@ -1412,7 +1434,7 @@ class RAG:
         if dropped_literals:
             logger.debug("Retrieval retry dropped question literals: %s", dropped_literals)
             response = self._run_recovery_query(repaired, "question-literal repair")
-            if response:
+            if _matched_anything(response):
                 return {
                     "context": response,
                     "generated_cypher": repaired,

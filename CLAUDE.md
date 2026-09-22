@@ -707,8 +707,8 @@ one run and a valid one a minute later. The escalation below is what makes the *
 when the Cypher is not. Do not reintroduce sampling: `tests/test_llm_determinism_config.py`
 fails if either temperature moves off zero.
 
-A generated query that executes but matches nothing is retried rather than reported as missing
-data, because the two most common Text2Cypher mistakes both surface as zero rows. `retrieve()`
+A generated query that executes but matches nothing (no rows, or only rows of empty values such
+as an ungrouped `collect()`) is retried rather than reported as missing data, because the two most common Text2Cypher mistakes both surface as zero rows. `retrieve()`
 escalates in `src/mcp_server/tools/knowledge_graph/rag.py`:
 
 1. **primary** — the model's query, after diacritic folding and `toLower` enforcement.
@@ -771,6 +771,47 @@ exact — a 3-character prefix matches half the graph.
 This widens recall deliberately; the score floor and the grader are what keep precision, which
 is the point of having both. If a Polish analyzer ever ships in the deployed build, configuring
 it at index creation is the better fix and this expansion can go.
+
+**A code in the question is required.** A token mixing letters and digits (`R2`, `W4`, `A1`, a
+course code) is what `question_analysis.is_code_token` calls a code. It used to be dropped as a
+phrase for being under 5 characters, and inside the longer phrases it weighed nothing next to
+`kompetencje`, so `Jakie są kompetencje pożądane dla naukowca R2?` came back with R3 and R4
+rows and answered 4 of R2's 14 competencies (#106). Now the query is `+r2 (…)`: every hit has
+to hold one of the question's codes in `title` or `context`, and the rest only ranks them.
+Several codes are required as alternatives, `+(r1 OR r4)`. A code is never prefix- or
+fuzzy-expanded either, since `r2~1` matches `r3`. Pure numbers stay optional: they are mostly
+years and dates, which a page writes as `2026`, `2026/27` or `26`, so requiring the question's
+spelling would drop nodes that answer it.
+
+Checked on a Neo4j 5.18 scratch graph shaped like the #106 one: the old query returned ten R3/R4
+rows, the new one the `R2` category first with all 14 competencies in `related`, and nothing
+else outside R2.
+
+The primary query had the same shape problem one step earlier. R2 has 14 competencies and the
+prompt's `LIMIT 10` counts rows, so a correct one-item-per-row traversal still answered 10 of
+them as if that were the list. `prompts.cypher_search` now asks for a list under one entity as
+one row per entity with `collect()`, and has a worked example that filters on the code rather
+than on the words around it.
+
+**The qualifier picks the relationship type, never a union.** The first version of that example
+returned `type(r)` over an untyped relationship, and on the real graph the model wrote
+`-[r:HAS_CRITERION|RECOMMENDS|REQUIRES]->` in 6 runs of 6: the *niezbędne* and *pożądane* sets
+in one list. Anchored on `'r2'`, the list is kept whole (#109 working as designed), so nothing
+rejected it, and the answering model listed all 14 as *pożądane*. Before the example the same
+traversal was anchor-rejected and the fallback answered 4 of 5, so the example had traded a
+nearly right answer for a confidently wrong one. It now says `pożądane` is `RECOMMENDS` and
+`niezbędne`/`wymagane` is `REQUIRES`, shows `-[r:RECOMMENDS]->`, and names the union as wrong.
+Measured on the PR #110 review: 8 of 8 primary runs used `RECOMMENDS` alone and returned the 5
+recommended competencies, the *niezbędne* question answered its 9, and 11 other questions were
+unchanged. The example also uses `A|B` rather than the `A|:B` alternation the model tends to
+write, which Neo4j 5 answers with a `DEPRECATION` notification logged at WARNING on every query
+(only `UNRECOGNIZED` is silenced).
+
+`collect()` with no grouping key returns `{items: []}` when nothing matched, so `retrieve()`
+counts a row holding only nulls, empty strings and empty collections as no row
+(`_matched_anything`) and escalates it; a 0 or a false is still an answer. The known limit is
+the count: `Ile jest …` over a filter that missed returns `count(*) = 0`, which is reported
+rather than escalated, as it was before.
 
 ### The Cypher Model Sees the Live Schema
 

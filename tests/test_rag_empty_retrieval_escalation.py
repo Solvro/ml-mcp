@@ -144,6 +144,48 @@ def test_wrong_label_falls_back_to_searching_every_label() -> None:
     assert "LIMIT 5" in fallback_query
 
 
+# Issue #106: the prompt asks for a list as collect(), and collect() with no grouping key still
+# returns one row when nothing matched.
+UNGROUPED_COLLECT_CYPHER = (
+    "MATCH (c)-[r]->(i) WHERE toLower(c.title) CONTAINS toLower('r7') "
+    "RETURN collect(i.title) AS items"
+)
+
+
+def test_a_row_of_empty_collections_is_escalated_like_no_rows() -> None:
+    rag, database = _rag_stub([[{"items": []}], CONFERENCE_ROWS])
+
+    result = rag.retrieve(
+        {"generated_cypher": UNGROUPED_COLLECT_CYPHER, "user_question": CONFERENCE_QUESTION}
+    )
+
+    assert result["retrieval_strategy"] == "label_agnostic_phrases"
+    assert result["context"] == CONFERENCE_ROWS
+
+
+def test_an_empty_repaired_collection_goes_on_to_the_search() -> None:
+    rag, database = _rag_stub([[], [{"comp.title": None, "items": []}], CRITERIA_ROWS])
+
+    result = rag.retrieve(
+        {"generated_cypher": QUESTION_LITERAL_CYPHER, "user_question": CRITERIA_QUESTION}
+    )
+
+    assert result["retrieval_strategy"] == "label_agnostic_phrases"
+    assert len(database.calls) == 3
+
+
+@pytest.mark.parametrize("row", [{"count": 0}, {"active": False}, {"items": [], "count": 0}])
+def test_a_zero_or_false_is_an_answer_not_an_empty_result(row) -> None:
+    rag, database = _rag_stub([[row]])
+
+    result = rag.retrieve(
+        {"generated_cypher": UNGROUPED_COLLECT_CYPHER, "user_question": CONFERENCE_QUESTION}
+    )
+
+    assert result["retrieval_strategy"] == "primary"
+    assert len(database.calls) == 1
+
+
 def test_both_retries_run_before_giving_up() -> None:
     rag, database = _rag_stub([[], [], CRITERIA_ROWS])
 
