@@ -443,6 +443,9 @@ prompts:
     - Return the relationship neighbourhood that answers the question, not just the anchor node
     - Always RETURN named properties, not full nodes (e.g. RETURN p.title, c.title)
     - Always add LIMIT 10
+    - When the answer is a list of items under one entity, return the list as one row per
+      entity with collect(), e.g. RETURN c.title, collect(i.title) AS items. LIMIT counts rows,
+      so one item per row cuts a longer list short and the answer looks complete when it is not
 
     Choosing labels:
     - The schema holds many overlapping labels for similar things (categories, groups, items,
@@ -474,6 +477,11 @@ prompts:
       filter and traverse the criteria relationships.
       WRONG, matches nothing:
       WHERE toLower(g.title) CONTAINS toLower('jakie sa kryteria doboru kandydatki lub kandydata')
+    - "Jakie są kompetencje pożądane dla naukowca R2?" names the entity by its code "R2", so
+      filter on the code, not on the words around it, and collect the items under it:
+      WHERE toLower(c.title) CONTAINS toLower('r2')
+      RETURN c.title, type(r), collect(i.title) AS items
+      WRONG, matches nothing: WHERE toLower(c.title) CONTAINS toLower('pozadane kompetencje')
 
     Cypher:
 
