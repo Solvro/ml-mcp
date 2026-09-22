@@ -56,6 +56,7 @@ from .cypher_guardrails import (
     UnsafeCypherQueryError,
     ensure_limit,
     strip_code_fences,
+    trailing_limit,
     validate_read_only,
 )
 from .graph_visualizer import GraphVisualizer
@@ -1356,6 +1357,7 @@ class RAG:
                     "context": response,
                     "generated_cypher": cypher_query,
                     "retrieval_strategy": RetrievalStrategy.PRIMARY.value,
+                    "rows_truncated": self._rows_were_capped(response, cypher_query),
                 }
 
             return self._escalate_empty_retrieval(cypher_query, user_question)
@@ -1404,6 +1406,35 @@ class RAG:
             "retrieval_strategy": RetrievalStrategy.LABEL_AGNOSTIC_AFTER_ERROR.value,
         }
 
+    def _rows_were_capped(self, rows: List[Dict[str, Any]], cypher_query: str) -> bool:
+        """
+        Report whether the result filled its row cap, so the graph may hold more of the answer.
+
+        A count taken from the rows themselves is then a lower bound and not a total: "Ile jest
+        kryteriów w kategorii Działalność dydaktyczna?" ran a row-per-criterion query over a
+        category holding 11 and handed the answering model the 10 the cap allowed (issue #107).
+        The rows do not say they were cut, so nothing downstream could tell that count from a
+        real one.
+
+        A full result is only evidence that it *might* have been cut - a category with exactly
+        10 criteria fills the cap and lost nothing. That is the right way round: the flag makes
+        the answer hedge a count it cannot verify, and a hedge on a complete list is cheaper
+        than a wrong total.
+
+        Args:
+            rows: What the query returned
+            cypher_query: The query as it was executed, after ``ensure_limit``
+
+        Returns:
+            True when the query returned as many rows as it was allowed to
+        """
+        cap = trailing_limit(cypher_query)
+        if cap is None:
+            # The full-text search caps its nodes before collecting neighbours, so its LIMIT is
+            # not the trailing clause; what bounds its rows is the same max_results.
+            cap = self.max_results
+        return len(rows) >= cap
+
     def _fallback_search_is_possible(self, user_question: str) -> bool:
         """Report whether the label-agnostic search has something it could run for a question."""
         if not self.enable_fallback_search or not user_question:
@@ -1439,6 +1470,7 @@ class RAG:
                     "context": response,
                     "generated_cypher": repaired,
                     "retrieval_strategy": RetrievalStrategy.REPAIRED_LITERALS.value,
+                    "rows_truncated": self._rows_were_capped(response, repaired),
                 }
 
         fallback = self._search_every_label(user_question)
@@ -1630,6 +1662,7 @@ class RAG:
             "context": response,
             "generated_cypher": cypher_query,
             "retrieval_strategy": RetrievalStrategy.LABEL_AGNOSTIC_PHRASES.value,
+            "rows_truncated": self._rows_were_capped(response, cypher_query),
         }
 
     def guardrails_system(self, state: State):
@@ -1721,6 +1754,9 @@ class RAG:
         payload = {
             "retrieval_strategy": strategy,
             "context_graded": bool(result.get("context_graded")),
+            # The rows cannot say they were cut at the cap, and a count read off a cut list is
+            # a wrong total rather than a missing one (issue #107).
+            "rows_truncated": bool(result.get("rows_truncated")),
             "rows": context_data,
         }
         # default=str: Neo4j hands back its own temporal and spatial types (neo4j.time.DateTime

@@ -15,6 +15,7 @@ class State(MessagesState):
     guardrail_decision: Optional[str] = None
     retrieval_strategy: Optional[str] = None
     context_graded: Optional[bool] = None
+    rows_truncated: Optional[bool] = None
     trace_id: Optional[str] = None
     session_id: Optional[str] = None
     callback_handler: Optional[Any] = None

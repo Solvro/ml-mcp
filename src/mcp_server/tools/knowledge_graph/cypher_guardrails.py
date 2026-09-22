@@ -132,6 +132,23 @@ def validate_read_only(cypher: str, allowed_procedures: frozenset[str] = frozens
         raise UnsafeCypherQueryError("read-only Cypher must return data")
 
 
+def trailing_limit(cypher: str) -> int | None:
+    """
+    Read the row cap a query ends on, the one that decides how much of the answer comes back.
+
+    Only the trailing clause is read, for the reason ``ensure_limit`` rewrites only that one: a
+    ``WITH ... LIMIT n`` shapes an intermediate result and says nothing about the rows returned.
+
+    Args:
+        cypher: Query to read
+
+    Returns:
+        The number of rows the query ends on, or None when it ends without a LIMIT
+    """
+    trailing = TRAILING_LIMIT_RE.search(_scrub_for_validation(cypher.rstrip().rstrip(";")))
+    return None if trailing is None else int(trailing.group("rows"))
+
+
 def ensure_limit(cypher: str, max_results: int) -> str:
     """Cap the rows a query can return at ``max_results``.
 

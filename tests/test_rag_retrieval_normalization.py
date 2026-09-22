@@ -55,6 +55,7 @@ def test_retrieve_normalizes_only_string_values_before_database_query() -> None:
         "context": [{"title": "Wydzial Informatyki"}],
         "generated_cypher": executed_query,
         "retrieval_strategy": "primary",
+        "rows_truncated": False,
     }
 
 
