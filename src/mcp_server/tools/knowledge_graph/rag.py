@@ -223,6 +223,10 @@ def _matched_anything(rows: List[Any]) -> bool:
     ``RETURN collect(i.title) AS items`` comes back as one row, ``{items: []}``. That is the
     zero-row result the escalation exists for. A 0 or a false is an answer and counts; only a
     null, an empty string and an empty list or map do not.
+
+    That leaves a known limit: "Ile jest ..." over a filter that matched nothing returns
+    ``count(*) = 0``, which is reported as the answer rather than escalated. It behaved the same
+    before this check, and nothing in the row tells a real zero from a filter that missed.
     """
     return any(
         value not in (None, "", [], {})

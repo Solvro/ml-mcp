@@ -791,11 +791,27 @@ The primary query had the same shape problem one step earlier. R2 has 14 compete
 prompt's `LIMIT 10` counts rows, so a correct one-item-per-row traversal still answered 10 of
 them as if that were the list. `prompts.cypher_search` now asks for a list under one entity as
 one row per entity with `collect()`, and has a worked example that filters on the code rather
-than on the words around it. On `gpt-5.4-mini` the list questions (R2, `Dorobek naukowy`)
-switched to `collect()` in every run and `Kto wykłada analizę matematyczną?` kept its shape.
+than on the words around it.
+
+**The qualifier picks the relationship type, never a union.** The first version of that example
+returned `type(r)` over an untyped relationship, and on the real graph the model wrote
+`-[r:HAS_CRITERION|RECOMMENDS|REQUIRES]->` in 6 runs of 6: the *niezbędne* and *pożądane* sets
+in one list. Anchored on `'r2'`, the list is kept whole (#109 working as designed), so nothing
+rejected it, and the answering model listed all 14 as *pożądane*. Before the example the same
+traversal was anchor-rejected and the fallback answered 4 of 5, so the example had traded a
+nearly right answer for a confidently wrong one. It now says `pożądane` is `RECOMMENDS` and
+`niezbędne`/`wymagane` is `REQUIRES`, shows `-[r:RECOMMENDS]->`, and names the union as wrong.
+Measured on the PR #110 review: 8 of 8 primary runs used `RECOMMENDS` alone and returned the 5
+recommended competencies, the *niezbędne* question answered its 9, and 11 other questions were
+unchanged. The example also uses `A|B` rather than the `A|:B` alternation the model tends to
+write, which Neo4j 5 answers with a `DEPRECATION` notification logged at WARNING on every query
+(only `UNRECOGNIZED` is silenced).
+
 `collect()` with no grouping key returns `{items: []}` when nothing matched, so `retrieve()`
 counts a row holding only nulls, empty strings and empty collections as no row
-(`_matched_anything`) and escalates it; a 0 or a false is still an answer.
+(`_matched_anything`) and escalates it; a 0 or a false is still an answer. The known limit is
+the count: `Ile jest …` over a filter that missed returns `count(*) = 0`, which is reported
+rather than escalated, as it was before.
 
 ### The Cypher Model Sees the Live Schema
 

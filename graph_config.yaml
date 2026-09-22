@@ -478,10 +478,15 @@ prompts:
       WRONG, matches nothing:
       WHERE toLower(g.title) CONTAINS toLower('jakie sa kryteria doboru kandydatki lub kandydata')
     - "Jakie są kompetencje pożądane dla naukowca R2?" names the entity by its code "R2", so
-      filter on the code, not on the words around it, and collect the items under it:
+      filter on the code, not on the words around it, and collect the items under it. The
+      question also says which items it wants: "pożądane" is the RECOMMENDS relationship and
+      "niezbędne"/"wymagane" is REQUIRES, so traverse only that type, never a union of types,
+      which mixes the two lists into one:
+      MATCH (c:CompetencyCategory)-[r:RECOMMENDS]->(i)
       WHERE toLower(c.title) CONTAINS toLower('r2')
       RETURN c.title, type(r), collect(i.title) AS items
       WRONG, matches nothing: WHERE toLower(c.title) CONTAINS toLower('pozadane kompetencje')
+      WRONG, mixes required and recommended: -[r:HAS_CRITERION|RECOMMENDS|REQUIRES]->
 
     Cypher:
 
