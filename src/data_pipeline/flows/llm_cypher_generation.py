@@ -15,6 +15,10 @@ from src.config.config import get_config
 from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.completeness import extract_list_rows, rows_missing_from_cypher
 from src.data_pipeline.label_vocabulary import LabelVocabulary, render_allowed_labels
+from src.data_pipeline.relationship_vocabulary import (
+    RelationshipVocabulary,
+    render_allowed_relationship_types,
+)
 from src.data_pipeline.title_sanity import sanitize_titles
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
@@ -97,12 +101,7 @@ class LLMPipe:
             template=config.prompts.cypher_insert_missing_rows,
         )
         self.node_labels = render_allowed_labels(config.graph_schema)
-        schema = config.graph_schema
-        self.relationship_types = ", ".join(
-            relation_type
-            for relation_type in schema.relationship_types
-            if relation_type != schema.fallback_relationship_type
-        )
+        self.relationship_types = render_allowed_relationship_types(config.graph_schema)
         self._build_pipe_graph()
 
     def _build_pipe_graph(self) -> None:
@@ -278,6 +277,52 @@ def _canonicalize_labels(parts: List[str], logger) -> List[str]:
     return canonical_parts
 
 
+def _canonicalize_relationship_types(parts: List[str], logger) -> List[str]:
+    """Force generated relationship types into the configured canonical vocabulary.
+
+    Args:
+        parts: Generated Cypher statements
+        logger: Prefect run logger used to report corrected relationship drift
+
+    Returns:
+        Statements with canonical relationship types
+    """
+    vocabulary = RelationshipVocabulary(get_config().graph_schema)
+    canonical_parts: List[str] = []
+    all_rewrites: dict[str, str] = {}
+    fallback_rewrites: set[str] = set()
+
+    for part in parts:
+        rewritten, rewrites, fallbacks = vocabulary.canonicalize_statement(part)
+        canonical_parts.append(rewritten)
+        all_rewrites.update(rewrites)
+        fallback_rewrites.update(fallbacks)
+
+    if all_rewrites:
+        alias_rewrites = {
+            found: canonical
+            for found, canonical in all_rewrites.items()
+            if found not in fallback_rewrites
+        }
+        if alias_rewrites:
+            logger.info(
+                "Rewrote %d relationship alias(es) to canonical types: %s",
+                len(alias_rewrites),
+                ", ".join(
+                    f"{found} -> {canonical}" for found, canonical in sorted(alias_rewrites.items())
+                ),
+            )
+        if fallback_rewrites:
+            logger.warning(
+                "Mapped %d unknown relationship type(s) to fallback %s: %s",
+                len(fallback_rewrites),
+                vocabulary.fallback_relationship_type,
+                ", ".join(sorted(fallback_rewrites)),
+            )
+
+    return canonical_parts
+
+
 def _drop_redeclarations(parts: List[str], logger) -> List[str]:
     """Drop a statement that re-declares a variable another statement already binds.
 
@@ -377,6 +422,7 @@ def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> st
     parts = _recover_missed_rows(llm, extracted_text, parts, logger)
     parts = [normalize_cypher_string_literals(part, normalizer=fold_diacritics) for part in parts]
     parts = _canonicalize_labels(parts, logger)
+    parts = _canonicalize_relationship_types(parts, logger)
     parts = _sanitize_titles(parts, logger)
     parts = [rewrite_merge_to_canonical_key(part) for part in parts]
     parts = _drop_redeclarations(parts, logger)

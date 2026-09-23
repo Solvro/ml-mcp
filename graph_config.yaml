@@ -326,7 +326,7 @@ prompts:
     ALLOWED NODE LABELS - use these and nothing else:
     {node_labels}
 
-    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    ALLOWED RELATIONSHIP TYPES - use only these names:
     {relationship_types}
 
     1. COMPLETENESS - this is the most important rule:
@@ -381,7 +381,7 @@ prompts:
 
     5. FOR RELATIONSHIPS:
        - MERGE between existing node variables
-       - Use UPPER_SNAKE_CASE; prefer a type from PREFERRED RELATIONSHIP TYPES
+       - Use UPPER_SNAKE_CASE and choose only from ALLOWED RELATIONSHIP TYPES
        - Direction matters (A->B is not B->A)
 
     EXAMPLE OUTPUT:
@@ -407,7 +407,7 @@ prompts:
     ALLOWED NODE LABELS - use these and nothing else:
     {node_labels}
 
-    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    ALLOWED RELATIONSHIP TYPES - use only these names:
     {relationship_types}
 
     RULES:

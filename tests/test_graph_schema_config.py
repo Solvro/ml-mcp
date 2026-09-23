@@ -1,4 +1,5 @@
 from src.config.config import get_config
+from src.data_pipeline.relationship_vocabulary import normalize_relationship_name
 
 EXPECTED_NODE_LABEL_COUNT = 27
 
@@ -81,6 +82,22 @@ def test_relationship_aliases_do_not_shadow_canonical_types() -> None:
     ]
 
     assert shadowing == []
+
+
+def test_relationship_aliases_do_not_shadow_canonical_types_after_normalization() -> None:
+    schema = _schema()
+    normalized_canonical = {
+        normalize_relationship_name(relationship_type)
+        for relationship_type in schema.relationship_types
+    }
+
+    collisions = [
+        alias.invented
+        for alias in schema.relationship_aliases
+        if normalize_relationship_name(alias.invented) in normalized_canonical
+    ]
+
+    assert collisions == []
 
 
 def test_fallback_relationship_type_is_upper_snake_case() -> None:
