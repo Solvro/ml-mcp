@@ -1,11 +1,3 @@
-"""The ingestion label set is a closed vocabulary; these tests keep it internally consistent.
-
-Issue #53: the extraction model invented a label per page, so one concept landed as several
-nodes (StudyProgram and Program for the same programme). The fix only holds if the configured
-vocabulary itself is coherent — an alias pointing at a label that does not exist would silently
-reintroduce an off-list label.
-"""
-
 from src.config.config import get_config
 
 EXPECTED_NODE_LABEL_COUNT = 27
@@ -63,6 +55,45 @@ def test_relationship_types_are_unique_upper_snake_case() -> None:
     assert len(relationship_types) == len(set(relationship_types))
     assert all(name == name.upper() for name in relationship_types)
     assert all(name.replace("_", "").isalpha() for name in relationship_types)
+
+
+def test_every_relationship_alias_resolves_to_a_configured_type() -> None:
+    schema = _schema()
+    relationship_types = set(schema.relationship_types)
+
+    unresolved = [
+        alias.invented
+        for alias in schema.relationship_aliases
+        if alias.canonical not in relationship_types
+    ]
+
+    assert unresolved == []
+
+
+def test_relationship_aliases_do_not_shadow_canonical_types() -> None:
+    schema = _schema()
+    relationship_types = set(schema.relationship_types)
+
+    shadowing = [
+        alias.invented
+        for alias in schema.relationship_aliases
+        if alias.invented in relationship_types
+    ]
+
+    assert shadowing == []
+
+
+def test_fallback_relationship_type_is_upper_snake_case() -> None:
+    schema = _schema()
+    fallback = schema.fallback_relationship_type
+
+    assert fallback == fallback.upper()
+    assert fallback.replace("_", "").isalpha()
+
+
+def test_fallback_relationship_type_is_canonical() -> None:
+    schema = _schema()
+    assert schema.fallback_relationship_type in schema.relationship_types
 
 
 def test_label_drift_reported_in_the_issue_is_covered() -> None:

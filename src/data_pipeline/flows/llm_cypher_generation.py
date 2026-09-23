@@ -97,7 +97,12 @@ class LLMPipe:
             template=config.prompts.cypher_insert_missing_rows,
         )
         self.node_labels = render_allowed_labels(config.graph_schema)
-        self.relationship_types = ", ".join(config.graph_schema.relationship_types)
+        schema = config.graph_schema
+        self.relationship_types = ", ".join(
+            relation_type
+            for relation_type in schema.relationship_types
+            if relation_type != schema.fallback_relationship_type
+        )
         self._build_pipe_graph()
 
     def _build_pipe_graph(self) -> None:

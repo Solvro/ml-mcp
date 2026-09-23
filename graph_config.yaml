@@ -214,8 +214,6 @@ graph_schema:
     - invented: "Article"
       canonical: "Document"
 
-  # Preferred relationship types. Unlike labels these are not rewritten, because a wrong
-  # relationship type is visible in the traversal while a wrong label silently hides the node.
   relationship_types:
     - "PART_OF"
     - "BELONGS_TO"
@@ -249,6 +247,21 @@ graph_schema:
     - "CONSIDERS"
     - "ASSESSES"
     - "DEFINED_IN"
+    - "RELATED_TO"
+
+  relationship_aliases:
+    - invented: "WORKS_IN"
+      canonical: "EMPLOYED_BY"
+    - invented: "WORKS_AT"
+      canonical: "EMPLOYED_BY"
+    - invented: "IS_PART_OF"
+      canonical: "PART_OF"
+    - invented: "SUGGESTS"
+      canonical: "RECOMMENDS"
+    - invented: "NEEDS"
+      canonical: "REQUIRES"
+
+  fallback_relationship_type: "RELATED_TO"
 
 database:
   name: "neo4j"
