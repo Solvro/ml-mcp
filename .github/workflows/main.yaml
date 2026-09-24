@@ -259,3 +259,56 @@ jobs:
         run: |
           $COMPOSE -f docker/compose.dev.yml down -v --remove-orphans
           docker network rm solvro-mcp-internal || true
+
+  # ── 5. Publish — the image the mcpwr VM's deploy agent pulls ─────────────────
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [lint, test, build-check, integration]
+    permissions:
+      contents: read
+      packages: write
+    # Queued, never parallel: an older run finishing last would move `main` backwards.
+    concurrency:
+      group: publish-main
+      cancel-in-progress: false
+    env:
+      IMAGE: ghcr.io/solvro/ml-mcp-server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.mcp
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:sha-${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=ml-mcp-server
+          cache-to: type=gha,mode=max,scope=ml-mcp-server
+
+      - name: Check the image carries no keys, env files or dumps
+        run: |
+          ref="$IMAGE:sha-$GITHUB_SHA"
+          docker pull -q "$ref" >/dev/null
+          found=$(docker run --rm --entrypoint sh "$ref" -c \
+            'find /app -path /app/.venv -prune -o \( -name "*.pem" -o -name "*.key" -o -name ".env" -o -name ".env.*" -o -name "*.cypher" \) -print')
+          if [ -n "$found" ]; then
+            echo "::error::the image contains key, env or dump files:"
+            echo "$found"
+            exit 1
+          fi
+
+      - name: Move the main tag
+        run: docker buildx imagetools create -t "$IMAGE:main" "$IMAGE:sha-$GITHUB_SHA"
