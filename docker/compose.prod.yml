@@ -1,0 +1,20 @@
+# Production overlay for the mcpwr VM. The deploy agent in Solvro/backend-mcp runs
+#   RELEASE_TAG=sha-<commit> docker compose -p ml-mcp --env-file /opt/mcpwr/stacks/ml-mcp/.env \
+#     -f docker/compose.stack.yml -f docker/compose.prod.yml up -d --no-build --wait
+# Images come from GHCR; nothing is built on the VM. See backend-mcp docs/deploy.md.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  neo4j:
+    logging: *logging
+
+  mcp-server:
+    image: ghcr.io/solvro/ml-mcp-server:${RELEASE_TAG:?set by the deploy agent}
+    # The base file reads ../.env (a developer's); on the VM the env lives outside the checkout.
+    env_file: !override
+      - ${ML_MCP_ENV_FILE:-/opt/mcpwr/stacks/ml-mcp/.env}
+    logging: *logging
