@@ -315,5 +315,7 @@ jobs:
           # A newer commit may already be on main (its run queued behind this one, or this one
           # re-run later): never move the tag back to an older commit.
           head=$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}" refs/heads/main | cut -f1)
+          # An unreadable head must fail the job, not pass it with the tag silently left behind.
+          if [ -z "$head" ]; then echo "::error::could not read the head of main; the main tag was not moved"; exit 1; fi
           if [ "$head" != "$GITHUB_SHA" ]; then echo "main is now $head; not moving the tag to $GITHUB_SHA"; exit 0; fi
           docker buildx imagetools create -t "$IMAGE:main" "$IMAGE:sha-$GITHUB_SHA"
