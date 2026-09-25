@@ -629,3 +629,60 @@ def test_the_cypher_prompt_asks_the_database_to_count() -> None:
 
     assert "count(" in prompt
     assert "Ile" in prompt
+
+
+# PR #111 review: the full-text search caps how many entities come back, while each row's
+# related list is collected uncapped. The grader kept the one "Dzialalnosc dydaktyczna" row,
+# whose related list held all 11 criteria, and the payload still called the answer cut short.
+def test_a_filtered_result_was_bounded_by_the_grader_not_the_cap() -> None:
+    rag, _ = _grader_stub(_verdict(entity="dni wolne", anchor="Dni wolne", relevant=[1]))
+
+    result = rag.grade_context(_state(rows_truncated=True))
+
+    assert len(result["context"]) == 1
+    assert result["rows_truncated"] is False
+
+
+def test_a_result_the_grader_kept_whole_is_still_cut_at_the_cap() -> None:
+    rag, _ = _grader_stub(_verdict(entity="dni wolne", anchor="Dni wolne", relevant=[1, 2]))
+
+    result = rag.grade_context(_state(rows_truncated=True))
+
+    assert len(result["context"]) == 2
+    assert result["rows_truncated"] is True
+
+
+def test_a_primary_list_kept_by_its_anchor_keeps_the_flag() -> None:
+    """The whole list stays, so whether the cap cut it is still the right question."""
+    rag, _ = _grader_stub(
+        f'{{"kept": [], "entity": "{TEACHING}", "anchor": "dzialalnosc dydaktyczna"}}'
+    )
+
+    result = rag.grade_context(
+        _state(
+            user_question=CRITERIA_QUESTION,
+            context=list(TEACHING_ROWS),
+            retrieval_strategy="primary",
+            generated_cypher=ANCHORED_CYPHER,
+            rows_truncated=True,
+        )
+    )
+
+    assert "rows_truncated" not in result, "the rows are untouched, so the flag stands"
+
+
+def test_a_graded_out_run_carries_no_truncation() -> None:
+    rag, _ = _grader_stub(_verdict(entity="dni wolne", anchor=None, relevant=[]))
+
+    result = rag.grade_context(_state(rows_truncated=True))
+
+    assert result["context"] == []
+    assert result["rows_truncated"] is False
+
+
+def test_a_grader_outage_leaves_the_flag_as_retrieved() -> None:
+    rag, _ = _grader_stub(RuntimeError("provider down"))
+
+    result = rag.grade_context(_state(rows_truncated=True))
+
+    assert "rows_truncated" not in result, "the rows are untouched, so the flag stands"

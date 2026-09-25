@@ -1089,6 +1089,10 @@ class RAG:
         A grader that fails or replies with nonsense leaves the rows untouched - a model outage
         must not be indistinguishable from an empty graph.
 
+        ``rows_truncated`` survives grading only when every row did. It says the row cap may have
+        cut the answer short, which is a claim about the list the query returned, not about a
+        subset of it that the grader picked on relevance.
+
         Args:
             state: Current pipeline state
 
@@ -1163,6 +1167,7 @@ class RAG:
                 "context": [],
                 "context_graded": True,
                 "retrieval_strategy": RetrievalStrategy.GRADED_OUT.value,
+                "rows_truncated": False,
                 "next_node": (
                     "search_after_grading" if strategy in MODEL_QUERY_STRATEGIES else "end"
                 ),
@@ -1171,6 +1176,13 @@ class RAG:
         return {
             "context": [context[index] for index in kept],
             "context_graded": True,
+            # The cap bounded the answer only while every row it returned was part of it. Once
+            # the grader drops some, what limits the answer is relevance, and the rows that stay
+            # are not a list the cap cut short. The full-text search makes that plain: its cap
+            # counts entities while each row's neighbours are collected uncapped, so the one row
+            # the grader kept for "Działalność dydaktyczna" held all 11 criteria and was still
+            # flagged as cut (PR #111 review).
+            "rows_truncated": bool(state.get("rows_truncated")) and len(kept) == len(context),
             "next_node": "end",
         }
 
