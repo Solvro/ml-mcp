@@ -1,22 +1,12 @@
-"""The two pages whose rows went missing, and the check that now reports them.
-
-Issue #53, the academic calendar: the page lists five days off. The model kept the ones with a
-proper name and dropped "2 XI 2026 r. - dzien wolny od zajec", which is described only
-generically, so the answer looked complete while a date was missing.
-
-Issue #78, the R1-R4 competency page: a PDF text layer had put every bullet on a line of its own,
-so the check saw no rows at all, and the rows it did see counted as covered because their wording
-sat inside one category node's context. R4's competencies became nodes, R1-R3's did not, and
-"Jakie sa kompetencje pozadane dla naukowca R2?" answered "Nie wiem".
-
-These tests cover the check that makes such a miss visible and the second pass that collects it.
-"""
-
 from unittest.mock import MagicMock
 
 import pytest
 
-from src.data_pipeline.completeness import extract_list_rows, rows_missing_from_cypher
+from src.data_pipeline.completeness import (
+    extract_generated_nodes_by_variable,
+    extract_list_rows,
+    rows_missing_from_cypher,
+)
 from src.data_pipeline.flows import llm_cypher_generation as cypher_module
 
 CALENDAR_PAGE = """Dni wolne od zajec w semestrze zimowym 2026/2027
@@ -59,13 +49,13 @@ def test_prose_lines_are_not_counted_as_rows() -> None:
 
 
 def test_numbered_and_table_rows_are_counted() -> None:
-    page = "1. Pierwszy punkt regulaminu\n2) Drugi punkt regulaminu\n| Kurs | 5 ECTS |\n"
+    page = "1. First policy point\n2) Second policy point\n| Course | 5 ECTS |\n"
 
     rows = extract_list_rows(page)
 
-    assert "Pierwszy punkt regulaminu" in rows
-    assert "Drugi punkt regulaminu" in rows
-    assert any("Kurs" in row and "ECTS" in row for row in rows)
+    assert "First policy point" in rows
+    assert "Second policy point" in rows
+    assert any("Course" in row and "ECTS" in row for row in rows)
 
 
 def test_rows_with_nothing_to_match_on_are_ignored() -> None:
@@ -85,7 +75,6 @@ def test_a_complete_extraction_reports_nothing_missing() -> None:
 
 
 def test_a_reworded_row_still_counts_as_covered() -> None:
-    """The model may rephrase; only a row it never read leaves almost no wording behind."""
     rows = ["11 XI 2026 r. - Swieto Niepodleglosci"]
     statements = [
         "MERGE (n:DayOff {title: 'Swieto Niepodleglosci', context: 'Dzien wolny 11 XI 2026'})"
@@ -102,6 +91,17 @@ def test_an_empty_extraction_reports_every_row() -> None:
 
 def test_a_page_without_rows_is_never_flagged() -> None:
     assert rows_missing_from_cypher([], INCOMPLETE_EXTRACTION) == []
+
+
+def test_nodes_without_variables_do_not_collide_across_statements() -> None:
+    statements = [
+        "MERGE (:DayOff {title: '1 XI 2026 r.', context: 'One'})",
+        "MERGE (:DayOff {title: '2 XI 2026 r.', context: 'Two'})",
+    ]
+
+    nodes = extract_generated_nodes_by_variable(statements)
+
+    assert len(nodes) == 2
 
 
 def test_missed_rows_trigger_a_second_extraction_pass(monkeypatch) -> None:
@@ -128,7 +128,6 @@ def test_missed_rows_trigger_a_second_extraction_pass(monkeypatch) -> None:
 
 
 def test_a_complete_first_pass_skips_the_second(monkeypatch) -> None:
-    """The extra pass costs a model call; it must only run when something is actually missing."""
     second_pass_calls: list[int] = []
 
     class FakePipe:
@@ -296,12 +295,10 @@ PER_ROW_EXTRACTION = [
 
 
 def test_bullets_on_their_own_line_are_counted_as_rows() -> None:
-    """A PDF text layer detaches the marker from its text, and 168 of them counted as zero."""
     assert extract_list_rows(COMPETENCY_PAGE) == COMPETENCY_ROWS
 
 
 def test_a_row_wrapped_across_lines_is_kept_whole() -> None:
-    """The one row the old check found was half a sentence, and became a node in that state."""
     wrapped = [row for row in extract_list_rows(COMPETENCY_PAGE) if row.startswith("W grupie")]
 
     assert len(wrapped) == 1
@@ -313,14 +310,12 @@ def test_the_paragraph_after_a_list_is_not_swallowed_by_its_last_row() -> None:
 
 
 def test_rows_recited_in_a_parent_context_have_no_node_of_their_own() -> None:
-    """The R1-R3 shape: every row's wording is present, and every row is still missing."""
     missing = rows_missing_from_cypher(COMPETENCY_ROWS, CATEGORY_BLOB_EXTRACTION)
 
     assert missing == COMPETENCY_ROWS
 
 
 def test_a_node_per_row_reports_nothing_missing() -> None:
-    """The R4 shape, and the reason the check anchors on titles rather than banning context."""
     assert rows_missing_from_cypher(COMPETENCY_ROWS, PER_ROW_EXTRACTION) == []
 
 
@@ -335,7 +330,6 @@ def test_a_title_that_names_the_section_does_not_cover_its_rows() -> None:
 
 
 def test_properties_set_after_the_merge_still_count_as_the_node_title() -> None:
-    """The canonical-key rewrite moves title and context out of the MERGE pattern."""
     rows = ["zna metody badawcze stosowane w swojej dyscyplinie"]
     statements = [
         "MERGE (n1:Competency {key: 'zna metody badawcze stosowane w swojej dyscyplinie'}) "
@@ -347,7 +341,6 @@ def test_properties_set_after_the_merge_still_count_as_the_node_title() -> None:
 
 
 def test_a_context_blob_sends_its_rows_to_the_second_pass(monkeypatch) -> None:
-    """End to end: the shape that answered 'Nie wiem' now costs one extra pass and gets nodes."""
     second_pass_rows: list[list[str]] = []
 
     class FakePipe:
@@ -406,7 +399,6 @@ def test_an_inline_marked_row_is_folded_whole() -> None:
 
 
 def test_a_row_ending_in_a_colon_heads_the_rows_beneath_it() -> None:
-    """The lead-in names what follows; the entries under it are what hold the content."""
     rows = extract_list_rows(CRITERIA_PAGE)
 
     assert rows == CRITERIA_ROWS
@@ -414,7 +406,6 @@ def test_a_row_ending_in_a_colon_heads_the_rows_beneath_it() -> None:
 
 
 def test_the_missed_row_pass_is_never_handed_the_fragment(monkeypatch) -> None:
-    """It used to be, on every run, and it turned it into a node every time."""
     second_pass_rows: list[list[str]] = []
 
     class FakePipe:

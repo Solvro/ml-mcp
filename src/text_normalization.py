@@ -91,6 +91,13 @@ def normalize_search_text(value: str) -> str:
     return fold_diacritics(value).casefold()
 
 
+def is_code_token(token: str) -> bool:
+    """Report whether a token is a code like ``r2`` or ``w4``."""
+    return any(character.isdigit() for character in token) and any(
+        character.isalpha() for character in token
+    )
+
+
 def apply_outside_string_literals(cypher: str, transform: Callable[[str], str]) -> str:
     """Apply a rewrite to Cypher syntax only, preserving quoted values.
 

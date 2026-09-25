@@ -18,6 +18,7 @@ from ....text_normalization import (
     CYPHER_STRING_LITERAL_RE,
     FUZZY_STRING_COMPARISON_RE,
     POLISH_FUNCTION_WORDS,
+    is_code_token,
     normalize_search_text,
 )
 
@@ -98,26 +99,6 @@ MAX_PHRASE_TOKENS = 4
 # One-word phrases are only specific enough to search on when the word is reasonably long.
 MIN_SINGLE_TOKEN_LENGTH = 5
 MAX_SEARCH_PHRASES = 24
-
-
-def is_code_token(token: str) -> bool:
-    """
-    Report whether a search token is a code like "r2", "w4" or a course code.
-
-    A code mixes letters and digits. It is a name however short it is, and one character away
-    from a different entity: "r2" and "r3" are two researcher levels (issue #106). Pure numbers
-    are left out on purpose. They are mostly years and dates, which a page writes in too many
-    ways ("2026", "2026/27", "26") for the question's spelling to be required of a node.
-
-    Args:
-        token: A single lowercase ASCII search token
-
-    Returns:
-        True when the token holds both a letter and a digit
-    """
-    return any(character.isdigit() for character in token) and any(
-        character.isalpha() for character in token
-    )
 
 
 def tokenize_search_text(text: str) -> list[str]:

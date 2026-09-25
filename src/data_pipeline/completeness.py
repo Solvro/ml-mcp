@@ -97,17 +97,9 @@ def extract_list_rows(text: str) -> list[str]:
     rows: list[str] = []
 
     for line in join_wrapped_list_rows(text).splitlines():
-        match = LIST_ROW_RE.match(line)
-        if match is None:
+        content = _extract_row_content(line)
+        if content is None:
             continue
-
-        content = match.group("content") or match.group("cells") or ""
-        content = content.replace("|", " ").replace("\t", " ").strip()
-        if content.endswith(HEADING_SUFFIX):
-            continue
-        if len(_row_tokens(content)) < MIN_ROW_TOKENS:
-            continue
-
         rows.append(content)
 
     return rows
@@ -122,6 +114,21 @@ def _row_tokens(row: str) -> list[str]:
     ]
 
 
+def _extract_row_content(line: str) -> str | None:
+    """Return row content from one source line, or None when the line is not a row."""
+    match = LIST_ROW_RE.match(line)
+    if match is None:
+        return None
+
+    content = match.group("content") or match.group("cells") or ""
+    content = content.replace("|", " ").replace("\t", " ").strip()
+    if content.endswith(HEADING_SUFFIX):
+        return None
+    if len(_row_tokens(content)) < MIN_ROW_TOKENS:
+        return None
+    return content
+
+
 def _token_set(values: list[str]) -> frozenset[str]:
     """Return the matchable tokens of a group of property values."""
     return frozenset(_row_tokens(" ".join(values)))
@@ -132,49 +139,6 @@ def _record_property(properties: dict[str, list[str]], key: str, value: str) -> 
     if key.strip("`").casefold() == TITLE_PROPERTY:
         properties[TITLE_PROPERTY].append(value)
     properties["values"].append(value)
-
-
-def extract_generated_nodes(statements: list[str]) -> list[GeneratedNode]:
-    """
-    Read back the nodes the model wrote, one entry per node rather than per statement.
-
-    A statement may bind several nodes, and the canonical-key rewrite splits one node's
-    properties between its pattern and an ``ON CREATE SET`` clause, so properties are grouped by
-    the variable that carries them.
-
-    Args:
-        statements: Generated Cypher statements
-
-    Returns:
-        One entry per node that was given at least one property value
-    """
-    nodes: list[GeneratedNode] = []
-
-    for statement in statements:
-        groups: dict[str, dict[str, list[str]]] = {}
-
-        for order, node_match in enumerate(NODE_PROPERTY_MAP_RE.finditer(statement)):
-            variable = node_match.group("variable") or f"#{order}"
-            properties = groups.setdefault(variable, {TITLE_PROPERTY: [], "values": []})
-            for entry in PROPERTY_ENTRY_RE.finditer(node_match.group("properties")):
-                _record_property(properties, entry.group("key"), entry.group("value")[1:-1])
-
-        for assignment in SET_ASSIGNMENT_RE.finditer(statement):
-            properties = groups.setdefault(
-                assignment.group("variable"), {TITLE_PROPERTY: [], "values": []}
-            )
-            _record_property(properties, assignment.group("key"), assignment.group("value")[1:-1])
-
-        nodes.extend(
-            GeneratedNode(
-                title_tokens=_token_set(properties[TITLE_PROPERTY]),
-                value_tokens=_token_set(properties["values"]),
-            )
-            for properties in groups.values()
-            if properties["values"]
-        )
-
-    return nodes
 
 
 def _shared_share(tokens: frozenset[str], other: frozenset[str]) -> float:
@@ -213,6 +177,45 @@ def _node_holds_row(node: GeneratedNode, row_tokens: frozenset[str]) -> bool:
     )
 
 
+def node_holds_row_tokens(node: GeneratedNode, row_tokens: frozenset[str]) -> bool:
+    """Report whether a node represents a row, using the same rule as the completeness check."""
+    return _node_holds_row(node, row_tokens)
+
+
+def extract_generated_nodes_by_variable(statements: list[str]) -> dict[str, GeneratedNode]:
+    """Read generated nodes back as variable->tokens, merged across all statements.
+
+    Args:
+        statements: Generated Cypher statements
+
+    Returns:
+        Node token view keyed by variable name
+    """
+    groups: dict[str, dict[str, list[str]]] = {}
+
+    for statement_index, statement in enumerate(statements):
+        for order, node_match in enumerate(NODE_PROPERTY_MAP_RE.finditer(statement)):
+            variable = node_match.group("variable") or f"#{statement_index}:{order}"
+            properties = groups.setdefault(variable, {TITLE_PROPERTY: [], "values": []})
+            for entry in PROPERTY_ENTRY_RE.finditer(node_match.group("properties")):
+                _record_property(properties, entry.group("key"), entry.group("value")[1:-1])
+
+        for assignment in SET_ASSIGNMENT_RE.finditer(statement):
+            properties = groups.setdefault(
+                assignment.group("variable"), {TITLE_PROPERTY: [], "values": []}
+            )
+            _record_property(properties, assignment.group("key"), assignment.group("value")[1:-1])
+
+    return {
+        variable: GeneratedNode(
+            title_tokens=_token_set(properties[TITLE_PROPERTY]),
+            value_tokens=_token_set(properties["values"]),
+        )
+        for variable, properties in groups.items()
+        if properties["values"]
+    }
+
+
 def rows_missing_from_cypher(rows: list[str], statements: list[str]) -> list[str]:
     """
     Report the rows that did not get a node of their own.
@@ -231,14 +234,14 @@ def rows_missing_from_cypher(rows: list[str], statements: list[str]) -> list[str
     if not rows:
         return []
 
-    nodes = extract_generated_nodes(statements)
+    nodes = list(extract_generated_nodes_by_variable(statements).values())
 
     missing: list[str] = []
     for row in rows:
         tokens = frozenset(_row_tokens(row))
         if not tokens:
             continue
-        if not any(_node_holds_row(node, tokens) for node in nodes):
+        if not any(node_holds_row_tokens(node, tokens) for node in nodes):
             missing.append(row)
 
     return missing
