@@ -4,6 +4,7 @@ from src.mcp_server.tools.knowledge_graph.cypher_guardrails import (
     UnsafeCypherQueryError,
     ensure_limit,
     strip_code_fences,
+    trailing_limit,
     validate_read_only,
 )
 
@@ -302,3 +303,25 @@ def test_ensure_limit_leaves_a_smaller_limit_past_a_url_literal_alone():
     query = "MATCH (n:Topic) WHERE n.url = 'http://x' RETURN n.title LIMIT 3"
 
     assert ensure_limit(query, max_results=5) == query
+
+
+# Issue #107: a count read off the returned rows is a total only when nothing was cut, so
+# retrieval has to know the cap the query actually ended on.
+def test_trailing_limit_reads_the_cap_the_query_ends_on():
+    assert trailing_limit(READ_QUERY_WITH_LIMIT) == 10
+    assert trailing_limit(f"{READ_QUERY} LIMIT 3 ;") == 3
+
+
+def test_trailing_limit_is_none_without_one():
+    assert trailing_limit(READ_QUERY) is None
+
+
+def test_trailing_limit_ignores_an_intermediate_limit():
+    """`WITH ... LIMIT 100` shapes an intermediate result and bounds no answer."""
+    query = "MATCH (n:Node) WITH n ORDER BY n.rank DESC LIMIT 100 RETURN n.value"
+
+    assert trailing_limit(query) is None
+
+
+def test_trailing_limit_reads_a_limit_a_comment_cannot_hide():
+    assert trailing_limit(f"{READ_QUERY} // LIMIT 99\nLIMIT 4") == 4

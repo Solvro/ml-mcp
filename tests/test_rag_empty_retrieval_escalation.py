@@ -454,3 +454,82 @@ def test_rows_carrying_neo4j_temporal_values_still_serialise() -> None:
 
     assert "2026-09-10" in result["answer"]
     assert result["metadata"]["retrieval_strategy"] == "primary"
+
+
+# Issue #107: "Ile jest kryteriów w kategorii Działalność dydaktyczna?" ran a row-per-criterion
+# query over a category holding 11 and the answering model counted the 10 the cap allowed.
+CRITERIA_COUNT_CYPHER = (
+    "MATCH (cc:CriterionCategory)-[:HAS_CRITERION]->(c:Criterion) "
+    "WHERE toLower(cc.title) CONTAINS toLower('dzialalnosc dydaktyczna') "
+    "RETURN cc.title, c.title"
+)
+
+
+def _criteria_rows(count: int) -> list[dict[str, Any]]:
+    return [
+        {"cc.title": "Dzialalnosc dydaktyczna", "c.title": f"kryterium {i}"} for i in range(count)
+    ]
+
+
+def test_a_full_result_is_reported_as_possibly_cut() -> None:
+    rag, _ = _rag_stub([_criteria_rows(5)], max_results=5)
+
+    result = rag.retrieve(
+        {"generated_cypher": CRITERIA_COUNT_CYPHER, "user_question": CRITERIA_QUESTION}
+    )
+
+    assert result["retrieval_strategy"] == "primary"
+    assert result["rows_truncated"] is True
+
+
+def test_a_result_under_the_cap_is_whole() -> None:
+    rag, _ = _rag_stub([_criteria_rows(3)], max_results=5)
+
+    result = rag.retrieve(
+        {"generated_cypher": CRITERIA_COUNT_CYPHER, "user_question": CRITERIA_QUESTION}
+    )
+
+    assert result["rows_truncated"] is False
+
+
+def test_the_model_s_own_smaller_limit_is_the_cap_that_counts() -> None:
+    """A query ending on LIMIT 3 returns 3 rows because it asked to, not because it ran out."""
+    rag, _ = _rag_stub([_criteria_rows(3)], max_results=5)
+
+    result = rag.retrieve(
+        {
+            "generated_cypher": f"{CRITERIA_COUNT_CYPHER} LIMIT 3",
+            "user_question": CRITERIA_QUESTION,
+        }
+    )
+
+    assert result["rows_truncated"] is True
+
+
+def test_a_counted_answer_is_one_row_and_never_truncated() -> None:
+    """count() in the query is what the prompt asks for: the total comes from the database."""
+    rag, _ = _rag_stub([[{"cc.title": "Dzialalnosc dydaktyczna", "liczba": 11}]], max_results=5)
+
+    result = rag.retrieve(
+        {
+            "generated_cypher": (
+                "MATCH (cc:CriterionCategory)-[:HAS_CRITERION]->(c:Criterion) "
+                "RETURN cc.title, count(c) AS liczba"
+            ),
+            "user_question": CRITERIA_QUESTION,
+        }
+    )
+
+    assert result["context"] == [{"cc.title": "Dzialalnosc dydaktyczna", "liczba": 11}]
+    assert result["rows_truncated"] is False
+
+
+def test_a_full_fallback_search_is_reported_as_possibly_cut() -> None:
+    rag, _ = _rag_stub([[], [], _criteria_rows(5)], max_results=5)
+
+    result = rag.retrieve(
+        {"generated_cypher": QUESTION_LITERAL_CYPHER, "user_question": CRITERIA_QUESTION}
+    )
+
+    assert result["retrieval_strategy"] == "label_agnostic_phrases"
+    assert result["rows_truncated"] is True
