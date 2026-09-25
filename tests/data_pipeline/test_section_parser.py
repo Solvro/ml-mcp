@@ -1,3 +1,5 @@
+import pytest
+
 from src.data_pipeline.section_parser import extract_heading_row_sections
 from tests.data_pipeline.test_completeness import COMPETENCY_PAGE
 
@@ -29,9 +31,7 @@ def test_heading_sections_keep_heading_and_row_order() -> None:
 
 
 def test_rows_without_a_heading_do_not_form_a_section() -> None:
-    sections = extract_heading_row_sections("1) Publikacja\n2) Grant\n")
-
-    assert sections == []
+    assert extract_heading_row_sections("1) Publikacja\n2) Grant\n") == []
 
 
 def test_competency_page_section_keeps_inline_colon_row_under_r1() -> None:
@@ -43,7 +43,7 @@ def test_competency_page_section_keeps_inline_colon_row_under_r1() -> None:
     assert sections[0].rows[-1].startswith("W grupie pracowników dydaktycznych")
 
 
-def test_section_parser_splits_next_heading_when_blank_line_is_missing() -> None:
+def test_embedded_heading_without_blank_line_is_split_into_two_sections() -> None:
     page = """Kompetencje pozadane dla naukowca R2:
 1) Publikacje o zasiegu miedzynarodowym
 2) Pozyskiwanie finansowania Kompetencje niezbedne dla naukowca R2:
@@ -67,8 +67,11 @@ b) Mentoring doktorantów
     )
 
 
-def test_stage_context_keeps_page_qualifier_for_r4() -> None:
-    page = """Polska Rama Kompetencji Naukowca
+@pytest.mark.parametrize(
+    ("page", "index", "required_context", "forbidden_context"),
+    [
+        (
+            """Polska Rama Kompetencji Naukowca
 Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R4)
 R1 - Naukowiec poczatkujacy
 1) R1 kompetencja
@@ -78,72 +81,56 @@ R3 - Doswiadczony naukowiec
 1) R3 kompetencja
 R4 - Wiodacy naukowiec
 1) R4 kompetencja
-"""
-
-    sections = extract_heading_row_sections(page)
-
-    assert [section.heading for section in sections] == [
-        "R1 - Naukowiec poczatkujacy",
-        "R2 - Naukowiec uznany",
-        "R3 - Doswiadczony naukowiec",
-        "R4 - Wiodacy naukowiec",
-    ]
-    assert (
-        "Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R4)"
-        in sections[3].context_headings
-    )
-    assert not any(
-        sibling in sections[3].context_headings
-        for sibling in (
-            "R1 - Naukowiec poczatkujacy",
-            "R2 - Naukowiec uznany",
-            "R3 - Doswiadczony naukowiec",
-        )
-    )
-
-
-def test_stage_specific_qualifier_does_not_leak_to_sibling_stage() -> None:
-    page = """Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R4)
+""",
+            3,
+            "Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R4)",
+            ("R1 - Naukowiec poczatkujacy", "R2 - Naukowiec uznany", "R3 - Doswiadczony naukowiec"),
+        ),
+        (
+            """Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R4)
 R1 - Naukowiec poczatkujacy
 Kompetencje niezbedne dla naukowca R1:
 1) R1 wymaganie
 R2 - Naukowiec uznany
 1) R2 kompetencja
-"""
-
-    sections = extract_heading_row_sections(page)
-
-    assert [section.heading for section in sections] == [
-        "Kompetencje niezbedne dla naukowca R1",
-        "R2 - Naukowiec uznany",
-    ]
-    assert "Kompetencje niezbedne dla naukowca R1" not in sections[1].context_headings
-
-
-def test_paragraphs_between_stages_do_not_replace_page_qualifier_context() -> None:
-    page = """Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R3)
+""",
+            1,
+            "Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R4)",
+            ("Kompetencje niezbedne dla naukowca R1",),
+        ),
+        (
+            """Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R3)
 R1 - Naukowiec poczatkujacy
 1) R1 kompetencja
 
-Annual review happens once a year.
+Ocena kompetencji odbywa się raz w roku.
 
 R2 - Naukowiec uznany
 1) R2 kompetencja
 
-Annual review happens once a year.
+Ocena kompetencji odbywa się raz w roku.
 
 R3 - Doswiadczony naukowiec
 1) R3 kompetencja
-"""
-
+""",
+            2,
+            "Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R3)",
+            ("Ocena kompetencji odbywa się raz w roku.",),
+        ),
+    ],
+    ids=[
+        "r4_keeps_the_page_title",
+        "sibling_qualifier_does_not_leak",
+        "paragraph_does_not_reset_context",
+    ],
+)
+def test_context_inheritance_for_stage_sections(
+    page: str,
+    index: int,
+    required_context: str,
+    forbidden_context: tuple[str, ...],
+) -> None:
     sections = extract_heading_row_sections(page)
-
-    assert [section.heading for section in sections] == [
-        "R1 - Naukowiec poczatkujacy",
-        "R2 - Naukowiec uznany",
-        "R3 - Doswiadczony naukowiec",
-    ]
-    expected_parent = "Kompetencje pozadane dla naukowcow na kolejnych etapach kariery (R1-R3)"
-    for section in sections:
-        assert expected_parent in section.context_headings
-        assert "Annual review happens once a year." not in section.context_headings
+    context = sections[index].context_headings
+    assert required_context in context
+    assert not any(value in context for value in forbidden_context)

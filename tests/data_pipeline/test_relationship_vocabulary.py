@@ -1,3 +1,5 @@
+import pytest
+
 from src.config.config import get_config
 from src.data_pipeline.relationship_vocabulary import (
     RelationshipVocabulary,
@@ -9,69 +11,63 @@ def _vocabulary() -> RelationshipVocabulary:
     return RelationshipVocabulary(get_config().graph_schema)
 
 
-def test_known_relationship_aliases_resolve_to_canonical_types() -> None:
-    vocabulary = _vocabulary()
-
-    assert vocabulary.canonical_relationship_type("WORKS_IN") == "EMPLOYED_BY"
-    assert vocabulary.canonical_relationship_type("works-at") == "EMPLOYED_BY"
-    assert vocabulary.canonical_relationship_type("is_part_of") == "PART_OF"
-
-
-def test_unknown_relationship_type_uses_fallback() -> None:
-    vocabulary = _vocabulary()
-
-    assert vocabulary.canonical_relationship_type("TOTALLY_UNKNOWN_REL") == "RELATED_TO"
-
-
-def test_statement_relationship_types_are_rewritten_and_reported() -> None:
-    vocabulary = _vocabulary()
-    statement = "MERGE (a)-[:WORKS_IN]->(b)"
-
-    rewritten, rewrites, fallback_rewrites = vocabulary.canonicalize_statement(statement)
-
-    assert rewritten == "MERGE (a)-[:EMPLOYED_BY]->(b)"
-    assert rewrites == {"WORKS_IN": "EMPLOYED_BY"}
-    assert fallback_rewrites == set()
+@pytest.mark.parametrize(
+    ("input_type", "expected"),
+    [
+        ("WORKS_IN", "EMPLOYED_BY"),
+        ("works-at", "EMPLOYED_BY"),
+        ("is_part_of", "PART_OF"),
+        ("TOTALLY_UNKNOWN_REL", "RELATED_TO"),
+    ],
+)
+def test_relationship_types_resolve_to_canonical_or_fallback(
+    input_type: str, expected: str
+) -> None:
+    assert _vocabulary().canonical_relationship_type(input_type) == expected
 
 
-def test_backticked_relationship_type_is_rewritten() -> None:
-    vocabulary = _vocabulary()
-    statement = "MERGE (a)-[:`WORKS-IN`]->(b)"
-
-    rewritten, rewrites, fallback_rewrites = vocabulary.canonicalize_statement(statement)
-
-    assert rewritten == "MERGE (a)-[:EMPLOYED_BY]->(b)"
-    assert rewrites == {"WORKS-IN": "EMPLOYED_BY"}
-    assert fallback_rewrites == set()
-
-
-def test_mixed_case_canonical_relationship_is_normalized() -> None:
-    vocabulary = _vocabulary()
-    statement = "MERGE (a)-[:Requires]->(b)"
-
-    rewritten, rewrites, fallback_rewrites = vocabulary.canonicalize_statement(statement)
-
-    assert rewritten == "MERGE (a)-[:REQUIRES]->(b)"
-    assert rewrites == {"Requires": "REQUIRES"}
-    assert fallback_rewrites == set()
-
-
-def test_unknown_relationships_are_tracked_as_fallback_rewrites() -> None:
-    vocabulary = _vocabulary()
-    statement = "MERGE (a)-[:HAS_COMPETENCY]->(b)"
-
-    rewritten, rewrites, fallback_rewrites = vocabulary.canonicalize_statement(statement)
-
-    assert rewritten == "MERGE (a)-[:RELATED_TO]->(b)"
-    assert rewrites == {"HAS_COMPETENCY": "RELATED_TO"}
-    assert fallback_rewrites == {"HAS_COMPETENCY"}
+@pytest.mark.parametrize(
+    ("statement", "rewritten", "rewrites", "fallbacks"),
+    [
+        (
+            "MERGE (a)-[:WORKS_IN]->(b)",
+            "MERGE (a)-[:EMPLOYED_BY]->(b)",
+            {"WORKS_IN": "EMPLOYED_BY"},
+            set(),
+        ),
+        (
+            "MERGE (a)-[:`WORKS-IN`]->(b)",
+            "MERGE (a)-[:EMPLOYED_BY]->(b)",
+            {"WORKS-IN": "EMPLOYED_BY"},
+            set(),
+        ),
+        (
+            "MERGE (a)-[:Requires]->(b)",
+            "MERGE (a)-[:REQUIRES]->(b)",
+            {"Requires": "REQUIRES"},
+            set(),
+        ),
+        (
+            "MERGE (a)-[:HAS_COMPETENCY]->(b)",
+            "MERGE (a)-[:RELATED_TO]->(b)",
+            {"HAS_COMPETENCY": "RELATED_TO"},
+            {"HAS_COMPETENCY"},
+        ),
+    ],
+)
+def test_statement_relationship_types_are_rewritten_and_tracked(
+    statement: str,
+    rewritten: str,
+    rewrites: dict[str, str],
+    fallbacks: set[str],
+) -> None:
+    result = _vocabulary().canonicalize_statement(statement)
+    assert result == (rewritten, rewrites, fallbacks)
 
 
 def test_relationship_names_inside_string_values_are_not_rewritten() -> None:
-    vocabulary = _vocabulary()
     statement = "MERGE (n:Document {title: 'WORKS_IN relation', context: '[:NEEDS]'})"
-
-    rewritten, rewrites, fallback_rewrites = vocabulary.canonicalize_statement(statement)
+    rewritten, rewrites, fallback_rewrites = _vocabulary().canonicalize_statement(statement)
 
     assert rewritten == statement
     assert rewrites == {}

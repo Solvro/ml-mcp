@@ -1,11 +1,3 @@
-"""The routing and Cypher models must be deterministic.
-
-Issue #52 measured the cost of sampling: the same question was routed to `end` on some runs and
-to `generate_cypher` on others (~40% false rejects), and the generated Cypher differed run to
-run. Both models are therefore pinned to temperature 0 in graph_config.yaml, and this test keeps
-a future config edit from quietly reintroducing the sampling.
-"""
-
 import re
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -19,7 +11,6 @@ from src.mcp_server.tools.knowledge_graph.rag import RAG, LLMProvider
 
 def test_configured_models_do_not_sample() -> None:
     config = get_config()
-
     assert config.llm.fast_model.temperature == 0
     assert config.llm.accurate_model.temperature == 0
 
@@ -55,7 +46,6 @@ def test_the_cypher_prompt_asks_for_the_limit_the_code_enforces() -> None:
     rows an answer is built from.
     """
     config = get_config()
-
     limit_lines = [
         line for line in config.prompts.cypher_search.splitlines() if "LIMIT" in line.upper()
     ]
@@ -69,11 +59,11 @@ def test_the_cypher_prompt_uses_relationship_qualifier_rules_from_config() -> No
     config = get_config()
     guidance = render_relationship_qualifier_guidance(config.graph_schema)
 
-    assert "{relationship_qualifier_guidance}" in config.prompts.cypher_search
-
     payload = RAG._build_cypher_prompt_payload(
         "Jakie sa kompetencje pozadane dla naukowca R2?", "(:X)"
     )
+
+    assert "{relationship_qualifier_guidance}" in config.prompts.cypher_search
     assert payload["relationship_qualifier_guidance"] == guidance
     assert '"pozadane" -> RECOMMENDS' in guidance
     assert '"wymagane", "niezbedne" -> REQUIRES' in guidance
