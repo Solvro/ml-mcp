@@ -683,6 +683,21 @@ from a right one. Two halves:
   is flagged too, since a complete list and a cut one look identical from here — hedging a
   complete list is the cheaper error.
 
+**The flag survives grading only when every row does.** It is a claim about the list the query
+returned, and once the grader keeps a subset, what bounded the answer is relevance rather than
+the cap. The full-text search is where that went wrong: its cap counts *entities* while each
+row's neighbours are collected uncapped, so on `Ile jest kryteriów w kategorii Działalność
+dydaktyczna?` the grader kept one row whose `related` held all 11 criteria and the payload still
+said the list was cut (PR #111 review). A grader outage or a primary list kept whole by its
+anchor leaves the flag alone, since nothing was filtered.
+
+**In production the flag is a JSON key, not a hedge.** Only `mcp_client/client.py` renders
+`prompts.final_answer`; the backend's chat service hands the payload to its own agent, whose
+system prompt names neither `rows_truncated` nor `retrieval_strategy` nor `context_graded`. So
+the measured "jest 10 kryteriów" → "co najmniej 10" is the CLI, and what fixes the count for a
+real user is `count()`. Teaching the backend's prompt what these fields mean is a `backend-mcp`
+change, and the gap predates all three of them.
+
 Only the **trailing** clause is read or rewritten. A `WITH n ORDER BY n.rank DESC LIMIT 100`
 shapes an intermediate result, and rewriting it would change what the query means rather than
 how much of the answer comes back; what reaches the answering model is decided by the last
