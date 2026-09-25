@@ -167,6 +167,7 @@ ml-mcp/
 │   │   ├── completeness.py      # List/table row coverage check for extracted pages
 │   │   ├── label_vocabulary.py  # Closed node-label set and the rewrite that enforces it
 │   │   ├── relationship_vocabulary.py # Closed relationship-type set and canonical rewrites
+│   │   ├── deterministic_topology.py # Deterministic category->item edges for heading+rows pages
 │   │   ├── canonical_nodes.py   # Canonical merge keys (one node per real entity)
 │   │   ├── title_sanity.py      # Titles are entity names: no enumerators, no fragments
 │   │   ├── ingestion_guardrails.py # Generated Cypher may only MERGE the page's own entities
@@ -365,11 +366,12 @@ entities, or it is refused (see *Ingestion Cypher Can Only MERGE the Page's Own 
 
 ### Ingestion Extraction Quality
 
-Three deterministic passes run over the model's output in `llm_cypher_generation`, in this
-order. Each exists because the prompt alone only gets it right most of the time, and "most of
-the time" is what silently corrupts a knowledge graph.
+Five deterministic passes run over the model's output in `llm_cypher_generation`, in this
+execution order: completeness → vocabularies → title sanity → topology → canonical keys.
+Each exists because the prompt alone only gets it right most of the time, and "most of the
+time" is what silently corrupts a knowledge graph. The sections below are grouped by concern.
 
-**1. Completeness (`completeness.py`).** The prompt requires every list/table row to become its
+**Completeness (`completeness.py`).** The prompt requires every list/table row to become its
 own node. Rows are also counted from the source page and checked against the generated nodes: a
 row counts as covered when one *single* node both carries most of the row's wording and has a
 `title` that lines up with the row — in either direction, since a title may be the row's short
@@ -420,7 +422,7 @@ competencies as nodes while R1–R3 kept theirs only as text inside a category n
 `Jakie są kompetencje pożądane dla naukowca R2?` answered "Nie wiem". Both pages are regression
 cases in `tests/data_pipeline/test_completeness.py`.
 
-**2. Closed extraction vocabularies (`label_vocabulary.py`, `relationship_vocabulary.py`).**
+**Closed extraction vocabularies (`label_vocabulary.py`, `relationship_vocabulary.py`).**
 `graph_schema.node_labels` in
 `graph_config.yaml` is the only vocabulary; `graph_schema.label_aliases` maps known drift
 (`Program`→`StudyProgram`, `CriterionItem`→`Criterion`, `Holiday`→`DayOff`, …) and anything still
@@ -435,12 +437,26 @@ the type itself was not stable. `graph_schema.relationship_aliases` maps known d
 relationship names (excluding the fallback), so the generic type is a safety net for ingestion,
 not a preferred modeling choice.
 
-Matching ignores case, diacritics, underscores, hyphens and spaces
+Relationship matching ignores case, diacritics, underscores, hyphens and spaces
 (`works-at`, `works_at`, `WORKSAT` all normalize together), and quoted values are left untouched.
 Before adding a new relationship alias, inspect the live graph first:
 `MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS n ORDER BY n DESC`.
 
-**3. Canonical merge keys (`canonical_nodes.py`).** A node MERGE keys on `key`, a normalized form
+**Deterministic category-item topology (`deterministic_topology.py`).** For pages that carry
+a known "heading + enumerated rows" shape, relationship topology is now built from that structure
+rather than from whichever edge type/direction the model picked on that run. The heading chooses
+the relationship type (`RECOMMENDS`, `REQUIRES`; when no
+qualifier is found, only `CriterionCategory` falls back to `HAS_CRITERION`), rows are matched to
+item-node titles, existing category-item edges of controlled types are rewritten in place, and
+any missing canonical edges are appended deterministically in source-row order. This stabilizes
+edge topology and is regression-tested in
+`tests/data_pipeline/test_extraction_reproducibility.py`.
+Lettered sub-rows under one list row are treated as separate items and attach directly to the
+section category.
+Category matching also requires exact code-token agreement (`R2` is never matched to `R3`), so
+rows from neighbouring stages cannot be merged into one stage category.
+
+**Canonical merge keys (`canonical_nodes.py`).** A node MERGE keys on `key`, a normalized form
 of the title (case folded, diacritics folded, punctuation dropped), never on `title + context`.
 
 A trailing bracket is dropped from the key **only when it abbreviates the title** — `(CBE)`,
@@ -483,7 +499,7 @@ nothing downstream can reintroduce the shape. `pipeline.py` is its only caller �
 `scripts/populate_graph.py` builds its own driver and runs its own MERGE blocks, and nothing in
 the repo stores generated Cypher or replays it.
 
-**4. Title sanity (`title_sanity.py`).** A title is the entity's name. What extraction kept
+**Title sanity (`title_sanity.py`).** A title is the entity's name. What extraction kept
 writing was the line the name was copied from: `a) doswiadczenie w kierowaniu i pracy w
 zespolach naukowych.`, `Odbyte szkolenia:`, `Udzial w`, `zagranicznych` (issue #79).
 

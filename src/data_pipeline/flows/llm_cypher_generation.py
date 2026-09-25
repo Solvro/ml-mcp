@@ -14,6 +14,9 @@ from pydantic import SecretStr
 from src.config.config import get_config
 from src.data_pipeline.canonical_nodes import rewrite_merge_to_canonical_key
 from src.data_pipeline.completeness import extract_list_rows, rows_missing_from_cypher
+from src.data_pipeline.deterministic_topology import (
+    enforce_deterministic_category_item_topology,
+)
 from src.data_pipeline.label_vocabulary import LabelVocabulary, render_allowed_labels
 from src.data_pipeline.relationship_vocabulary import (
     RelationshipVocabulary,
@@ -404,6 +407,33 @@ def _sanitize_titles(parts: List[str], logger) -> List[str]:
     return kept
 
 
+def _enforce_deterministic_topology(parts: List[str], extracted_text: str, logger) -> List[str]:
+    """Build deterministic category->item edges for heading+rows sections.
+
+    Args:
+        parts: Generated Cypher statements after label/relationship/title normalization
+        extracted_text: Source page text those statements came from
+        logger: Prefect run logger
+
+    Returns:
+        Statements with deterministic category->item relationships
+    """
+    rewritten, report = enforce_deterministic_category_item_topology(extracted_text, parts)
+
+    if report.changed:
+        logger.info(
+            "Deterministic topology: matched %d section(s), rewrote %d relationship statement(s), "
+            "added %d canonical edge(s). Rewrites: %s. Added edges: %s",
+            report.matched_sections,
+            report.rewritten_relationships,
+            report.added_relationships,
+            "; ".join(report.rewritten_examples[:10]) if report.rewritten_examples else "(none)",
+            "; ".join(report.added_examples[:10]) if report.added_examples else "(none)",
+        )
+
+    return rewritten
+
+
 @task
 def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> str:
     """Generate cypher statements from text using LLMPipe.
@@ -424,6 +454,7 @@ def generate_cypher_queries(extracted_text: str, schema_context: str = "") -> st
     parts = _canonicalize_labels(parts, logger)
     parts = _canonicalize_relationship_types(parts, logger)
     parts = _sanitize_titles(parts, logger)
+    parts = _enforce_deterministic_topology(parts, extracted_text, logger)
     parts = [rewrite_merge_to_canonical_key(part) for part in parts]
     parts = _drop_redeclarations(parts, logger)
 
