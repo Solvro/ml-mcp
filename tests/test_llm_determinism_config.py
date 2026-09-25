@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from src.config.config import get_config
+from src.config.relationship_qualifiers import render_relationship_qualifier_guidance
 from src.mcp_server.tools.knowledge_graph.rag import RAG, LLMProvider
 
 
@@ -62,3 +63,20 @@ def test_the_cypher_prompt_asks_for_the_limit_the_code_enforces() -> None:
 
     asked_for = [int(number) for line in limit_lines for number in re.findall(r"\d+", line)]
     assert asked_for == [config.rag.max_results] * len(asked_for)
+
+
+def test_the_cypher_prompt_uses_relationship_qualifier_rules_from_config() -> None:
+    config = get_config()
+    guidance = render_relationship_qualifier_guidance(config.graph_schema)
+
+    assert "{relationship_qualifier_guidance}" in config.prompts.cypher_search
+
+    payload = RAG._build_cypher_prompt_payload(
+        "Jakie sa kompetencje pozadane dla naukowca R2?", "(:X)"
+    )
+    assert payload["relationship_qualifier_guidance"] == guidance
+    assert '"pozadane" -> RECOMMENDS' in guidance
+    assert '"wymagane", "niezbedne" -> REQUIRES' in guidance
+
+    rendered = config.prompts.cypher_search.format(**payload)
+    assert guidance in rendered

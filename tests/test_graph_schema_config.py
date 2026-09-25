@@ -1,5 +1,6 @@
 from src.config.config import get_config
 from src.data_pipeline.relationship_vocabulary import normalize_relationship_name
+from src.text_normalization import normalize_search_text
 
 EXPECTED_NODE_LABEL_COUNT = 27
 
@@ -111,6 +112,26 @@ def test_fallback_relationship_type_is_upper_snake_case() -> None:
 def test_fallback_relationship_type_is_canonical() -> None:
     schema = _schema()
     assert schema.fallback_relationship_type in schema.relationship_types
+
+
+def test_relationship_qualifier_rules_point_to_configured_relationship_types() -> None:
+    schema = _schema()
+    relationship_types = set(schema.relationship_types)
+
+    assert schema.relationship_qualifier_rules
+    for rule in schema.relationship_qualifier_rules:
+        assert rule.relationship_type in relationship_types
+        assert rule.token_stems
+        assert rule.words
+        assert all(stem == stem.lower() for stem in rule.token_stems)
+
+
+def test_every_qualifier_word_is_matched_by_its_own_stems() -> None:
+    for rule in _schema().relationship_qualifier_rules:
+        stems = [normalize_search_text(stem) for stem in rule.token_stems]
+        for word in rule.words:
+            normalized_word = normalize_search_text(word)
+            assert any(normalized_word.startswith(stem) for stem in stems), word
 
 
 def test_label_drift_reported_in_the_issue_is_covered() -> None:

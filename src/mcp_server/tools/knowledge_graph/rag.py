@@ -35,6 +35,7 @@ from ....config.messages import (
     NO_GRAPH_DATA_MESSAGE,
     OFF_TOPIC_MESSAGE,
 )
+from ....config.relationship_qualifiers import render_relationship_qualifier_guidance
 from ....config.system_labels import SYSTEM_LABELS
 from ....config.timeouts import (
     get_graph_timeout_seconds,
@@ -961,7 +962,12 @@ class RAG:
         config = get_config()
 
         self.generate_cypher_template = PromptTemplate(
-            input_variables=["user_question", "normalized_question", "schema"],
+            input_variables=[
+                "user_question",
+                "normalized_question",
+                "schema",
+                "relationship_qualifier_guidance",
+            ],
             template=config.prompts.cypher_search,
         )
 
@@ -1273,10 +1279,14 @@ class RAG:
     @staticmethod
     def _build_cypher_prompt_payload(user_question: str, schema: str) -> dict[str, str]:
         """Provide both natural-language and canonical search forms to the LLM."""
+        config = get_config()
         return {
             "user_question": user_question,
             "normalized_question": normalize_search_text(user_question),
             "schema": schema,
+            "relationship_qualifier_guidance": render_relationship_qualifier_guidance(
+                config.graph_schema
+            ),
         }
 
     def generate_cypher(self, state: State):
