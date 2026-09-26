@@ -1,0 +1,153 @@
+{
+  "note": "Rows are reconstructed from the shapes described in #102, #106 and #108, not captured from the production graph. Run run_grader_stability.py --capture against a real Neo4j to replace them; that also drops 'expected', since its indices name these rows.",
+  "cases": [
+    {
+      "id": "teaching-criteria",
+      "question": "Jakie kryteria oceniają działalność dydaktyczną?",
+      "retrieval_strategy": "label_agnostic_phrases",
+      "generated_cypher": null,
+      "source": "reconstructed",
+      "expected": [0, 3, 4, 7],
+      "rows": [
+        {
+          "labels": ["CriterionCategory"],
+          "title": "Dzialalnosc dydaktyczna",
+          "context": "Kategoria kryteriow oceny okresowej nauczycieli akademickich",
+          "score": 9.84,
+          "related": [
+            "HAS_CRITERION: prowadzenie zajec",
+            "HAS_CRITERION: opieka nad pracami dyplomowymi",
+            "HAS_CRITERION: przygotowanie materialow dydaktycznych",
+            "HAS_CRITERION: nagrody za dzialalnosc dydaktyczna"
+          ]
+        },
+        {
+          "labels": ["CriterionCategory"],
+          "title": "Odbyte szkolenia",
+          "context": "Szkolenia odbyte w okresie podlegajacym ocenie",
+          "score": 4.12,
+          "related": [
+            "HAS_CRITERION: naukowe",
+            "HAS_CRITERION: dydaktyczne",
+            "HAS_CRITERION: organizacyjne"
+          ]
+        },
+        {
+          "labels": ["Criterion"],
+          "title": "dydaktyczne",
+          "context": "Szkolenia dydaktyczne odbyte w okresie oceny",
+          "score": 3.97,
+          "related": []
+        },
+        {
+          "labels": ["Criterion"],
+          "title": "prowadzenie zajec",
+          "context": "Kryterium w kategorii Dzialalnosc dydaktyczna: realizacja pensum dydaktycznego",
+          "score": 3.61,
+          "related": []
+        },
+        {
+          "labels": ["Criterion"],
+          "title": "przygotowanie materialow dydaktycznych",
+          "context": "Opracowanie skryptow, podrecznikow i materialow do zajec",
+          "score": 3.2,
+          "related": []
+        },
+        {
+          "labels": ["CriterionCategory"],
+          "title": "Dzialalnosc organizacyjna",
+          "context": "Kategoria kryteriow oceny okresowej: praca w komisjach i organizacja wydarzen",
+          "score": 2.9,
+          "related": ["HAS_CRITERION: praca w komisjach"]
+        },
+        {
+          "labels": ["Topic"],
+          "title": "Ocena okresowa nauczycieli akademickich",
+          "context": "Ocena obejmuje dzialalnosc naukowa, dydaktyczna i organizacyjna",
+          "score": 2.55,
+          "related": []
+        },
+        {
+          "labels": ["Criterion"],
+          "title": "nagrody za dzialalnosc dydaktyczna",
+          "context": "Nagrody rektora i ministra za osiagniecia dydaktyczne",
+          "score": 2.41,
+          "related": []
+        }
+      ]
+    },
+    {
+      "id": "r2-desired-competencies",
+      "question": "Jakie są kompetencje pożądane dla naukowca R2?",
+      "retrieval_strategy": "label_agnostic_phrases",
+      "generated_cypher": null,
+      "source": "reconstructed; after #106 every row holds r2, since the Lucene query requires it",
+      "expected": [0, 1, 2, 3],
+      "rows": [
+        {
+          "labels": ["CompetencyCategory"],
+          "title": "R2",
+          "context": "Naukowiec ze stopniem doktora (R2): kompetencje niezbedne i pozadane",
+          "score": 8.77,
+          "related": [
+            "RECOMMENDS: umiejetnosc pozyskiwania funduszy",
+            "RECOMMENDS: transfer wiedzy i mobilnosc",
+            "RECOMMENDS: udzial w konferencjach",
+            "REQUIRES: praca zespolowa",
+            "REQUIRES: prowadzenie badan",
+            "REQUIRES: publikowanie wynikow"
+          ]
+        },
+        {
+          "labels": ["Competency"],
+          "title": "umiejetnosc pozyskiwania funduszy",
+          "context": "Kompetencja pozadana dla naukowca R2, niezbedna dla R3",
+          "score": 5.3,
+          "related": []
+        },
+        {
+          "labels": ["Competency"],
+          "title": "transfer wiedzy i mobilnosc",
+          "context": "Kompetencja pozadana dla naukowca R2",
+          "score": 5.1,
+          "related": []
+        },
+        {
+          "labels": ["Competency"],
+          "title": "udzial w konferencjach",
+          "context": "Pozadana dla R1 i R2: prezentowanie wynikow badan na konferencjach",
+          "score": 4.6,
+          "related": []
+        },
+        {
+          "labels": ["Competency"],
+          "title": "praca zespolowa",
+          "context": "Kompetencja niezbedna dla naukowca R2",
+          "score": 4.4,
+          "related": []
+        },
+        {
+          "labels": ["Competency"],
+          "title": "prowadzenie badan",
+          "context": "Niezbedna dla R1, R2, R3 i R4",
+          "score": 3.9,
+          "related": []
+        },
+        {
+          "labels": ["Competency"],
+          "title": "publikowanie wynikow",
+          "context": "Kompetencja niezbedna dla naukowca R2",
+          "score": 3.8,
+          "related": []
+        },
+        {
+          "labels": ["Topic"],
+          "title": "Profile naukowcow",
+          "context": "Profile R1, R2, R3 i R4 opisuja kolejne etapy kariery naukowej",
+          "score": 2.2,
+          "related": []
+        }
+      ]
+    }
+  ]
+}

@@ -191,6 +191,7 @@ ml-mcp/
 │   ├── test_rag_fulltext_fallback.py           # Scored index-backed rescue, procedure allowlist
 │   ├── test_rag_context_grader.py              # Grading rows before they can become an answer
 │   ├── test_rag_graded_out_escalation.py       # Wrong primary rows go on to the full-text search
+│   ├── test_grader_stability_benchmark.py      # Replay harness: same rows, N grader verdicts
 │   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
@@ -992,9 +993,29 @@ Whether to answer is settled before an answer is written, not by the answering m
    stay.
    The grader sees the executed Cypher for these rows, since a primary row carries only the
    columns its query returned — a course title from a query that filters on the teacher the
-   question names does not repeat the teacher, and that filter is the anchor. Full-text rows
-   are still graded row by row with no anchor enforced. This costs every primary answer one
-   more fast-model call, and a graded-out one up to two.
+   question names does not repeat the teacher, and that filter is the anchor. This costs
+   every primary answer one more fast-model call, and a graded-out one up to two.
+   **Full-text rows are graded row by row, and a row holding the anchor stays.** The search
+   returns the same rows for the same question, and the grader's list over them did not: the
+   `Dzialalnosc dydaktyczna` category row was dropped once in sixteen runs, and that run
+   answered "Nie wiem" (#108). Whether a row holds the anchor is a fact about the row, so
+   `rows_holding_anchor` keeps every row whose own `title` or `context` holds it, whatever the
+   list says. The grader can add rows to those but not drop them, and when no row holds the
+   anchor its list decides alone, as before. The check is the row check `locate_anchor`
+   already makes (copied text covering every content word of the entity), with two limits
+   of its own. `related` doesn't count, since a node that links to the entity is not the
+   entity. And the anchor has to say more than every row already does: a lone lowercase word
+   is shared by the whole result, and so is a code, because the search requires every code
+   the question holds (#106). So "R2" pins nothing. When it did, the one replayed verdict
+   whose entity was just `R2` pinned a row that only lists the profiles R1 to R4.
+   Measured with `benchmarks/run_grader_stability.py` on `gpt-5.4-nano`, over rows rebuilt
+   from these issues (no graph on the machine that ran it): on the teaching question 4 of 32
+   verdicts kept only the category row, and the pin put back the criteria that name it in
+   all four. One verdict named the whole question as the entity with a null anchor and kept
+   nothing; nothing holds that entity, so the run still abstains. The R2 question swung
+   between 7 rows and the category row alone, which the pin does not touch, and the category
+   row carries both lists in `related`. Re-run it with `--capture` against the real graph
+   before tuning anything further.
    The grader **fails open**: a failed call or an unreadable reply keeps the rows, because a
    provider outage must not be indistinguishable from an empty graph.
 3. **The answer payload carries its provenance.** `RAG._format_result` returns
