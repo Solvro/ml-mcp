@@ -75,7 +75,7 @@ def test_canonical_statement_is_left_untouched(vocabulary) -> None:
 
 
 def test_relationship_types_are_not_rewritten(vocabulary) -> None:
-    """Only node labels are a closed set; a relationship type must survive verbatim."""
+    """LabelVocabulary rewrites node labels only; relationship rewrites are a separate pass."""
     statement = "MERGE (node1)-[:HAS_DAY_OFF]->(node2)"
 
     rewritten, rewrites = vocabulary.canonicalize_statement(statement)

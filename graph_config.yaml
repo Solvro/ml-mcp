@@ -214,8 +214,6 @@ graph_schema:
     - invented: "Article"
       canonical: "Document"
 
-  # Preferred relationship types. Unlike labels these are not rewritten, because a wrong
-  # relationship type is visible in the traversal while a wrong label silently hides the node.
   relationship_types:
     - "PART_OF"
     - "BELONGS_TO"
@@ -249,6 +247,41 @@ graph_schema:
     - "CONSIDERS"
     - "ASSESSES"
     - "DEFINED_IN"
+    - "RELATED_TO"
+
+  relationship_aliases:
+    - invented: "WORKS_IN"
+      canonical: "EMPLOYED_BY"
+    - invented: "WORKS_AT"
+      canonical: "EMPLOYED_BY"
+    - invented: "IS_PART_OF"
+      canonical: "PART_OF"
+    - invented: "SUGGESTS"
+      canonical: "RECOMMENDS"
+    - invented: "NEEDS"
+      canonical: "REQUIRES"
+
+  fallback_relationship_type: "RELATED_TO"
+
+  category_item_labels:
+    - category: "CompetencyCategory"
+      item: "Competency"
+    - category: "CriterionCategory"
+      item: "Criterion"
+
+  relationship_qualifier_rules:
+    - relationship_type: "RECOMMENDS"
+      token_stems:
+        - "pozadan"
+      words:
+        - "pozadane"
+    - relationship_type: "REQUIRES"
+      token_stems:
+        - "wymagan"
+        - "niezbedn"
+      words:
+        - "wymagane"
+        - "niezbedne"
 
 database:
   name: "neo4j"
@@ -319,7 +352,7 @@ prompts:
     ALLOWED NODE LABELS - use these and nothing else:
     {node_labels}
 
-    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    ALLOWED RELATIONSHIP TYPES - use only these names:
     {relationship_types}
 
     1. COMPLETENESS - this is the most important rule:
@@ -374,7 +407,7 @@ prompts:
 
     5. FOR RELATIONSHIPS:
        - MERGE between existing node variables
-       - Use UPPER_SNAKE_CASE; prefer a type from PREFERRED RELATIONSHIP TYPES
+       - Use UPPER_SNAKE_CASE and choose only from ALLOWED RELATIONSHIP TYPES
        - Direction matters (A->B is not B->A)
 
     EXAMPLE OUTPUT:
@@ -400,7 +433,7 @@ prompts:
     ALLOWED NODE LABELS - use these and nothing else:
     {node_labels}
 
-    PREFERRED RELATIONSHIP TYPES - reuse one of these whenever it fits:
+    ALLOWED RELATIONSHIP TYPES - use only these names:
     {relationship_types}
 
     RULES:
@@ -489,10 +522,8 @@ prompts:
       WRONG, matches nothing:
       WHERE toLower(g.title) CONTAINS toLower('jakie sa kryteria doboru kandydatki lub kandydata')
     - "Jakie są kompetencje pożądane dla naukowca R2?" names the entity by its code "R2", so
-      filter on the code, not on the words around it, and collect the items under it. The
-      question also says which items it wants: "pożądane" is the RECOMMENDS relationship and
-      "niezbędne"/"wymagane" is REQUIRES, so traverse only that type, never a union of types,
-      which mixes the two lists into one:
+      filter on the code, not on the words around it, and collect the items under it.
+      {relationship_qualifier_guidance}
       MATCH (c:CompetencyCategory)-[r:RECOMMENDS]->(i)
       WHERE toLower(c.title) CONTAINS toLower('r2')
       RETURN c.title, type(r), collect(i.title) AS items
