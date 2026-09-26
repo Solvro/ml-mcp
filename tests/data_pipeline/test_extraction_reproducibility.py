@@ -112,6 +112,8 @@ def test_same_page_yields_same_shape_across_drifted_model_outputs(monkeypatch) -
                 *[edge("cat", "HAS_CRITERION", f"n{index}") for index in (4, 5, 6, 7)],
             ],
         ),
+        # The shape run 1 of the PR #113 review produced: an uncontrolled type on every edge.
+        (NODES, [edge("cat", "HAS_SUBCOMPETENCY", f"n{index}") for index in range(2, 8)]),
     ]
 
     signatures = [
