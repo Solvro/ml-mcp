@@ -1,0 +1,25 @@
+# Production overlay for the mcpwr VM. The deploy agent in Solvro/backend-mcp runs
+#   RELEASE_TAG=sha-<commit> docker compose -p ml-mcp --env-file /opt/mcpwr/stacks/ml-mcp/.env \
+#     -f docker/compose.stack.yml -f docker/compose.prod.yml up -d --no-build --wait
+# Images come from GHCR; nothing is built on the VM. See backend-mcp docs/deploy.md.
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+services:
+  neo4j:
+    logging: *logging
+
+  mcp-server:
+    image: ghcr.io/solvro/ml-mcp-server:${RELEASE_TAG:?set by the deploy agent}
+    # The base file reads ../.env (a developer's); on the VM the env lives outside the checkout.
+    env_file: !override
+      - ${ML_MCP_ENV_FILE:-/opt/mcpwr/stacks/ml-mcp/.env}
+    # Measured ~210 MiB idle with Neo4j connected; answering adds LangChain/LangGraph state and
+    # model responses on top. 1 GiB leaves ~5x headroom (the backend's chat-service, the same
+    # kind of process, gets the same) while keeping a leak from starving Neo4j and the backend,
+    # which share the VM. Like neo4j's cap, an OOM kill is then restarted (unless-stopped).
+    mem_limit: 1g
+    logging: *logging
