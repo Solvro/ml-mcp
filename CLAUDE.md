@@ -191,6 +191,7 @@ ml-mcp/
 │   ├── test_rag_fulltext_fallback.py           # Scored index-backed rescue, procedure allowlist
 │   ├── test_rag_context_grader.py              # Grading rows before they can become an answer
 │   ├── test_rag_graded_out_escalation.py       # Wrong primary rows go on to the full-text search
+│   ├── test_grader_stability_benchmark.py      # Replay harness: same rows, N grader verdicts
 │   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
 │   ├── test_graph_schema_config.py             # Closed label set stays internally consistent

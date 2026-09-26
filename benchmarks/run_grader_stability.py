@@ -59,8 +59,9 @@ def summarize_case(
         expected: The rows a correct verdict keeps, when the case names them
 
     Returns:
-        Kept counts per run, how many distinct final row sets there were, how many runs ended
-        with nothing, and how often each row was kept by the grader and by the run
+        Kept counts per run, how many runs got no usable verdict, how many distinct final row
+        sets there were, how many runs ended with nothing, and how often each row was kept by
+        the grader and by the run
     """
     total = len(runs)
     grader_counts: Counter[int] = Counter()
@@ -75,6 +76,9 @@ def summarize_case(
             None if run["grader_kept"] is None else len(run["grader_kept"]) for run in runs
         ],
         "final_kept_counts": [len(run["final_kept"]) for run in runs],
+        # A failed call or an unreadable reply keeps every row, so a run where the model was
+        # unreachable looks perfectly stable. This says how many runs measured nothing.
+        "no_verdict_runs": sum(run["grader_kept"] is None for run in runs),
         "distinct_final_sets": len({tuple(run["final_kept"]) for run in runs}),
         "final_empty_runs": sum(not run["final_kept"] for run in runs),
         "row_keep_rate": {
@@ -246,6 +250,11 @@ def main() -> None:
                 if "final_matches_expected" in summary
                 else ""
             )
+            + (
+                f", {summary['no_verdict_runs']} without a verdict"
+                if summary["no_verdict_runs"]
+                else ""
+            )
         )
 
     if args.output:
@@ -253,6 +262,9 @@ def main() -> None:
         args.output.write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
+
+    if report["cases"] and all(case["no_verdict_runs"] == case["runs"] for case in report["cases"]):
+        sys.exit("No run got a verdict from the grader, so nothing was measured.")
 
 
 if __name__ == "__main__":

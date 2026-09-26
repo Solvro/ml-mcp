@@ -86,6 +86,7 @@ def test_the_summary_counts_how_far_the_verdict_moved() -> None:
 
     assert summary["grader_kept_counts"] == [2, 1, 0, None]
     assert summary["final_kept_counts"] == [2, 2, 0, 3]
+    assert summary["no_verdict_runs"] == 1
     assert summary["distinct_final_sets"] == 3
     assert summary["final_empty_runs"] == 1
     assert summary["final_matches_expected"] == 2
