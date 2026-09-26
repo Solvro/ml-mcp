@@ -2,6 +2,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.config.config import get_config
+from src.config.relationship_qualifiers import render_relationship_qualifier_guidance
 from src.mcp_server.tools.knowledge_graph.rag import RAG, KnowledgeGraphQueryError
 
 
@@ -29,6 +31,9 @@ def test_cypher_prompt_payload_keeps_original_and_adds_normalized_question() -> 
         "user_question": "Gdzie jest Wydział Informatyki we Wrocławiu?",
         "normalized_question": "gdzie jest wydzial informatyki we wroclawiu?",
         "schema": "(:Department {title: STRING})",
+        "relationship_qualifier_guidance": render_relationship_qualifier_guidance(
+            get_config().graph_schema
+        ),
     }
 
 

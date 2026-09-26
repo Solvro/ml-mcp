@@ -59,3 +59,13 @@ uv run python benchmarks/run_text2cypher_normalization.py `
   --output benchmarks/results/full.json `
   --mode full
 ```
+
+## Extraction reproducibility (#104)
+
+`run_extraction_reproducibility.py` runs the real extraction model on one page several times and
+compares the label and relationship-type counts of each run. It exits non-zero when the runs
+disagree. Save the page's extracted text to a file first:
+
+```bash
+uv run python -m benchmarks.run_extraction_reproducibility page.txt --runs 3
+```

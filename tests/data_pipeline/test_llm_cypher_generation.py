@@ -56,3 +56,66 @@ def test_a_bare_merge_nothing_else_binds_is_left_alone() -> None:
     parts = ["MERGE (node13)", "MERGE (node13)-[:HAS_CRITERION]->(node14)"]
 
     assert cypher_module._drop_redeclarations(parts, MagicMock()) == parts
+
+
+def test_generated_relationship_types_are_canonicalized(monkeypatch) -> None:
+    class FakePipe:
+        def run(self, context: str, schema_context: str = "") -> list[str]:
+            return [
+                "MERGE (p:Person {title: 'Jan Kowalski', context: 'Pracownik'})",
+                "MERGE (d:Department {title: 'Wydzial Informatyki', context: 'Jednostka'})",
+                "MERGE (p)-[:WORKS_IN]->(d)",
+                "MERGE (p)-[:UNKNOWN_EDGE]->(d)",
+            ]
+
+        def run_missing_rows(self, context: str, rows: list[str]) -> list[str]:
+            return []
+
+    monkeypatch.setattr(cypher_module, "LLMPipe", FakePipe)
+    monkeypatch.setattr(cypher_module, "get_run_logger", MagicMock)
+
+    result = cypher_module.generate_cypher_queries.fn("source text")
+
+    assert "[:EMPLOYED_BY]" in result
+    assert "[:RELATED_TO]" in result
+    assert "[:WORKS_IN]" not in result
+    assert "[:UNKNOWN_EDGE]" not in result
+
+
+def test_label_and_relationship_canonicalization_do_not_interfere(monkeypatch) -> None:
+    class FakePipe:
+        def run(self, context: str, schema_context: str = "") -> list[str]:
+            return [
+                "MERGE (a:Program {title: 'Cyberbezpieczenstwo', context: 'Kierunek'})",
+                "MERGE (b:Department {title: 'Wydzial Informatyki', context: 'Jednostka'})",
+                "MERGE (a)-[:WORKS_IN]->(b)",
+            ]
+
+        def run_missing_rows(self, context: str, rows: list[str]) -> list[str]:
+            return []
+
+    monkeypatch.setattr(cypher_module, "LLMPipe", FakePipe)
+    monkeypatch.setattr(cypher_module, "get_run_logger", MagicMock)
+
+    result = cypher_module.generate_cypher_queries.fn("source text")
+
+    assert ":StudyProgram" in result
+    assert "[:EMPLOYED_BY]" in result
+    assert ":Program {" not in result
+    assert "[:WORKS_IN]" not in result
+
+
+def test_fallback_relationship_types_are_reported_as_a_warning() -> None:
+    logger = MagicMock()
+
+    cypher_module._canonicalize_relationship_types(
+        ["MERGE (a)-[:HAS_COMPETENCY]->(b)", "MERGE (a)-[:WORKS_IN]->(b)"],
+        logger,
+    )
+
+    logger.warning.assert_called_once()
+    warning_message, mapped_count, fallback_type, mapped_values = logger.warning.call_args.args
+    assert "Mapped %d unknown relationship type(s) to fallback %s: %s" == warning_message
+    assert mapped_count == 1
+    assert fallback_type == "RELATED_TO"
+    assert mapped_values == "HAS_COMPETENCY"
