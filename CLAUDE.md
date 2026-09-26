@@ -166,6 +166,8 @@ ml-mcp/
 │   │   ├── staging.py           # Staging dir, manifest, atomic writes, source_id mapping
 │   │   ├── completeness.py      # List/table row coverage check for extracted pages
 │   │   ├── label_vocabulary.py  # Closed node-label set and the rewrite that enforces it
+│   │   ├── relationship_vocabulary.py # Closed relationship-type set and canonical rewrites
+│   │   ├── deterministic_topology.py # One type and direction for category->item edges
 │   │   ├── canonical_nodes.py   # Canonical merge keys (one node per real entity)
 │   │   ├── title_sanity.py      # Titles are entity names: no enumerators, no fragments
 │   │   ├── ingestion_guardrails.py # Generated Cypher may only MERGE the page's own entities
@@ -193,7 +195,7 @@ ml-mcp/
 │   ├── test_rag_graded_out_escalation.py       # Wrong primary rows go on to the full-text search
 │   ├── test_question_analysis.py               # Question-literal detection, phrase extraction
 │   ├── test_llm_determinism_config.py          # Both models pinned to temperature 0
-│   ├── test_graph_schema_config.py             # Closed label set stays internally consistent
+│   ├── test_graph_schema_config.py             # Closed graph vocabularies stay internally consistent
 │   ├── test_schema_visibility.py               # Bookkeeping labels never reach the Cypher prompt
 │   ├── test_logging_config.py                  # LOG_LEVEL resolution and root-logger setup
 │   ├── test_no_print_in_src.py                 # src/ logs instead of printing (AST walk)
@@ -364,11 +366,12 @@ entities, or it is refused (see *Ingestion Cypher Can Only MERGE the Page's Own 
 
 ### Ingestion Extraction Quality
 
-Three deterministic passes run over the model's output in `llm_cypher_generation`, in this
-order. Each exists because the prompt alone only gets it right most of the time, and "most of
-the time" is what silently corrupts a knowledge graph.
+Five deterministic passes run over the model's output in `llm_cypher_generation`, in this
+execution order: completeness → vocabularies → title sanity → topology → canonical keys.
+Each exists because the prompt alone only gets it right most of the time, and "most of the
+time" is what silently corrupts a knowledge graph. The sections below are grouped by concern.
 
-**1. Completeness (`completeness.py`).** The prompt requires every list/table row to become its
+**Completeness (`completeness.py`).** The prompt requires every list/table row to become its
 own node. Rows are also counted from the source page and checked against the generated nodes: a
 row counts as covered when one *single* node both carries most of the row's wording and has a
 `title` that lines up with the row — in either direction, since a title may be the row's short
@@ -419,14 +422,43 @@ competencies as nodes while R1–R3 kept theirs only as text inside a category n
 `Jakie są kompetencje pożądane dla naukowca R2?` answered "Nie wiem". Both pages are regression
 cases in `tests/data_pipeline/test_completeness.py`.
 
-**2. Closed label set (`label_vocabulary.py`).** `graph_schema.node_labels` in
+**Closed extraction vocabularies (`label_vocabulary.py`, `relationship_vocabulary.py`).**
+`graph_schema.node_labels` in
 `graph_config.yaml` is the only vocabulary; `graph_schema.label_aliases` maps known drift
 (`Program`→`StudyProgram`, `CriterionItem`→`Criterion`, `Holiday`→`DayOff`, …) and anything still
-unrecognised becomes `graph_schema.fallback_label`. Matching ignores case and diacritics. Only
-node labels are rewritten — relationship types and quoted values are left verbatim, since a
-wrong relationship type is visible in the traversal while a wrong label silently hides the node.
+unrecognised becomes `graph_schema.fallback_label`.
 
-**3. Canonical merge keys (`canonical_nodes.py`).** A node MERGE keys on `key`, a normalized form
+Relationship names are canonicalized too. This changed after #104: the same page could produce
+different relationship types across runs (`HAS_CRITERION` in one run, `REQUIRES`/`RECOMMENDS` in
+another), so "the wrong type is visible in traversal" stopped being a useful safety argument —
+the type itself was not stable. `graph_schema.relationship_aliases` maps known drift
+(`WORKS_IN`→`EMPLOYED_BY`, …), and unknown types fall back to
+`graph_schema.fallback_relationship_type` during rewrite. Prompt payloads list only allowed
+relationship names (excluding the fallback), so the generic type is a safety net for ingestion,
+not a preferred modeling choice.
+
+Relationship matching ignores case, diacritics, underscores, hyphens and spaces
+(`works-at`, `works_at`, `WORKSAT` all normalize together), and quoted values are left untouched.
+Before adding a new relationship alias, inspect the live graph first:
+`MATCH ()-[r]->() RETURN type(r) AS t, count(*) AS n ORDER BY n DESC`.
+
+**Category -> item edges (`deterministic_topology.py`).** The same page attached R2's
+competencies by `HAS_CRITERION` on one run and by `REQUIRES`/`RECOMMENDS` on the next,
+sometimes pointing from the item to the category. The topology pass enforces one shape:
+category -> item over configured pairs (`graph_schema.category_item_labels`), with the edge type
+picked from the nearest qualifier before the item's title on the page
+(`graph_schema.relationship_qualifier_rules`) and a single-qualifier page fallback only when the
+title cannot be found. It also resolves a `Topic` endpoint from its paired neighbour when that
+inference is unambiguous, and then attaches an unlinked item to the nearest category title above
+its row when the pair matches. Ambiguous Topic inference, Topic on both ends and items whose
+title is absent from page text are left untouched.
+With no qualifier above the item, only a `CriterionCategory` edge falls back to `HAS_CRITERION`;
+any other pair is left as the model wrote it. Statements are rewritten in place or appended,
+never dropped, so one that also binds a node keeps binding it (#104).
+`tests/data_pipeline/test_extraction_reproducibility.py` checks both node-label drift and
+edge-shape drift converge to one signature.
+
+**Canonical merge keys (`canonical_nodes.py`).** A node MERGE keys on `key`, a normalized form
 of the title (case folded, diacritics folded, punctuation dropped), never on `title + context`.
 
 A trailing bracket is dropped from the key **only when it abbreviates the title** — `(CBE)`,
@@ -469,7 +501,7 @@ nothing downstream can reintroduce the shape. `pipeline.py` is its only caller �
 `scripts/populate_graph.py` builds its own driver and runs its own MERGE blocks, and nothing in
 the repo stores generated Cypher or replays it.
 
-**4. Title sanity (`title_sanity.py`).** A title is the entity's name. What extraction kept
+**Title sanity (`title_sanity.py`).** A title is the entity's name. What extraction kept
 writing was the line the name was copied from: `a) doswiadczenie w kierowaniu i pracy w
 zespolach naukowych.`, `Odbyte szkolenia:`, `Udzial w`, `zagranicznych` (issue #79).
 
@@ -935,7 +967,9 @@ the model gets. `tests/test_schema_visibility.py` builds its input by calling th
 fails there instead of quietly letting the bookkeeping back in.
 
 The pipeline's own `reflect_on_schema` still reads the unfiltered schema; it feeds the
-extraction model, not this one, and `label_vocabulary` bounds what it can produce.
+extraction model, not this one, and `label_vocabulary` with `relationship_vocabulary` bound what
+it can produce. Existing edges written before relationship canonicalization remain as-is until
+the graph is re-ingested.
 
 ### Abstention Is a Retrieval Decision
 
@@ -1295,6 +1329,6 @@ fix for that is a second key, not a second attempt.
 
 9. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
 
-10. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 32 relationship types. The label set is closed and enforced at ingestion (see *Ingestion Extraction Quality*); adding a label means editing the config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may also contain labels written before the set was enforced until the dedup pass relabels them.
+10. **Graph schema** — `graph_schema` in `graph_config.yaml` enumerates 27 node labels and 33 relationship types (including the fallback `RELATED_TO`). Node labels and relationship types are closed and enforced at ingestion (see *Ingestion Extraction Quality*); changing either set means editing config and running `just generate-models`. Retrieval still reads the live schema from Neo4j, which may contain legacy labels/relationship types written before canonicalization until the graph is re-ingested.
 
 11. **Pipeline CLI exit code** — `data_pipeline_flow()` returns a `PipelineOutcome`, so the `prefect_pipeline` script must point at `src.data_pipeline.cli:prefect_pipeline_main`. Wiring it straight to the flow makes the generated wrapper call `sys.exit(PipelineOutcome(...))`, which exits `1` after a successful run. Page failures are not fatal, so `PipelineOutcome.failed` carries them: the wrapper then exits non-zero and `refresh_sources_flow` raises.
