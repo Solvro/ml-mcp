@@ -127,6 +127,13 @@ def test_every_service_rotates_its_logs(services):
         assert svc["logging"]["options"]["max-size"] == "10m", name
 
 
+def test_every_service_has_a_memory_limit(services):
+    # One VM hosts this stack and the backend's: nothing may grow without bound.
+    limits = {name: svc.get("mem_limit") for name, svc in services.items()}
+    assert all(limits.values()), limits
+    assert int(limits["mcp-server"]) == 1024**3
+
+
 def test_example_lists_only_what_serving_needs():
     keys = {
         line.split("=", 1)[0]
