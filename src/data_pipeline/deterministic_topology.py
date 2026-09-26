@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from src.config.config import get_config
 from src.config.relationship_qualifiers import get_relationship_qualifier_rules
 from src.data_pipeline.completeness import (
+    LIST_ROW_RE,
     NODE_PROPERTY_MAP_RE,
     PROPERTY_ENTRY_RE,
     SET_ASSIGNMENT_RE,
@@ -15,6 +16,8 @@ CONTROLLED_RELATIONSHIP_TYPES = frozenset({"HAS_CRITERION", "REQUIRES", "RECOMME
 CRITERION_CATEGORY_LABEL = "CriterionCategory"
 CRITERION_RELATIONSHIP_TYPE = "HAS_CRITERION"
 NEGATION = "nie"
+MAX_HEADING_TOKENS = 12
+MAX_CATEGORY_TOKEN_INDEX = 2
 
 TOKEN_RE = re.compile(r"[0-9a-z]+")
 NODE_LABEL_RE = re.compile(r"\(\s*(?P<variable>[A-Za-z_]\w*)\s*:\s*`?(?P<label>[A-Za-z_]\w*)")
@@ -150,15 +153,17 @@ def _rewrite_hops(
     page: _PageContext,
     rewrites: list[str],
 ) -> str:
-    """Rewrite the category -> item hops of one statement, leaving everything else verbatim."""
+    """Rewrite the category -> item hops of one statement, leaving everything else verbatim.
+
+    The label pair decides which hops those are, whatever type the model gave them: an item hung
+    under its category by HAS_SUBCOMPETENCY is the same edge drifted, and leaving it would add a
+    second one beside it.
+    """
     pieces: list[str] = []
     cursor = 0
     item_of, _ = _category_item_maps()
 
     for hop in HOP_RE.finditer(_blank_literals(statement)):
-        if hop.group("type") not in CONTROLLED_RELATIONSHIP_TYPES:
-            continue
-
         left, right = hop.group("left"), hop.group("right")
         left_label = labels.get(left)
         right_label = labels.get(right)
@@ -193,7 +198,12 @@ def _rewrite_hops(
 def _resolve_topic_ends(
     statements: list[str], labels: dict[str, str], rewrites: list[str]
 ) -> list[str]:
-    """Give a Topic on one end of a category-item edge the matching pair label."""
+    """Give a Topic on one end of a category-item edge the matching pair label.
+
+    Only when the edge points the way a category -> item edge does: a Topic pointing at an item
+    is its category, and a Topic a category points at is its item. A Topic pointing at a category
+    is the group heading above it, and relabelling it would invert the hierarchy.
+    """
     schema = get_config().graph_schema
     item_of, category_of = _category_item_maps()
     wanted: dict[str, set[str]] = {}
@@ -202,18 +212,19 @@ def _resolve_topic_ends(
         for hop in HOP_RE.finditer(_blank_literals(statement)):
             if hop.group("type") not in CONTROLLED_RELATIONSHIP_TYPES:
                 continue
-            for topic, other in (
-                (hop.group("left"), hop.group("right")),
-                (hop.group("right"), hop.group("left")),
-            ):
-                if labels.get(topic) != schema.fallback_label:
-                    continue
-                other_label = labels.get(other)
-                if not other_label:
-                    continue
-                new_label = category_of.get(other_label) or item_of.get(other_label)
-                if new_label:
-                    wanted.setdefault(topic, set()).add(new_label)
+            arrow = hop.group("hop")
+            if arrow.endswith(">") and not arrow.startswith("<"):
+                source, target = hop.group("left"), hop.group("right")
+            elif arrow.startswith("<") and not arrow.endswith(">"):
+                source, target = hop.group("right"), hop.group("left")
+            else:
+                continue
+
+            source_label, target_label = labels.get(source), labels.get(target)
+            if source_label == schema.fallback_label and target_label in category_of:
+                wanted.setdefault(source, set()).add(category_of[target_label])
+            elif target_label == schema.fallback_label and source_label in item_of:
+                wanted.setdefault(target, set()).add(item_of[source_label])
 
     resolved = {
         variable: next(iter(new_labels))
@@ -237,16 +248,19 @@ def _resolve_topic_ends(
 def _edge_type(
     category_label: str | None, item_title: str | None, page: _PageContext
 ) -> str | None:
+    """Pick the edge type: always HAS_CRITERION for criteria, the qualifier for competencies.
+
+    Retrieval tells RECOMMENDS from REQUIRES only for competencies, and criterion pages such as
+    the OTM-R policy say "wymagane dokumenty" in prose, so a qualifier never retypes a criterion.
+    """
+    if category_label == CRITERION_CATEGORY_LABEL:
+        return CRITERION_RELATIONSHIP_TYPE
     relationship_type, title_found = _nearest_qualifier_for_item_title(
         item_title,
         normalized_page=page.normalized,
         qualifiers=page.qualifiers,
     )
-    if relationship_type is None and not title_found:
-        relationship_type = page.page_type
-    if relationship_type is None and title_found and category_label == CRITERION_CATEGORY_LABEL:
-        relationship_type = CRITERION_RELATIONSHIP_TYPE
-    return relationship_type
+    return relationship_type if title_found else page.page_type
 
 
 def _attach_unlinked_items(
@@ -264,8 +278,11 @@ def _attach_unlinked_items(
         end
         for statement in statements
         for hop in HOP_RE.finditer(_blank_literals(statement))
-        if hop.group("type") in CONTROLLED_RELATIONSHIP_TYPES
-        for end in (hop.group("left"), hop.group("right"))
+        for category, end in (
+            (hop.group("left"), hop.group("right")),
+            (hop.group("right"), hop.group("left")),
+        )
+        if item_of.get(labels.get(category) or "") == labels.get(end)
     }
 
     categories = sorted(
@@ -310,19 +327,41 @@ def _attach_unlinked_items(
     return statements + added
 
 
+def _is_heading_line(line: str) -> bool:
+    """Report whether a line reads as a heading: short, not a list row, not a sentence."""
+    text = line.strip()
+    tokens = TOKEN_RE.findall(text)
+    has_near_category_token = any(
+        token.startswith(("kompetencj", "kryteri"))
+        for token in tokens[: MAX_CATEGORY_TOKEN_INDEX + 1]
+    )
+    return (
+        bool(text)
+        and LIST_ROW_RE.match(text) is None
+        and not text.endswith((".", "!", "?"))
+        and len(tokens) <= MAX_HEADING_TOKENS
+        and (text.endswith(":") or has_near_category_token)
+    )
+
+
 def _qualifier_spans(page_text: str) -> list[tuple[int, str]]:
-    """Return qualifier token positions and their relationship types from page text."""
+    """Return qualifier positions and types, read from the page's heading lines only.
+
+    Prose carries the same words ("niezbedne dokumenty"), so a qualifier counts only where a
+    heading states it. The R1-R4 page title counts: it is short and does not end a sentence.
+    """
     rules = get_relationship_qualifier_rules(get_config().graph_schema)
-    normalized = normalize_search_text(page_text)
-    token_matches = list(TOKEN_RE.finditer(normalized))
     spans: list[tuple[int, str]] = []
-    for index, match in enumerate(token_matches):
-        token = match.group(0)
-        previous = token_matches[index - 1].group(0) if index > 0 else None
-        relationship_type = _relationship_type_for_token(token, previous, rules)
-        if relationship_type is None:
-            continue
-        spans.append((match.start(), relationship_type))
+    offset = 0
+    for line in normalize_search_text(page_text).splitlines(keepends=True):
+        if _is_heading_line(line):
+            tokens = list(TOKEN_RE.finditer(line))
+            for index, match in enumerate(tokens):
+                previous = tokens[index - 1].group(0) if index > 0 else None
+                relationship_type = _relationship_type_for_token(match.group(0), previous, rules)
+                if relationship_type is not None:
+                    spans.append((offset + match.start(), relationship_type))
+        offset += len(line)
     return spans
 
 

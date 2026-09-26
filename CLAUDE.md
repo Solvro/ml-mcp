@@ -445,16 +445,24 @@ Before adding a new relationship alias, inspect the live graph first:
 **Category -> item edges (`deterministic_topology.py`).** The same page attached R2's
 competencies by `HAS_CRITERION` on one run and by `REQUIRES`/`RECOMMENDS` on the next,
 sometimes pointing from the item to the category. The topology pass enforces one shape:
-category -> item over configured pairs (`graph_schema.category_item_labels`), with the edge type
-picked from the nearest qualifier before the item's title on the page
-(`graph_schema.relationship_qualifier_rules`) and a single-qualifier page fallback only when the
-title cannot be found. It also resolves a `Topic` endpoint from its paired neighbour when that
-inference is unambiguous, and then attaches an unlinked item to the nearest category title above
-its row when the pair matches. Ambiguous Topic inference, Topic on both ends and items whose
-title is absent from page text are left untouched.
-With no qualifier above the item, only a `CriterionCategory` edge falls back to `HAS_CRITERION`;
-any other pair is left as the model wrote it. Statements are rewritten in place or appended,
-never dropped, so one that also binds a node keeps binding it (#104).
+category -> item over configured pairs (`graph_schema.category_item_labels`). The pair decides
+which edges those are, not their type: an item the model hung under its category by
+`HAS_SUBCOMPETENCY` is rewritten, where counting only four types once left that edge and added
+a second one beside it.
+
+A criterion edge is always `HAS_CRITERION`. A competency edge takes the nearest qualifier above
+the item's title (`graph_schema.relationship_qualifier_rules`), or the page's single qualifier
+when the title cannot be found. Qualifiers are read from heading lines only — short, not a list
+row, not ending a sentence — because policy pages say "wymagane dokumenty" in prose and that
+turned criterion edges into `REQUIRES`. The R1–R4 page title still counts: it is a heading, and
+it sits above the stage headings rather than between a stage and its items.
+
+A `Topic` end takes the other half of its pair only when the edge points the category's way: a
+`Topic` pointing at an item is its category, one a category points at is its item. A `Topic`
+pointing at a category is the group heading above it, and relabelling it inverted the
+hierarchy. An unlinked item is attached to the nearest category title above its row when the
+pair matches. Statements are rewritten in place or appended, never dropped, so one that also
+binds a node keeps binding it.
 `tests/data_pipeline/test_extraction_reproducibility.py` checks both node-label drift and
 edge-shape drift converge to one signature.
 

@@ -108,13 +108,76 @@ def test_topic_category_is_retyped_from_item_pair_and_rewritten() -> None:
     statements = [
         node("cat", "Topic", "R1 - Naukowiec poczatkujacy", "R1"),
         node("item", "Competency", "Prowadzi badania"),
-        edge("item", "HAS_CRITERION", "cat"),
+        edge("cat", "HAS_CRITERION", "item"),
     ]
 
     stabilized, _ = stabilize_category_item_edges(RECOMMENDS_PAGE, statements)
 
     assert stabilized[0].startswith("MERGE (cat:CompetencyCategory")
-    assert stabilized[2] == "MERGE (item)<-[:RECOMMENDS]-(cat)"
+    assert stabilized[2] == edge("cat", "RECOMMENDS", "item")
+
+
+def test_topic_pointing_at_a_category_is_a_group_heading_and_stays() -> None:
+    page = "W grupie pracownikow badawczych:\nDorobek naukowy:\n1) Publikacje w czasopismach\n"
+    statements = [
+        node("g", "Topic", "W grupie pracownikow badawczych"),
+        node("cc", "CriterionCategory", "Dorobek naukowy"),
+        node("c", "Criterion", "Publikacje w czasopismach"),
+        edge("g", "HAS_CRITERION", "cc"),
+        edge("cc", "HAS_CRITERION", "c"),
+    ]
+
+    assert stabilize_category_item_edges(page, statements) == (statements, [])
+
+
+def test_prose_qualifiers_never_retype_a_criterion_edge() -> None:
+    page = (
+        "Kandydat składa wymagane dokumenty w terminie wskazanym w ogłoszeniu.\n\n"
+        "Kryteria oceny:\n1) Publikacje w czasopismach\n"
+    )
+    statements = [
+        node("cc", "CriterionCategory", "Kryteria oceny"),
+        node("found", "Criterion", "Publikacje w czasopismach"),
+        node("absent", "Criterion", "Granty zagraniczne"),
+        edge("cc", "HAS_CRITERION", "found"),
+        edge("cc", "HAS_CRITERION", "absent"),
+    ]
+
+    assert stabilize_category_item_edges(page, statements) == (statements, [])
+
+
+def test_a_qualifier_in_a_sentence_does_not_override_the_heading_above() -> None:
+    page = (
+        "Kompetencje pożądane dla naukowców (R1-R4)\n\n"
+        "Kandydat musi spełniać wymagane kryteria formalne.\n\n"
+        "• prowadzi badania\n"
+    )
+    statements = [CATEGORY, ITEM, edge("cat", "HAS_CRITERION", "item")]
+
+    stabilized, _ = stabilize_category_item_edges(page, statements)
+
+    assert stabilized[2] == edge("cat", "RECOMMENDS", "item")
+
+
+def test_wrapped_prose_qualifier_line_is_not_treated_as_heading() -> None:
+    page = (
+        "Kandydat sklada wymagane\n"
+        "dokumenty w terminie.\n\n"
+        "R1 - Naukowiec poczatkujacy\n"
+        "1) Prowadzi badania\n"
+    )
+    statements = [CATEGORY, ITEM, edge("cat", "HAS_CRITERION", "item")]
+
+    assert stabilize_category_item_edges(page, statements) == (statements, [])
+
+
+def test_an_edge_of_any_type_between_a_pair_is_rewritten_not_doubled() -> None:
+    statements = [CATEGORY, ITEM, edge("cat", "HAS_SUBCOMPETENCY", "item")]
+
+    stabilized, rewrites = stabilize_category_item_edges(RECOMMENDS_PAGE, statements)
+
+    assert stabilized == [CATEGORY, ITEM, edge("cat", "RECOMMENDS", "item")]
+    assert len(rewrites) == 1
 
 
 def test_topic_item_under_criterion_category_is_retyped_to_criterion() -> None:
@@ -198,17 +261,20 @@ def test_a_criterion_category_falls_back_to_has_criterion_without_a_qualifier() 
             "Kompetencje pożądane i niezbędne\n",
             [CATEGORY, ITEM, edge("cat", "HAS_CRITERION", "item")],
         ),
-        (RECOMMENDS_PAGE, [CATEGORY, ITEM, edge("cat", "DEFINED_IN", "item")]),
         (
             RECOMMENDS_PAGE,
             [CATEGORY, node("sub", "CompetencyCategory", "R2"), edge("cat", "REQUIRES", "sub")],
+        ),
+        (
+            RECOMMENDS_PAGE,
+            [CATEGORY, node("item", "Topic", "Prowadzi badania"), edge("item", "REQUIRES", "cat")],
         ),
     ],
     ids=[
         "no_qualifier_and_not_a_criterion_category",
         "page_states_both_qualifiers",
-        "type_outside_the_controlled_set",
         "category_to_category",
+        "topic_pointing_at_a_category",
     ],
 )
 def test_edges_the_pass_cannot_decide_are_left_alone(page: str, statements: list[str]) -> None:
