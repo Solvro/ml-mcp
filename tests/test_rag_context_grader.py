@@ -19,6 +19,7 @@ from src.mcp_server.tools.knowledge_graph.rag import (
     GraderVerdict,
     RetrievalStrategy,
     locate_anchor,
+    rows_holding_anchor,
 )
 
 QUESTION = "Kiedy jest pierwszy dzień wolny w semestrze zimowym?"
@@ -686,3 +687,138 @@ def test_a_grader_outage_leaves_the_flag_as_retrieved() -> None:
     result = rag.grade_context(_state(rows_truncated=True))
 
     assert "rows_truncated" not in result, "the rows are untouched, so the flag stands"
+
+
+# Issue #108: the full-text search returns the same rows every time and the grader's list over
+# them did not. Replayed on the fast model, one verdict in eight kept only the category row and
+# dropped the criteria that name it. Shaped like benchmarks/grader_stability_cases.json.
+FULLTEXT_ROWS = [
+    {
+        "labels": ["CriterionCategory"],
+        "title": "Dzialalnosc dydaktyczna",
+        "context": "Kategoria kryteriow oceny okresowej",
+        "related": ["HAS_CRITERION: prowadzenie zajec"],
+    },
+    {
+        "labels": ["CriterionCategory"],
+        "title": "Odbyte szkolenia",
+        "context": "Szkolenia odbyte w okresie oceny",
+        "related": ["HAS_CRITERION: dydaktyczne"],
+    },
+    {
+        "labels": ["Criterion"],
+        "title": "prowadzenie zajec",
+        "context": "Kryterium w kategorii Dzialalnosc dydaktyczna",
+        "related": [],
+    },
+    {
+        "labels": ["Topic"],
+        "title": "Ocena okresowa",
+        "context": "Obejmuje dzialalnosc naukowa, dydaktyczna i organizacyjna",
+        "related": ["RELATED_TO: Dzialalnosc dydaktyczna"],
+    },
+]
+R2_ROWS = [
+    {"title": "R2", "context": "Naukowiec ze stopniem doktora (R2)", "related": []},
+    {"title": "praca zespolowa", "context": "Kompetencja niezbedna dla naukowca R2"},
+    {"title": "Profile naukowcow", "context": "Profile R1, R2, R3 i R4"},
+]
+
+
+def _fulltext_state(**overrides: Any) -> dict[str, Any]:
+    state = {
+        "user_question": CRITERIA_QUESTION,
+        "context": list(FULLTEXT_ROWS),
+        "retrieval_strategy": "label_agnostic_phrases",
+    }
+    state.update(overrides)
+    return _state(**state)
+
+
+@pytest.mark.parametrize(
+    "strategy",
+    ["label_agnostic_phrases", "label_agnostic_after_error", "label_agnostic_after_grading"],
+)
+def test_a_full_text_row_holding_the_anchor_stays_when_the_grader_drops_it(strategy) -> None:
+    rag, _ = _grader_stub(_verdict(anchor="Dzialalnosc dydaktyczna", relevant=[1]))
+
+    result = rag.grade_context(_fulltext_state(retrieval_strategy=strategy))
+
+    assert result["context"] == [FULLTEXT_ROWS[0], FULLTEXT_ROWS[2]]
+    assert result["next_node"] == "end"
+
+
+def test_an_empty_list_does_not_abstain_when_a_row_holds_the_anchor() -> None:
+    """The issue's "Nie wiem" for a question the graph answers."""
+    rag, _ = _grader_stub(_verdict(anchor=None, relevant=[]))
+
+    result = rag.grade_context(_fulltext_state())
+
+    assert result["context"] == [FULLTEXT_ROWS[0], FULLTEXT_ROWS[2]]
+    assert "retrieval_strategy" not in result
+
+
+def test_the_grader_can_still_add_rows_that_do_not_hold_the_anchor() -> None:
+    rag, _ = _grader_stub(_verdict(anchor="Dzialalnosc dydaktyczna", relevant=[4]))
+
+    result = rag.grade_context(_fulltext_state())
+
+    assert result["context"] == [FULLTEXT_ROWS[0], FULLTEXT_ROWS[2], FULLTEXT_ROWS[3]]
+
+
+def test_a_row_that_only_links_to_the_entity_is_not_pinned() -> None:
+    """Row 3 names the category in its related list, and says "dydaktyczna" on its own."""
+    verdict = GraderVerdict(kept=[], entity=TEACHING, anchor="Dzialalnosc dydaktyczna")
+
+    assert rows_holding_anchor(verdict, FULLTEXT_ROWS) == [0, 2]
+
+
+@pytest.mark.parametrize(
+    ("reply", "rows"),
+    [
+        (_verdict(anchor="dydaktyczne", relevant=[]), [FULLTEXT_ROWS[1], FULLTEXT_ROWS[3]]),
+        (_verdict(entity="kompetencje", anchor="kompetencje", relevant=[]), FULLTEXT_ROWS),
+        ('{"anchor": "Dzialalnosc dydaktyczna", "relevant": []}', FULLTEXT_ROWS),
+        (_verdict(entity=CRITERIA_QUESTION, anchor=None, relevant=[]), FULLTEXT_ROWS),
+    ],
+    ids=["only-a-shared-word", "lone-word", "no-entity", "whole-question-as-entity"],
+)
+def test_nothing_is_pinned_without_an_anchor_that_holds_the_entity(reply, rows) -> None:
+    """The last one is a verdict the replay did get once in 32; it still abstains."""
+    rag, _ = _grader_stub(reply)
+
+    result = rag.grade_context(_fulltext_state(context=list(rows)))
+
+    assert result["context"] == []
+    assert result["retrieval_strategy"] == "graded_out"
+
+
+@pytest.mark.parametrize(
+    ("entity", "anchor"),
+    [("R2", "R2"), ("naukowca R2", "R2"), ("naukowca R2", None)],
+)
+def test_a_code_pins_nothing_since_the_search_already_required_it(entity, anchor) -> None:
+    """After #106 every row holds R2, so pinning on it keeps the whole search result."""
+    verdict = GraderVerdict(kept=[], entity=entity, anchor=anchor)
+
+    assert rows_holding_anchor(verdict, R2_ROWS) == []
+
+
+def test_a_name_pins_the_rows_that_hold_it() -> None:
+    verdict = GraderVerdict(kept=[], entity="dr Jan Kowalski", anchor="Jan Kowalski")
+    rows = [
+        {"title": "Jan Kowalski", "context": "Katedra Informatyki"},
+        {"title": "Analiza matematyczna 1", "context": "prowadzi dr Jan Kowalski"},
+        {"title": "Anna Nowak", "context": "Katedra Informatyki"},
+    ]
+
+    assert rows_holding_anchor(verdict, rows) == [0, 1]
+
+
+def test_rows_from_a_model_query_are_not_pinned() -> None:
+    """Those keep the rows the grader picked; the category row holds the anchor and stays out."""
+    rag, _ = _grader_stub(_verdict(anchor="Dzialalnosc dydaktyczna", relevant=[3]))
+
+    result = rag.grade_context(_criteria_state(UNANCHORED_CYPHER, MIXED_ROWS))
+
+    assert result["context"] == [MIXED_ROWS[2]]
