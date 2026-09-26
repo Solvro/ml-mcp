@@ -10,10 +10,9 @@ instruction most of the time and "most of the time" is what splits an entity in 
 """
 
 import re
-from collections.abc import Callable
 
 from src.config.config_models import GraphSchema
-from src.text_normalization import CYPHER_STRING_LITERAL_RE, normalize_search_text
+from src.text_normalization import apply_outside_string_literals, normalize_search_text
 
 # A node pattern: an optional variable followed by one or more :Label parts, inside parentheses.
 # Relationship types live in square brackets and are deliberately not matched.
@@ -46,20 +45,6 @@ def render_allowed_labels(schema: GraphSchema) -> str:
         lines.append(f"Never use these; write the canonical label instead: {redirects}")
 
     return "\n".join(lines)
-
-
-def _apply_outside_string_literals(cypher: str, transform: Callable[[str], str]) -> str:
-    """Run a rewrite over Cypher syntax only, leaving quoted values untouched."""
-    pieces: list[str] = []
-    cursor = 0
-
-    for literal in CYPHER_STRING_LITERAL_RE.finditer(cypher):
-        pieces.append(transform(cypher[cursor : literal.start()]))
-        pieces.append(literal.group(0))
-        cursor = literal.end()
-
-    pieces.append(transform(cypher[cursor:]))
-    return "".join(pieces)
 
 
 class LabelVocabulary:
@@ -124,7 +109,7 @@ class LabelVocabulary:
             rewritten_labels = SINGLE_LABEL_RE.sub(replace_label, match.group("labels"))
             return match.group(0).replace(match.group("labels"), rewritten_labels, 1)
 
-        rewritten = _apply_outside_string_literals(
+        rewritten = apply_outside_string_literals(
             cypher, lambda segment: NODE_LABELS_RE.sub(replace_node, segment)
         )
         return rewritten, rewrites
