@@ -59,11 +59,12 @@ def stabilize_category_item_edges(
     """
     Give every category -> item edge on the page one shape, whichever the model wrote.
 
-    Three steps, in order: a ``Topic`` at one end of such an edge takes the other half of its
-    configured label pair, every edge between a paired category and item is rewritten in place
-    to point from the category with the type the qualifier above the item names, and an item no
-    category claims is attached to the nearest category title above its row. Statements are
-    rewritten or appended, never dropped, so one that also binds a node keeps binding it.
+    Three steps, in order: a ``Topic`` or another pair's item at one end of such an edge takes
+    the label its configured pair expects, every edge between a paired category and item is
+    rewritten in place to point from the category with the type the qualifier above the item
+    names, and an item no category claims is attached to the nearest category title above its
+    row. Statements are rewritten or appended, never dropped, so one that also binds a node
+    keeps binding it.
 
     Args:
         page_text: Source page text the statements were generated from
@@ -82,7 +83,7 @@ def stabilize_category_item_edges(
     )
     rewrites: list[str] = []
 
-    stabilized = _resolve_topic_ends(statements, labels, rewrites)
+    stabilized = _resolve_pair_labels(statements, labels, rewrites)
     stabilized = [
         _rewrite_hops(
             part,
@@ -195,14 +196,22 @@ def _rewrite_hops(
     return "".join(pieces)
 
 
-def _resolve_topic_ends(
+def _resolve_pair_labels(
     statements: list[str], labels: dict[str, str], rewrites: list[str]
 ) -> list[str]:
-    """Give a Topic on one end of a category-item edge the matching pair label.
+    """Give each end of a category-item edge the label its pair expects.
 
-    Only when the edge points the way a category -> item edge does: a Topic pointing at an item
-    is its category, and a Topic a category points at is its item. A Topic pointing at a category
-    is the group heading above it, and relabelling it would invert the hierarchy.
+    A node already filed as some pair's item, but not this category's (R2's competencies filed
+    as Criterion under a CompetencyCategory, PR #113 review), takes the item label of the
+    category it hangs from, whichever way the model pointed the edge: an item label never names
+    a heading.
+
+    A Topic takes the other half of its pair only when the edge points the way a category ->
+    item edge does: a Topic pointing at an item is its category, and a Topic a category points
+    at is its item. A Topic pointing at a category is the group heading above it, and
+    relabelling it would invert the hierarchy.
+
+    A node linked to categories of two different pairs is left alone either way.
     """
     schema = get_config().graph_schema
     item_of, category_of = _category_item_maps()
@@ -210,6 +219,14 @@ def _resolve_topic_ends(
 
     for statement in statements:
         for hop in HOP_RE.finditer(_blank_literals(statement)):
+            for category, item in (
+                (hop.group("left"), hop.group("right")),
+                (hop.group("right"), hop.group("left")),
+            ):
+                category_label, item_label = labels.get(category), labels.get(item)
+                if category_label in item_of and item_label in category_of:
+                    wanted.setdefault(item, set()).add(item_of[category_label])
+
             if hop.group("type") not in CONTROLLED_RELATIONSHIP_TYPES:
                 continue
             arrow = hop.group("hop")
@@ -229,19 +246,18 @@ def _resolve_topic_ends(
     resolved = {
         variable: next(iter(new_labels))
         for variable, new_labels in wanted.items()
-        if len(new_labels) == 1
+        if len(new_labels) == 1 and new_labels != {labels.get(variable)}
     }
     if not resolved:
         return statements
 
     updated = statements
     for variable, new_label in resolved.items():
-        binding = re.compile(
-            rf"\(\s*{re.escape(variable)}\s*:\s*`?{re.escape(schema.fallback_label)}`?\b"
-        )
+        old_label = labels[variable]
+        binding = re.compile(rf"\(\s*{re.escape(variable)}\s*:\s*`?{re.escape(old_label)}`?\b")
         updated = [binding.sub(f"({variable}:{new_label}", part, count=1) for part in updated]
         labels[variable] = new_label
-        rewrites.append(f"({variable}:{schema.fallback_label}) -> ({variable}:{new_label})")
+        rewrites.append(f"({variable}:{old_label}) -> ({variable}:{new_label})")
     return updated
 
 

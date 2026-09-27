@@ -461,7 +461,11 @@ it sits above the stage headings rather than between a stage and its items.
 A `Topic` end takes the other half of its pair only when the edge points the category's way: a
 `Topic` pointing at an item is its category, one a category points at is its item. A `Topic`
 pointing at a category is the group heading above it, and relabelling it inverted the
-hierarchy. An unlinked item is attached to the nearest category title above its row when the
+hierarchy. A node carrying another pair's item label takes its category's item label in either
+direction, since an item label never names a heading: on the real graph R2's competencies were
+`Criterion` under a `CompetencyCategory`, a pair neither configured pair matched, so the pass
+used to leave R2 — the example this issue opens with — exactly as the model wrote it. A node
+linked to categories of two different pairs keeps its label. An unlinked item is attached to the nearest category title above its row when the
 pair matches. Statements are rewritten in place or appended, never dropped, so one that also
 binds a node keeps binding it.
 `tests/data_pipeline/test_extraction_reproducibility.py` checks both node-label drift and

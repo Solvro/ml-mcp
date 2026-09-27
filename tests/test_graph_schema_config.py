@@ -1,3 +1,15 @@
+"""The ingestion label set is a closed vocabulary; these tests keep it internally consistent.
+
+Issue #53: the extraction model invented a label per page, so one concept landed as several
+nodes (StudyProgram and Program for the same programme). The fix only holds if the configured
+vocabulary itself is coherent — an alias pointing at a label that does not exist would silently
+reintroduce an off-list label.
+
+Issue #104 closed the relationship types the same way, and added the category/item label pairs
+the topology pass reads, so the same rule holds for them: every alias, fallback, pair and
+qualifier names something the config actually defines.
+"""
+
 from src.config.config import get_config
 from src.data_pipeline.relationship_vocabulary import normalize_relationship_name
 from src.text_normalization import normalize_search_text

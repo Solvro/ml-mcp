@@ -39,6 +39,10 @@ TOPIC_ITEMS_NODES = [
     node("n3", "Topic", ITEMS[1]),
     *[node(f"n{index}", "Competency", title) for index, title in enumerate(ITEMS[2:], start=4)],
 ]
+CRITERION_ITEMS_NODES = [
+    node("cat", "CompetencyCategory", "R1 - Naukowiec poczatkujacy", "R1"),
+    *[node(f"n{index}", "Criterion", title) for index, title in enumerate(ITEMS, start=2)],
+]
 
 
 def _shape_signature(cypher: str) -> tuple[list[tuple[str, int]], list[tuple[str, int]]]:
@@ -114,6 +118,10 @@ def test_same_page_yields_same_shape_across_drifted_model_outputs(monkeypatch) -
         ),
         # The shape run 1 of the PR #113 review produced: an uncontrolled type on every edge.
         (NODES, [edge("cat", "HAS_SUBCOMPETENCY", f"n{index}") for index in range(2, 8)]),
+        (
+            CRITERION_ITEMS_NODES,
+            [edge(f"n{index}", "HAS_CRITERION", "cat") for index in range(2, 8)],
+        ),
     ]
 
     signatures = [

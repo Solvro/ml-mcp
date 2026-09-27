@@ -117,6 +117,42 @@ def test_topic_category_is_retyped_from_item_pair_and_rewritten() -> None:
     assert stabilized[2] == edge("cat", "RECOMMENDS", "item")
 
 
+@pytest.mark.parametrize(
+    "drifted",
+    [edge("r2", "HAS_CRITERION", "i"), edge("i", "HAS_CRITERION", "r2")],
+    ids=["pointing_from_the_category", "pointing_at_the_category"],
+)
+def test_criterion_under_a_competency_category_becomes_a_competency(drifted: str) -> None:
+    """In the real graph R2's items are Criterion under a CompetencyCategory,
+    a pair neither configured pair matched, so the pass left R2 exactly as the model wrote it."""
+    page = "Kompetencje pożądane dla naukowców (R1-R4)\nR2 - Naukowiec uznany\n• publikuje wyniki\n"
+    statements = [
+        node("r2", "CompetencyCategory", "R2 - Naukowiec uznany", "R2"),
+        node("i", "Criterion", "publikuje wyniki"),
+        drifted,
+    ]
+
+    stabilized, _ = stabilize_category_item_edges(page, statements)
+
+    assert stabilized[1].startswith("MERGE (i:Competency ")
+    assert "[:RECOMMENDS]" in stabilized[2]
+    assert "HAS_CRITERION" not in stabilized[2]
+
+
+def test_an_item_under_categories_of_two_pairs_keeps_its_label() -> None:
+    statements = [
+        node("cc", "CriterionCategory", "Kryteria oceny"),
+        node("r2", "CompetencyCategory", "R2 - Naukowiec uznany", "R2"),
+        node("i", "Criterion", "publikuje wyniki"),
+        edge("cc", "HAS_CRITERION", "i"),
+        edge("r2", "HAS_CRITERION", "i"),
+    ]
+
+    stabilized, _ = stabilize_category_item_edges(RECOMMENDS_PAGE, statements)
+
+    assert stabilized[2] == statements[2]
+
+
 def test_topic_pointing_at_a_category_is_a_group_heading_and_stays() -> None:
     page = "W grupie pracownikow badawczych:\nDorobek naukowy:\n1) Publikacje w czasopismach\n"
     statements = [

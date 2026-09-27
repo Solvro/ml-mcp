@@ -92,7 +92,20 @@ def normalize_search_text(value: str) -> str:
 
 
 def is_code_token(token: str) -> bool:
-    """Report whether a token is a code like ``r2`` or ``w4``."""
+    """
+    Report whether a search token is a code like "r2", "w4" or a course code.
+
+    A code mixes letters and digits. It is a name however short it is, and one character away
+    from a different entity: "r2" and "r3" are two researcher levels. Pure numbers
+    are left out on purpose. They are mostly years and dates, which a page writes in too many
+    ways ("2026", "2026/27", "26") for the question's spelling to be required of a node.
+
+    Args:
+        token: A single lowercase ASCII search token
+
+    Returns:
+        True when the token holds both a letter and a digit
+    """
     return any(character.isdigit() for character in token) and any(
         character.isalpha() for character in token
     )

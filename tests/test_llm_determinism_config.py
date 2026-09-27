@@ -1,3 +1,11 @@
+"""The routing and Cypher models must be deterministic.
+
+Issue #52 measured the cost of sampling: the same question was routed to `end` on some runs and
+to `generate_cypher` on others (~40% false rejects), and the generated Cypher differed run to
+run. Both models are therefore pinned to temperature 0 in graph_config.yaml, and this test keeps
+a future config edit from quietly reintroducing the sampling.
+"""
+
 import re
 from types import SimpleNamespace
 from unittest.mock import patch
