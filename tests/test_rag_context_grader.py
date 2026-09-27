@@ -690,8 +690,8 @@ def test_a_grader_outage_leaves_the_flag_as_retrieved() -> None:
 
 
 # Issue #108: the full-text search returns the same rows every time and the grader's list over
-# them did not. Replayed on the fast model, one verdict in eight kept only the category row and
-# dropped the criteria that name it. Shaped like benchmarks/grader_stability_cases.json.
+# them did not. The category row was dropped once in sixteen runs, and that run answered
+# "Nie wiem". Shaped like benchmarks/grader_stability_cases.json.
 FULLTEXT_ROWS = [
     {
         "labels": ["CriterionCategory"],
@@ -723,6 +723,18 @@ R2_ROWS = [
     {"title": "praca zespolowa", "context": "Kompetencja niezbedna dla naukowca R2"},
     {"title": "Profile naukowcow", "context": "Profile R1, R2, R3 i R4"},
 ]
+# The PR #115 review case: everything at a faculty mentions it in its context.
+DEAN_QUESTION = "Kto jest dziekanem Wydziału Informatyki i Telekomunikacji?"
+DEAN_ROWS = [
+    {"title": "Wydzial Informatyki i Telekomunikacji", "context": "Wydzial W4"},
+    {"title": "prof. Jan Nowak", "context": "Dziekan Wydzial Informatyki i Telekomunikacji"},
+    {"title": "Analiza matematyczna 1", "context": "Kurs na Wydzial Informatyki i Telekomunikacji"},
+    {"title": "KN Solvro", "context": "Kolo naukowe przy Wydzial Informatyki i Telekomunikacji"},
+    {
+        "title": "Informatyka Stosowana",
+        "context": "Kierunek na Wydzial Informatyki i Telekomunikacji",
+    },
+]
 
 
 def _fulltext_state(**overrides: Any) -> dict[str, Any]:
@@ -739,8 +751,9 @@ def _fulltext_state(**overrides: Any) -> dict[str, Any]:
     "strategy",
     ["label_agnostic_phrases", "label_agnostic_after_error", "label_agnostic_after_grading"],
 )
-def test_a_full_text_row_holding_the_anchor_stays_when_the_grader_drops_it(strategy) -> None:
-    rag, _ = _grader_stub(_verdict(anchor="Dzialalnosc dydaktyczna", relevant=[1]))
+def test_a_row_titled_with_the_anchor_stays_when_the_grader_drops_it(strategy) -> None:
+    """Without the category row, the one criterion the grader kept reads as the whole list."""
+    rag, _ = _grader_stub(_verdict(anchor="Dzialalnosc dydaktyczna", relevant=[3]))
 
     result = rag.grade_context(_fulltext_state(retrieval_strategy=strategy))
 
@@ -748,13 +761,13 @@ def test_a_full_text_row_holding_the_anchor_stays_when_the_grader_drops_it(strat
     assert result["next_node"] == "end"
 
 
-def test_an_empty_list_does_not_abstain_when_a_row_holds_the_anchor() -> None:
+def test_an_empty_list_does_not_abstain_when_a_title_holds_the_anchor() -> None:
     """The issue's "Nie wiem" for a question the graph answers."""
     rag, _ = _grader_stub(_verdict(anchor=None, relevant=[]))
 
     result = rag.grade_context(_fulltext_state())
 
-    assert result["context"] == [FULLTEXT_ROWS[0], FULLTEXT_ROWS[2]]
+    assert result["context"] == [FULLTEXT_ROWS[0]]
     assert "retrieval_strategy" not in result
 
 
@@ -763,14 +776,31 @@ def test_the_grader_can_still_add_rows_that_do_not_hold_the_anchor() -> None:
 
     result = rag.grade_context(_fulltext_state())
 
-    assert result["context"] == [FULLTEXT_ROWS[0], FULLTEXT_ROWS[2], FULLTEXT_ROWS[3]]
+    assert result["context"] == [FULLTEXT_ROWS[0], FULLTEXT_ROWS[3]]
 
 
-def test_a_row_that_only_links_to_the_entity_is_not_pinned() -> None:
-    """Row 3 names the category in its related list, and says "dydaktyczna" on its own."""
+def test_only_the_title_pins_a_row() -> None:
+    """Row 2 names the category in its context and row 3 in related; neither is the category."""
     verdict = GraderVerdict(kept=[], entity=TEACHING, anchor="Dzialalnosc dydaktyczna")
 
-    assert rows_holding_anchor(verdict, FULLTEXT_ROWS) == [0, 2]
+    assert rows_holding_anchor(verdict, FULLTEXT_ROWS) == [0]
+
+
+def test_a_context_mentioning_the_entity_does_not_overrule_a_right_verdict() -> None:
+    """The grader kept the dean; courses, clubs and programmes at the faculty stay out."""
+    rag, _ = _grader_stub(
+        _verdict(
+            entity="Wydziału Informatyki i Telekomunikacji",
+            anchor="Wydzial Informatyki i Telekomunikacji",
+            relevant=[2],
+        )
+    )
+
+    result = rag.grade_context(
+        _fulltext_state(user_question=DEAN_QUESTION, context=list(DEAN_ROWS))
+    )
+
+    assert result["context"] == [DEAN_ROWS[0], DEAN_ROWS[1]]
 
 
 @pytest.mark.parametrize(
@@ -804,7 +834,7 @@ def test_a_code_pins_nothing_since_the_search_already_required_it(entity, anchor
     assert rows_holding_anchor(verdict, R2_ROWS) == []
 
 
-def test_a_name_pins_the_rows_that_hold_it() -> None:
+def test_a_name_pins_the_row_titled_with_it() -> None:
     verdict = GraderVerdict(kept=[], entity="dr Jan Kowalski", anchor="Jan Kowalski")
     rows = [
         {"title": "Jan Kowalski", "context": "Katedra Informatyki"},
@@ -812,7 +842,7 @@ def test_a_name_pins_the_rows_that_hold_it() -> None:
         {"title": "Anna Nowak", "context": "Katedra Informatyki"},
     ]
 
-    assert rows_holding_anchor(verdict, rows) == [0, 1]
+    assert rows_holding_anchor(verdict, rows) == [0]
 
 
 def test_rows_from_a_model_query_are_not_pinned() -> None:

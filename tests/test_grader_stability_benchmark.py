@@ -54,13 +54,13 @@ def _reply(relevant: list[int], anchor: str | None = "Dzialalnosc dydaktyczna") 
 
 
 def test_each_run_records_the_grader_list_next_to_what_was_kept() -> None:
-    rag = _scripted_grader([_reply([1, 3]), _reply([1]), "not json", RuntimeError("down")])
+    rag = _scripted_grader([_reply([1, 3]), _reply([3]), "not json", RuntimeError("down")])
 
     runs = replay(rag, CASE, 4)
 
-    assert [run["grader_kept"] for run in runs] == [[0, 2], [0], None, None]
-    # The second run is the #108 shape: the anchor keeps the criterion the list dropped. The
-    # last two fail open and keep every row.
+    assert [run["grader_kept"] for run in runs] == [[0, 2], [2], None, None]
+    # The second run is the #108 shape: the list dropped the category row and the anchor in its
+    # title puts it back. The last two fail open and keep every row.
     assert [run["final_kept"] for run in runs] == [[0, 2], [0, 2], [0, 1, 2], [0, 1, 2]]
     assert runs[0]["anchor"] == "Dzialalnosc dydaktyczna"
 

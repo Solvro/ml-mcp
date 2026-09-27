@@ -995,24 +995,31 @@ Whether to answer is settled before an answer is written, not by the answering m
    columns its query returned — a course title from a query that filters on the teacher the
    question names does not repeat the teacher, and that filter is the anchor. This costs
    every primary answer one more fast-model call, and a graded-out one up to two.
-   **Full-text rows are graded row by row, and a row holding the anchor stays.** The search
-   returns the same rows for the same question, and the grader's list over them did not: the
-   `Dzialalnosc dydaktyczna` category row was dropped once in sixteen runs, and that run
-   answered "Nie wiem" (#108). Whether a row holds the anchor is a fact about the row, so
-   `rows_holding_anchor` keeps every row whose own `title` or `context` holds it, whatever the
-   list says. The grader can add rows to those but not drop them, and when no row holds the
-   anchor its list decides alone, as before. The check is the row check `locate_anchor`
-   already makes (copied text covering every content word of the entity), with two limits
-   of its own. `related` doesn't count, since a node that links to the entity is not the
-   entity. And the anchor has to say more than every row already does: a lone lowercase word
-   is shared by the whole result, and so is a code, because the search requires every code
-   the question holds (#106). So "R2" pins nothing. When it did, the one replayed verdict
-   whose entity was just `R2` pinned a row that only lists the profiles R1 to R4.
+   **Full-text rows are graded row by row, and a row titled with the anchor stays.** The
+   search returns the same rows for the same question, and the grader's list over them did
+   not: the `Dzialalnosc dydaktyczna` category row was dropped once in sixteen runs, and that
+   run answered "Nie wiem" (#108). Whether a row's title holds the anchor is a fact about the
+   row, so `rows_holding_anchor` keeps every such row whatever the list says. The grader can
+   add rows to those but not drop them, and when no title holds the anchor its list decides
+   alone, as before. The check is the row check `locate_anchor` already makes (copied text
+   covering every content word of the entity), with two limits of its own.
+   Only the `title` counts. A title is the entity's name, and a context that mentions the
+   entity is not the entity. The first version pinned on `context` too, and the PR #115 review
+   showed what that costs: for `Kto jest dziekanem Wydziału X?` every course, club and study
+   programme at the faculty names it in its context, so a grader that rightly kept only the
+   dean was overruled by all of them. Nothing is lost by it, since the entity's own row lists
+   what sits under it in `related`, which doesn't pin either, for the same reason. The pin
+   still adds to a non-empty list rather than waiting for an empty one: a list that drops the
+   category row and keeps one of its criteria answers that criterion as if it were the list.
+   And the anchor has to say more than every row already does: a lone lowercase word is
+   shared by the whole result, and so is a code, because the search requires every code the
+   question holds (#106). So "R2" pins nothing. While context still counted, the one replayed
+   verdict whose entity was just `R2` pinned a row that only lists the profiles R1 to R4.
    Measured with `benchmarks/run_grader_stability.py` on `gpt-5.4-nano`, over rows rebuilt
    from these issues (no graph on the machine that ran it): on the teaching question 4 of 32
-   verdicts kept only the category row, and the pin put back the criteria that name it in
-   all four. One verdict named the whole question as the entity with a null anchor and kept
-   nothing; nothing holds that entity, so the run still abstains. The R2 question swung
+   verdicts kept only the category row, which answers anyway because its `related` lists
+   every criterion. One verdict named the whole question as the entity with a null anchor and
+   kept nothing; nothing holds that entity, so the run still abstains. The R2 question swung
    between 7 rows and the category row alone, which the pin does not touch, and the category
    row carries both lists in `related`. Re-run it with `--capture` against the real graph
    before tuning anything further.
