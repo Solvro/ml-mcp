@@ -59,3 +59,21 @@ uv run python benchmarks/run_text2cypher_normalization.py `
   --output benchmarks/results/full.json `
   --mode full
 ```
+
+# Grader stability replay
+
+`run_grader_stability.py` measures how much the context grader's verdict moves when nothing
+else does (issue #108). It runs `RAG.grade_context` N times over one saved set of rows and
+reports, for every run, the rows the grader listed next to the rows the run kept. That way a
+change to the grading rules can be judged on the same input before and after.
+
+```powershell
+uv run python -m benchmarks.run_grader_stability --runs 16 `
+  --output benchmarks/results/grader-stability.json
+```
+
+The rows in `grader_stability_cases.json` are rebuilt from the shapes described in #102, #106
+and #108, not captured from the production graph. With `NEO4J_URI`, `NEO4J_USER` and
+`NEO4J_PASSWORD` pointing at a real graph, `--capture` replaces each case's rows with what the
+full-text search returns and drops `expected`, whose indices named the old rows. Replaying
+needs only an LLM key; `--only <case id>` limits a run to one case.

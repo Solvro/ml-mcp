@@ -432,6 +432,90 @@ def locate_anchor(verdict: GraderVerdict, cypher: str, rows: List[Any]) -> str |
     return None
 
 
+def _can_pin_a_row(anchor: str) -> bool:
+    """
+    Report whether an anchor says enough to keep a full-text row on its own.
+
+    Two content words, or a capitalised name past the first word. A lone lowercase word like
+    "kompetencje" is what every row of a full-text result shares with the question, so it tells
+    none of them apart. Neither does a code: the search requires every code the question holds
+    (issue #106), so "R2" is in every row it returns. In the replay benchmark, while a context
+    could still pin a row, the one verdict whose entity was just "R2" pinned a row that only
+    lists the profiles R1 to R4.
+    """
+    folded = _words(anchor)
+    spelled = re.findall(r"\w+", anchor)
+    if len(spelled) != len(folded):
+        spelled = folded
+    names = [
+        spelled[index]
+        for index, word in enumerate(folded)
+        if word not in POLISH_FUNCTION_WORDS and not _is_code(word)
+    ]
+    return len(names) >= 2 or any(
+        index > 0 and text[:1].isupper() and not _is_code(folded[index])
+        for index, text in enumerate(spelled)
+    )
+
+
+def rows_holding_anchor(verdict: GraderVerdict, rows: List[Any]) -> List[int]:
+    """
+    Find the full-text rows whose title holds the entity the grader named.
+
+    The full-text search returns the same rows for the same question, and the grader's row list
+    over them does not: the "Dzialalnosc dydaktyczna" category row was dropped once in sixteen
+    runs, and that run answered "Nie wiem" to a question the graph answers (issue #108). Whether
+    a row's title holds the anchor is a fact about the row, so a row whose does is kept whatever
+    the list says, and only the rest are left to the grader.
+
+    The anchor is checked the way ``locate_anchor`` checks one found in a row: copied text that
+    covers every content word of the entity, which is what keeps "Odbyte szkolenia" with its
+    "dydaktyczne" out. It also has to say more than every row already does
+    (``_can_pin_a_row``). Without an entity there is nothing to check the anchor against, so
+    nothing is pinned.
+
+    Only the title counts. A title is the entity's name, so a title holding the anchor is the
+    entity or named after it. A context that mentions it is not: for "Kto jest dziekanem
+    Wydziału X?" every course, club and study programme at that faculty says so in its context,
+    and pinning them would overrule a grader that rightly kept only the dean (PR #115 review).
+    Nothing is lost by it, since the entity's own row lists what sits under it in ``related``.
+    ``related`` itself doesn't count either, for the same reason as the context.
+
+    The pin adds to the grader's list rather than standing in only for an empty one. A list that
+    drops the category row and keeps one of its criteria is the same variance, and without the
+    category row it answers that one criterion as if it were the whole list.
+
+    Args:
+        verdict: The grader's reply
+        rows: The full-text rows the grader was shown
+
+    Returns:
+        Zero-based indices of the rows that hold the anchor, in retrieval order
+    """
+    if not verdict.entity:
+        return []
+
+    candidates = []
+    for candidate in (verdict.anchor, verdict.entity):
+        anchor_words = _words(candidate or "")
+        if (
+            anchor_words
+            and anchor_words not in candidates
+            and _can_pin_a_row(candidate)
+            and _anchor_covers_entity(verdict.entity, anchor_words)
+        ):
+            candidates.append(anchor_words)
+
+    held = []
+    for index, row in enumerate(rows):
+        title = row.get("title") if isinstance(row, dict) else None
+        if isinstance(title, str) and any(
+            _contains_phrase(_words(title), anchor) for anchor in candidates
+        ):
+            held.append(index)
+    return held
+
+
 class KnowledgeGraphUnavailableError(RuntimeError):
     """Raised when Neo4j cannot be consulted to answer a retrieval query."""
 
@@ -1086,6 +1170,12 @@ class RAG:
         the run moves on to the label-agnostic search, since a wrong result must get the same
         second chance an empty one does.
 
+        Full-text rows are graded row by row, and a row whose title holds the anchor is kept
+        even when the grader's list left it out (``rows_holding_anchor``). The search returns
+        the same rows every time and the list over them varied run to run, down to an empty one
+        on a question the graph answers (issue #108). The grader can still add rows to those,
+        and when no title holds the anchor its list decides alone, as before.
+
         A grader that fails or replies with nonsense leaves the rows untouched - a model outage
         must not be indistinguishable from an empty graph.
 
@@ -1160,6 +1250,19 @@ class RAG:
             # it found the teacher filter every time and still dropped the course titles under
             # it, because none of them repeats the teacher's name.
             return {"context_graded": True, "next_node": "end"}
+
+        if strategy not in MODEL_QUERY_STRATEGIES:
+            held = rows_holding_anchor(verdict, context)
+            restored = [index for index in held if index not in kept]
+            if restored:
+                logger.info(
+                    "Context grader dropped %d %s row(s) that hold %r (anchor %r); keeping them",
+                    len(restored),
+                    strategy,
+                    verdict.entity,
+                    verdict.anchor,
+                )
+            kept = sorted(set(kept).union(held))
 
         if not kept:
             logger.info("Context grader rejected all %d %s row(s)", len(context), strategy)
