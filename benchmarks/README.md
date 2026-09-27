@@ -77,3 +77,13 @@ and #108, not captured from the production graph. With `NEO4J_URI`, `NEO4J_USER`
 `NEO4J_PASSWORD` pointing at a real graph, `--capture` replaces each case's rows with what the
 full-text search returns and drops `expected`, whose indices named the old rows. Replaying
 needs only an LLM key; `--only <case id>` limits a run to one case.
+
+# Extraction reproducibility (#104)
+
+`run_extraction_reproducibility.py` runs the real extraction model on one page several times and
+compares the label and relationship-type counts of each run. It exits non-zero when the runs
+disagree. Save the page's extracted text to a file first:
+
+```bash
+uv run python -m benchmarks.run_extraction_reproducibility page.txt --runs 3
+```

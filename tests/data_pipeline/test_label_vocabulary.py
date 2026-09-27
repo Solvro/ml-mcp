@@ -4,6 +4,7 @@ from langchain_core.prompts import PromptTemplate
 
 from src.config.config import get_config
 from src.data_pipeline.label_vocabulary import render_allowed_labels
+from src.data_pipeline.relationship_vocabulary import render_allowed_relationship_types
 
 CALENDAR_PAGE = (
     "Dni wolne od zajec w semestrze zimowym 2026/2027:\n"
@@ -25,7 +26,7 @@ def _render_prompt() -> str:
         context=CALENDAR_PAGE,
         schema_context="(empty)",
         node_labels=render_allowed_labels(config.graph_schema),
-        relationship_types=", ".join(config.graph_schema.relationship_types),
+        relationship_types=render_allowed_relationship_types(config.graph_schema),
     )
 
 
@@ -52,6 +53,14 @@ def test_prompt_template_renders_with_the_pipeline_payload() -> None:
     assert CALENDAR_PAGE in prompt
     assert "StudyProgram" in prompt
     assert "HAS_DAY_OFF" in prompt
+    assert "RELATED_TO" not in prompt
+
+
+def test_prompt_uses_allowed_relationship_vocabulary_language() -> None:
+    prompt = _render_prompt()
+
+    assert "ALLOWED RELATIONSHIP TYPES" in prompt
+    assert "PREFERRED RELATIONSHIP TYPES" not in prompt
 
 
 def test_prompt_states_the_completeness_rule() -> None:
