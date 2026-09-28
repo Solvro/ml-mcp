@@ -18,9 +18,15 @@ def _langfuse_handler() -> Any | None:
     if not (os.getenv("LANGFUSE_SECRET_KEY") and os.getenv("LANGFUSE_PUBLIC_KEY")):
         return None
     try:
+        from langfuse import Langfuse
         from langfuse.langchain import CallbackHandler
 
-        return CallbackHandler()
+        # Langfuse installs the global OpenTelemetry tracer provider, and Prefect emits a span
+        # for every flow and task run through it. Unblocked, each run lands in Langfuse as its
+        # own trace named after the run (careful-mantis, ...). Blocking the scope keeps only the
+        # LLM calls, which still share the flow run's trace id, so one run stays one trace.
+        Langfuse(blocked_instrumentation_scopes=["prefect"])
+        return CallbackHandler(update_trace=True)
     except Exception as exc:
         logger.warning("Failed to initialize Langfuse, pipeline tracing disabled: %s", exc)
         return None
