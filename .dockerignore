@@ -1,0 +1,51 @@
+# Build context for docker/Dockerfile.mcp and docker/Dockerfile.prefect (both build from the
+# repo root). The Dockerfiles COPY only pyproject.toml, uv.lock, graph_config.yaml and parts of
+# src/, so none of this reaches an image anyway; the point is not shipping a local virtualenv,
+# secrets or graph dumps to the build daemon on every build (#98).
+
+# Secrets. .history/ is an editor plugin's local history and holds copies of .env.
+.env
+.env.*
+.envrc
+.history/
+*.pem
+*.key
+
+# Local environments and build output
+.venv/
+venv/
+venc/
+env/
+envs/
+dist/
+build/
+*.egg-info/
+
+# Data: graph dumps, staged source documents, the Prefect Postgres volume
+dumps/
+staging/
+data/
+
+# Caches and bytecode (a host's .pyc would otherwise be copied along with src/)
+**/__pycache__/
+**/*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+.coverage
+.coverage.*
+htmlcov/
+.prefect/
+.prefect-test/
+.tmp_prefect_home/
+
+# Nothing an image needs
+.git/
+.github/
+.claude/
+.idea/
+.vscode/
+docs/
+tests/
+benchmarks/
