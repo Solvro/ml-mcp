@@ -21,6 +21,7 @@ from src.data_pipeline.relationship_vocabulary import (
     render_allowed_relationship_types,
 )
 from src.data_pipeline.title_sanity import sanitize_titles
+from src.data_pipeline.tracing import llm_run_config
 from src.text_normalization import fold_diacritics, normalize_cypher_string_literals
 
 # The second extraction pass is one extra model call per page that lost rows. It only fires on a
@@ -130,7 +131,7 @@ class LLMPipe:
         )
 
         try:
-            cypher_code = chain.invoke(payload)
+            cypher_code = chain.invoke(payload, config=llm_run_config("pipeline.generate_cypher"))
         except Exception as exc:
             logger.error("LLM invocation failed: %s", exc)
             return {"generated_cypher": []}
@@ -174,7 +175,8 @@ class LLMPipe:
                     "context": context,
                     "node_labels": self.node_labels,
                     "relationship_types": self.relationship_types,
-                }
+                },
+                config=llm_run_config("pipeline.missed_rows"),
             )
         except Exception as exc:
             logger.error("Missed-row extraction failed: %s", exc)

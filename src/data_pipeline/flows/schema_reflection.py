@@ -8,6 +8,7 @@ from prefect import get_run_logger, task
 from pydantic import SecretStr
 
 from src.config.config import get_config
+from src.data_pipeline.tracing import llm_run_config
 
 
 @task
@@ -52,7 +53,9 @@ def reflect_on_schema() -> str:
     chain = template | model | StrOutputParser()
 
     try:
-        summary = chain.invoke({"schema": schema})
+        summary = chain.invoke(
+            {"schema": schema}, config=llm_run_config("pipeline.schema_reflection")
+        )
         logger.info("Schema reflection completed (%d chars)", len(summary))
         logger.debug("Schema summary: %s", summary[:500])
         return summary
