@@ -2715,8 +2715,8 @@ name = "pendulum"
 version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "python-dateutil" },
-    { name = "tzdata" },
+    { name = "python-dateutil", marker = "python_full_version < '3.13'" },
+    { name = "tzdata", marker = "python_full_version < '3.13'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/23/7c/009c12b86c7cc6c403aec80f8a4308598dfc5995e5c523a5491faaa3952e/pendulum-3.1.0.tar.gz", hash = "sha256:66f96303560f41d097bee7d2dc98ffca716fbb3a832c4b3062034c2d45865015", size = 85930, upload-time = "2025-04-19T14:30:01.675Z" }
 wheels = [
@@ -4095,62 +4095,66 @@ name = "solvro-mcp"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "beautifulsoup4" },
-    { name = "datamodel-code-generator" },
     { name = "dotenv" },
     { name = "fastmcp" },
-    { name = "httpx" },
     { name = "langchain" },
-    { name = "langchain-community" },
     { name = "langchain-google-genai" },
     { name = "langchain-neo4j" },
     { name = "langchain-openai" },
     { name = "langfuse" },
     { name = "langgraph" },
-    { name = "pillow" },
-    { name = "prefect" },
     { name = "pydantic" },
-    { name = "pymupdf" },
-    { name = "pytesseract" },
-    { name = "python-docx" },
     { name = "pyyaml" },
-    { name = "ruff" },
 ]
 
 [package.dev-dependencies]
 dev = [
+    { name = "datamodel-code-generator" },
     { name = "pytest" },
     { name = "pytest-cov" },
+    { name = "ruff" },
+]
+pipeline = [
+    { name = "beautifulsoup4" },
+    { name = "httpx" },
+    { name = "langchain-community" },
+    { name = "pillow" },
+    { name = "prefect" },
+    { name = "pymupdf" },
+    { name = "pytesseract" },
+    { name = "python-docx" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "beautifulsoup4", specifier = ">=4.15.0" },
-    { name = "datamodel-code-generator", specifier = ">=0.27.2" },
     { name = "dotenv", specifier = ">=0.9.9" },
-    { name = "fastmcp", specifier = ">=2.12.4" },
-    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "fastmcp", specifier = ">=2.12.4,<3" },
     { name = "langchain", specifier = ">=0.3.27" },
-    { name = "langchain-community", specifier = ">=0.3.31" },
     { name = "langchain-google-genai", specifier = ">=2.0.0" },
     { name = "langchain-neo4j", specifier = ">=0.5.0" },
     { name = "langchain-openai", specifier = ">=0.3.35" },
     { name = "langfuse", specifier = ">=3.6.2" },
     { name = "langgraph", specifier = ">=0.6.10" },
-    { name = "pillow", specifier = ">=12.3.0" },
-    { name = "prefect", specifier = ">=3.6.7" },
     { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "pymupdf", specifier = ">=1.28.2" },
-    { name = "pytesseract", specifier = ">=0.3.13" },
-    { name = "python-docx", specifier = ">=1.2.0" },
     { name = "pyyaml", specifier = ">=6.0.0" },
-    { name = "ruff", specifier = ">=0.14.1" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "datamodel-code-generator", specifier = ">=0.27.2" },
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "ruff", specifier = ">=0.14.1" },
+]
+pipeline = [
+    { name = "beautifulsoup4", specifier = ">=4.15.0" },
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "langchain-community", specifier = ">=0.3.31" },
+    { name = "pillow", specifier = ">=12.3.0" },
+    { name = "prefect", specifier = ">=3.6.7" },
+    { name = "pymupdf", specifier = ">=1.28.2" },
+    { name = "pytesseract", specifier = ">=0.3.13" },
+    { name = "python-docx", specifier = ">=1.2.0" },
 ]
 
 [[package]]
@@ -4580,8 +4584,8 @@ name = "whenever"
 version = "0.9.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "tzdata", marker = "sys_platform == 'win32'" },
-    { name = "tzlocal", marker = "sys_platform != 'darwin' and sys_platform != 'linux'" },
+    { name = "tzdata", marker = "python_full_version >= '3.13' and sys_platform == 'win32'" },
+    { name = "tzlocal", marker = "python_full_version >= '3.13' and sys_platform != 'darwin' and sys_platform != 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cd/9a/6b12d5708a703010877bec0efc5172ae8a851516abc13cd4543ce4d02a20/whenever-0.9.5.tar.gz", hash = "sha256:9d8f2fbc70acdab98a99b81a2ac594ebd4cc68d5b3506b990729a5f0b04d0083", size = 259436, upload-time = "2026-01-11T19:47:51.608Z" }
 wheels = [
