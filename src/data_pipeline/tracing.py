@@ -10,42 +10,56 @@ from prefect.runtime import flow_run
 logger = logging.getLogger(__name__)
 
 PIPELINE_TAG = "data-pipeline"
+# Langfuse user the pipeline's calls are filed under, so its total cost sits beside real users.
+PIPELINE_USER_ID = "data-pipeline"
 
 
 @lru_cache(maxsize=1)
-def _langfuse_handler() -> Any | None:
-    """Build the shared callback handler, or None when Langfuse is not configured."""
+def _langfuse_enabled() -> bool:
+    """Initialize the Langfuse client once; False when it is not configured or fails."""
     if not (os.getenv("LANGFUSE_SECRET_KEY") and os.getenv("LANGFUSE_PUBLIC_KEY")):
-        return None
+        return False
     try:
         from langfuse import Langfuse
-        from langfuse.langchain import CallbackHandler
 
         # Langfuse installs the global OpenTelemetry tracer provider, and Prefect emits a span
         # for every flow and task run through it. Unblocked, each run lands in Langfuse as its
-        # own trace named after the run (careful-mantis, ...). Blocking the scope keeps only the
-        # LLM calls, which still share the flow run's trace id, so one run stays one trace.
+        # own trace named after the run (careful-mantis, ...).
         Langfuse(blocked_instrumentation_scopes=["prefect"])
-        return CallbackHandler(update_trace=True)
+        return True
     except Exception as exc:
         logger.warning("Failed to initialize Langfuse, pipeline tracing disabled: %s", exc)
-        return None
+        return False
 
 
 def llm_run_config(name: str) -> dict[str, Any]:
     """LangChain run config for one pipeline LLM call.
 
-    Calls from the same Prefect run share a Langfuse session keyed on the root flow run id, so
-    the session view shows what a whole refresh or pipeline run spent.
+    Each call is its own trace, started from a fresh trace id rather than from the Prefect span
+    around it: that span is never exported, so a call parented on it would sit under a parent
+    Langfuse never sees, and calls sharing one trace would each overwrite its name and input.
+    Calls from the same flow run share a Langfuse session, so the session view shows what a
+    whole pipeline run spent. Tracing never fails the call: any error here drops the callbacks.
     """
     config: dict[str, Any] = {"run_name": name}
-    handler = _langfuse_handler()
-    if handler is None:
+    if not _langfuse_enabled():
         return config
-    metadata: dict[str, Any] = {"langfuse_tags": [PIPELINE_TAG]}
-    session_id = flow_run.root_flow_run_id or flow_run.id
-    if session_id:
-        metadata["langfuse_session_id"] = str(session_id)
+    try:
+        from langfuse import Langfuse
+        from langfuse.langchain import CallbackHandler
+
+        handler = CallbackHandler(
+            update_trace=True, trace_context={"trace_id": Langfuse.create_trace_id()}
+        )
+        metadata: dict[str, Any] = {
+            "langfuse_tags": [PIPELINE_TAG],
+            "langfuse_user_id": PIPELINE_USER_ID,
+        }
+        if flow_run.id:
+            metadata["langfuse_session_id"] = str(flow_run.id)
+    except Exception as exc:
+        logger.warning("Langfuse tracing skipped for %s: %s", name, exc)
+        return config
     config["callbacks"] = [handler]
     config["metadata"] = metadata
     return config
