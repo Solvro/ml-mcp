@@ -4,27 +4,21 @@ version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
+# What the MCP server and the kg client import, and nothing else: this is all that goes into
+# the serving image. The pipeline's own libraries are the `pipeline` group below (#98).
 dependencies = [
-    "beautifulsoup4>=4.15.0",
-    "datamodel-code-generator>=0.27.2",
     "dotenv>=0.9.9",
-    "fastmcp>=2.12.4",
-    "httpx>=0.28.0",
+    # fastmcp's own startup banner says to pin < 3 in production and upgrade deliberately.
+    "fastmcp>=2.12.4,<3",
+    # Nothing in src/mcp_server imports it, but langfuse.langchain.CallbackHandler does.
     "langchain>=0.3.27",
-    "langchain-community>=0.3.31",
     "langchain-google-genai>=2.0.0",
     "langchain-neo4j>=0.5.0",
     "langchain-openai>=0.3.35",
     "langfuse>=3.6.2",
     "langgraph>=0.6.10",
-    "pillow>=12.3.0",
-    "prefect>=3.6.7",
     "pydantic>=2.10.0",
-    "pymupdf>=1.28.2",
-    "pytesseract>=0.3.13",
-    "python-docx>=1.2.0",
     "pyyaml>=6.0.0",
-    "ruff>=0.14.1",
 ]
 
 [project.scripts]
@@ -67,7 +61,26 @@ omit = ["src/scripts/*"]
 fail_under = 50
 
 [dependency-groups]
+# Ingestion and acquisition (src/data_pipeline, src/scripts). Dockerfile.prefect installs it,
+# Dockerfile.mcp does not.
+pipeline = [
+    "beautifulsoup4>=4.15.0",
+    "httpx>=0.28.0",
+    "langchain-community>=0.3.31",
+    "pillow>=12.3.0",
+    "prefect>=3.6.7",
+    "pymupdf>=1.28.2",
+    "pytesseract>=0.3.13",
+    "python-docx>=1.2.0",
+]
 dev = [
+    "datamodel-code-generator>=0.27.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
+    "ruff>=0.14.1",
 ]
+
+[tool.uv]
+# A plain `uv sync` still installs everything, so local work and CI are unchanged. The images
+# opt out with --no-default-groups and name the groups they need.
+default-groups = ["dev", "pipeline"]

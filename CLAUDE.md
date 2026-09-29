@@ -40,7 +40,7 @@ Docker network.
 
 ### Install Dependencies
 ```bash
-uv sync
+uv sync      # installs the server deps plus the `pipeline` and `dev` groups (see Gotcha 8)
 # or for initial setup:
 just setup   # runs uv sync + generates Pydantic models
 ```
@@ -208,10 +208,11 @@ ml-mcp/
 │   ├── compose.stack.yml        # neo4j + mcp-server, no host ports
 │   ├── compose.dev.yml          # Override: republish the ports on 127.0.0.1
 │   ├── compose.prefect.yml      # Data pipeline only
-│   ├── Dockerfile.mcp           # MCP server image
-│   └── Dockerfile.prefect       # Data pipeline image
+│   ├── Dockerfile.mcp           # MCP server image ([project] deps only)
+│   └── Dockerfile.prefect       # Data pipeline image (+ `pipeline` group)
+├── .dockerignore                # Keeps .venv, .env, dumps/, staging/ out of the build context
 ├── graph_config.yaml            # Master config: LLM settings, graph schema, prompts
-├── pyproject.toml               # Dependencies, ruff config, entry points
+├── pyproject.toml               # Server deps, `pipeline`/`dev` groups, ruff config, entry points
 ├── justfile                     # All dev commands
 └── .env.example                 # Environment variable template
 ```
@@ -1366,6 +1367,26 @@ fix for that is a second key, not a second attempt.
 7. **uv, not pip** — this project uses `uv` for dependency management. Do not use `pip install`. Lockfile: `uv.lock`.
 
 8. **Docker multi-stage builds** — `Dockerfile.mcp` uses `ghcr.io/astral-sh/uv:python3.12` as builder then copy to `python:3.12-slim`. This keeps images small.
+
+   **Each image installs only its own dependencies (#98).** `[project].dependencies` is what the
+   MCP server and the `kg` client import, and it is all `Dockerfile.mcp` installs
+   (`uv sync --no-default-groups`). Prefect, PyMuPDF, pytesseract, python-docx, bs4, Pillow
+   and `langchain-community` are the `pipeline` dependency group, which `Dockerfile.prefect`
+   adds with `--group pipeline`; ruff, datamodel-code-generator and pytest are `dev` and go
+   into neither image. `[tool.uv] default-groups` keeps a plain `uv sync` installing all
+   three, so local work and CI see no difference.
+
+   The cost is one rule: a package the server or client needs at runtime belongs in
+   `[project]`, never in a group. The unit tests cannot catch a mistake there, since they run
+   with every group installed; the CI `integration` job does, because the server imports its
+   whole module tree before `/health` can answer. `langchain` is in `[project]` for that
+   reason even though nothing in `src/mcp_server` imports it — `langfuse.langchain` does, and
+   refuses to load without it. `fastmcp` is pinned `<3`, as its own startup banner asks.
+
+   `.dockerignore` keeps `.venv`, `.env`, `.history/` (editor snapshots of `.env`), `dumps/`,
+   `staging/` and host `__pycache__` out of the build context. The Dockerfiles `COPY` named
+   paths only, so none of it reached an image before either; it was shipped to the build
+   daemon on every build, `.venv` alone being ~500 MB.
 
 9. **The containerised pipeline does not run the schedule** — `Dockerfile.prefect` installs from `uv.lock` (Prefect 3.6.11), so the version mismatch this used to warn about is gone. What is missing is the deployment: the image's `CMD` is only `prefect server start`, nothing invokes `serve_refresh` (`uv run prefect-refresh`), so the cron added in #51 exists on a developer machine and not in Docker. `compose.prefect.yml` is also its own stack with no `neo4j` service and no link to `mcp_network`, so the pipeline has no route to the graph. See #54.
 

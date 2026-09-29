@@ -9,7 +9,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev --compile-bytecode
+RUN uv sync --locked --no-default-groups --group pipeline --compile-bytecode
 
 FROM python:3.12-slim-bookworm
 WORKDIR /app
